@@ -1,0 +1,94 @@
+name: graphify (reusable)
+
+# Headless, incremental knowledge-graph rebuild for a single repo, callable
+# from any branchLeft-owned repo via `workflow_call`. Uses `graphify extract`
+# (graphifyy's CI-native command, not the Claude-Code-oriented /graphify
+# skill) so it needs no agent/subagent dispatch — it calls the configured LLM
+# backend directly for doc/paper/image extraction, or runs AST-only with
+# `--code-only` when no backend key is configured yet.
+#
+# Caller usage (in the target repo):
+#
+#   jobs:
+#     graphify:
+#       uses: branchLeft/github-workflows/.github/workflows/graphify.yml@main
+#       with:
+#         working-directory: .          # optional, default: repo root
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        description: "Directory to run graphify against, relative to repo root"
+        type: string
+        default: "."
+      gemini-model:
+        description: "Gemini model for semantic extraction (overrides the org default)"
+        type: string
+        default: ""
+      force:
+        description: "Full re-scan instead of the default incremental update"
+        type: boolean
+        default: false
+    secrets:
+      GEMINI_API_KEY:
+        required: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: graphify-${{ github.repository }}-${{ inputs.working-directory }}
+  cancel-in-progress: false
+
+jobs:
+  graphify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install graphify
+        run: pip install --upgrade graphifyy
+
+      - name: Run graphify extract
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GRAPHIFY_GEMINI_MODEL: ${{ inputs.gemini-model || vars.GRAPHIFY_GEMINI_MODEL }}
+        run: |
+          set -eu
+          ARGS=(extract . --no-gitignore)
+          if [ "${{ inputs.force }}" = "true" ]; then
+            ARGS+=(--force)
+          fi
+          if [ -z "${GEMINI_API_KEY:-}" ]; then
+            echo "::notice::GEMINI_API_KEY not set for this repo — running --code-only (AST graph only, no doc/image extraction). See github-workflows/README.md to enable full extraction."
+            ARGS+=(--code-only)
+          else
+            ARGS+=(--backend gemini)
+            if [ -n "${GRAPHIFY_GEMINI_MODEL:-}" ]; then
+              ARGS+=(--model "${GRAPHIFY_GEMINI_MODEL}")
+            fi
+          fi
+          graphify "${ARGS[@]}"
+
+      - name: Commit and push graph
+        working-directory: ${{ inputs.working-directory }}
+        run: |
+          set -eu
+          if [ -z "$(git status --porcelain -- graphify-out/)" ]; then
+            echo "No graph changes to commit."
+            exit 0
+          fi
+          git config user.name "graphify-bot"
+          git config user.email "graphify-bot@users.noreply.github.com"
+          git add graphify-out/
+          git commit -m "chore(graphify): update knowledge graph [skip ci]"
+          git push
