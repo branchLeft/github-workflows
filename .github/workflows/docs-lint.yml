@@ -1,0 +1,53 @@
+name: docs-lint (reusable)
+
+# Enforces the org documentation standard on markdown and code comments,
+# callable from any branchLeft-owned repo via `workflow_call`.
+#
+# Uses only actions/checkout plus `run:` steps, so it passes under
+# `allowed_actions: selected` without any per-repo allow-list change.
+#
+# Behaviour is controlled by files in the calling repo, not by inputs:
+#   .docs-lint.mode        absent = enforce, `warn` = ratchet (see rules doc)
+#   .docs-lintignore       path-scoped rule exemptions
+#
+# Caller usage (in the target repo):
+#
+#   jobs:
+#     docs-lint:
+#       uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1
+
+on:
+  workflow_call:
+    inputs:
+      explain:
+        description: "Print the matched text for each finding"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  docs-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Warn mode diffs against the merge base to decide which files are
+          # enforced, so the full history has to be present.
+          fetch-depth: 0
+
+      - name: Checkout docs-lint
+        uses: actions/checkout@v4
+        with:
+          repository: branchLeft/github-workflows
+          ref: v1
+          path: .docs-lint
+
+      - name: Run docs-lint
+        run: |
+          set -eu
+          ARGS=""
+          if [ "${{ inputs.explain }}" = "true" ]; then ARGS="--explain"; fi
+          .docs-lint/tools/docs-lint.sh $ARGS

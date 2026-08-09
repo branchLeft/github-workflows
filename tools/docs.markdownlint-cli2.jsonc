@@ -1,0 +1,16 @@
+{
+  // Structural hygiene only. Everything is off by default so this never
+  // competes with Prettier, which already owns markdown formatting in the
+  // repos that run it.
+  "config": {
+    "default": false,
+    "MD001": true, // heading levels increment by one
+    "MD012": true, // no consecutive blank lines
+    "MD024": { "siblings_only": true }, // no duplicate headings under one parent
+    "MD034": true, // no bare URLs
+    "MD040": true, // fenced code blocks declare a language
+    "MD047": true // file ends with a single newline
+  },
+  "globs": [],
+  "noProgress": true
+}

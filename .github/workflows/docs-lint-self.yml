@@ -1,0 +1,25 @@
+name: Docs lint
+
+# This repo lints itself with its own working copy rather than by calling the
+# reusable workflow at @v1 — otherwise a PR that changes the rules would be
+# checked by the previously tagged version of them.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  docs-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run docs-lint
+        run: ./tools/docs-lint.sh --explain
