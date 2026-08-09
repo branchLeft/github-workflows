@@ -14,7 +14,7 @@ name: docs-lint (reusable)
 #
 #   jobs:
 #     docs-lint:
-#       uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1
+#       uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1.0.3
 
 on:
   workflow_call:
@@ -42,7 +42,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: branchLeft/github-workflows
-          ref: v1
+          # The commit this reusable workflow was called at, so the rules and
+          # the workflow that runs them are always the same revision. A literal
+          # tag here would break every caller the moment it named a tag cut
+          # before tools/ existed.
+          ref: ${{ github.job_workflow_sha }}
           path: .docs-lint
 
       - name: Run docs-lint

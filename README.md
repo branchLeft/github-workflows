@@ -15,21 +15,29 @@ whatever comes next.
 
 ## Versioning
 
-Callers should reference an exact tag (`@v1.0.1`), not `@main` — `main` is
+Callers should reference an exact tag (`@v1.0.3`), not `@main` — `main` is
 the dev branch here and can change without warning. Tags are immutable
 org-wide (a ruleset blocks moving or deleting them), so there's no
 moving-`@v1`-forward convention — every change, including fixes, ships as a
 new patch/minor tag:
 
 ```bash
-git tag -a v1.0.1 -m "v1.0.1: <what changed>" <commit>
-git push origin v1.0.1
+git tag -s v1.0.3 -m "v1.0.3: <what changed>" <commit>
+git push origin v1.0.3
 ```
 
-Bumping every caller means a one-line PR per repo (`@v1.0.0` → `@v1.0.1` in
-each `.github/workflows/graphify.yml`) rather than a single silent update —
-more PR noise, but every caller's history shows exactly which version it's
-on and when it changed.
+The tag ruleset requires signatures, so `-s` rather than `-a`.
+
+Bumping every caller means a one-line PR per repo (`@v1.0.2` → `@v1.0.3` in
+each caller workflow) rather than a single silent update — more PR noise, but
+every caller's history shows exactly which version it's on and when it
+changed.
+
+A workflow here must never hardcode a tag of this repo internally. Tags are
+immutable, so a literal ref inside a workflow pins callers to a revision that
+has no relationship to the one they asked for — `docs-lint.yml` uses
+`github.job_workflow_sha` to load its own rules from the exact commit the
+caller resolved.
 
 ## Workflows
 
@@ -54,9 +62,15 @@ on:
 
 jobs:
   graphify:
-    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1
+    permissions:
+      contents: write
+    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.3
     secrets: inherit
 ```
+
+The `permissions:` block is on the calling job, not optional: the org default
+is `contents: read`, and a reusable workflow cannot grant itself more than the
+caller allows, so without it the run fails before the first step.
 
 **Requires** the `GEMINI_API_KEY` org secret to do doc/image (semantic)
 extraction. Without it, the workflow still runs — it falls back to
@@ -93,3 +107,41 @@ Caller repos should still ignore them, so local commits behave the same way.
 snapshot into `graphify-out/<date>/` protects an un-reproducible local build,
 but in CI the previous graph is already in git history, so each snapshot is a
 duplicate copy of the graph added to the repo on every day it changes.
+
+### `docs-lint.yml`
+
+Enforces the mechanical parts of the org documentation standard over markdown
+and code comments. Rules, suppression syntax and rationale:
+[`tools/docs-lint-rules.md`](tools/docs-lint-rules.md).
+
+**Caller usage** — add to the target repo as
+`.github/workflows/docs-lint.yml`:
+
+```yaml
+name: docs-lint
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  docs-lint:
+    uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1.0.3
+```
+
+No secrets, no write permission, no per-repo allow-list change — the job is
+`actions/checkout` plus shell.
+
+**Per-repo configuration** is by file, not by workflow input, so the same
+caller block works everywhere:
+
+- `.docs-lint.mode` — absent means enforce. A repo whose existing docs are not
+  clean yet commits one containing `warn`, which makes the full-tree scan
+  advisory while still failing on files the branch touched. Deleting the file
+  is the flip to enforce.
+- `.docs-lintignore` — tab-separated `glob`, rule ids, reason. Use it for
+  files that legitimately match a rule, such as a document about the rules.
+
+Adopting the gate in a repo that has never run it is therefore a two-file
+change, and the ratchet means the first PR is green.
