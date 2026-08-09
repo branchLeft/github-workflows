@@ -69,3 +69,27 @@ access, which this automation cannot provision on its own.
 - `vars.GRAPHIFY_GEMINI_MODEL` — default Gemini model (repo caller can
   override via the `gemini-model` input).
 - `secrets.GEMINI_API_KEY` — optional; enables semantic extraction.
+
+**What deliberately never gets committed.** `graphify-out/` is a shared
+artifact, so anything in it that describes the machine that built it is
+wrong everywhere else:
+
+- `.graphify_root` — the absolute scan root, rewritten on every run. Several
+  read paths prefer it over the root derived from `graph.json`'s own
+  location, and `build.py`'s merge-root inference is one of them: given a
+  foreign path it silently resolves to a directory that does not exist, and
+  deleted files then stop pruning from the graph. With the file absent, every
+  consumer falls back to the derived root, which is correct on any machine.
+- `.graphify_python` — absolute path to the interpreter that has graphify
+  installed. Only ever written locally, so a committed copy pins one
+  developer's home directory into the repo forever. Its only consumer probes
+  for executability first and has fallbacks, so losing it costs nothing.
+
+The commit step stages `graphify-out/` and then drops both from the index, so
+callers stay clean even if a repo has not added them to its own `.gitignore`.
+Caller repos should still ignore them, so local commits behave the same way.
+
+`GRAPHIFY_NO_BACKUP=1` is set for the same reason: graphify's pre-overwrite
+snapshot into `graphify-out/<date>/` protects an un-reproducible local build,
+but in CI the previous graph is already in git history, so each snapshot is a
+duplicate copy of the graph added to the repo on every day it changes.
