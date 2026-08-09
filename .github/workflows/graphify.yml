@@ -11,7 +11,7 @@ name: graphify (reusable)
 #
 #   jobs:
 #     graphify:
-#       uses: branchLeft/github-workflows/.github/workflows/graphify.yml@main
+#       uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.3
 #       with:
 #         working-directory: .          # optional, default: repo root
 #       secrets: inherit
