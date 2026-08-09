@@ -46,7 +46,8 @@ caller resolved.
 Headless, incremental knowledge-graph rebuild via `graphify extract`
 (graphifyy's CI-native command — no Claude Code / Agent-tool dependency, it
 calls the LLM backend directly). Commits `graphify-out/` back to the
-triggering branch as the `graphify-bot` identity.
+triggering branch as the `graphify-bot` identity, or raises it as a pull
+request where that branch is protected — see **Publish modes** below.
 
 **Caller usage** — add to the target repo as
 `.github/workflows/graphify.yml`:
@@ -71,6 +72,38 @@ jobs:
 The `permissions:` block is on the calling job, not optional: the org default
 is `contents: read`, and a reusable workflow cannot grant itself more than the
 caller allows, so without it the run fails before the first step.
+
+**Publish modes.** The `publish` input decides how the graph reaches the
+default branch:
+
+| `publish` | Behaviour | Use when |
+|---|---|---|
+| `direct` (default) | Commits straight to the triggering branch. | The default branch accepts direct pushes. |
+| `pull-request` | Force-pushes the graph to the `publish-branch` branch (default `graphify`) and opens a PR against the default branch, reusing the open one if there is one. | A ruleset protects the default branch. |
+
+A caller in `pull-request` mode needs `pull-requests: write` alongside
+`contents: write`:
+
+```yaml
+jobs:
+  graphify:
+    permissions:
+      contents: write
+      pull-requests: write
+    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.3
+    with:
+      publish: pull-request
+    secrets: inherit
+```
+
+Two consequences of that mode are worth knowing before enabling it:
+
+- The graph branch is rebuilt from the default branch on every run, not
+  accumulated, so the open PR always carries exactly one commit and can never
+  fall behind its base. Review comments on it do not survive the next run.
+- The PR is opened by `GITHUB_TOKEN`, and GitHub does not start workflow runs
+  from events that token raises. Required status checks on the PR therefore
+  stay pending forever, and merging it needs an actor with ruleset bypass.
 
 **Requires** the `GEMINI_API_KEY` org secret to do doc/image (semantic)
 extraction. Without it, the workflow still runs — it falls back to
