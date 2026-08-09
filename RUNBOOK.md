@@ -1,15 +1,60 @@
-# Runbook: enabling full graphify semantic extraction
+# Runbook: enabling graphify CI (and full semantic extraction)
 
-Everything in this repo works today without any manual step — the
-`graphify.yml` reusable workflow falls back to `--code-only` (AST graph
-only, zero cost) when `GEMINI_API_KEY` isn't set. This runbook is the one
-remaining step to turn on full extraction (docs, papers, images) org-wide.
+## 0. Grant the caller repos write permission (blocking — do this first)
+
+As of 2026-08-09, every graphify run fails before it even reaches the
+`--code-only` fallback:
+
+```
+Invalid workflow file: .github/workflows/graphify.yml#L10
+Error calling workflow 'branchLeft/github-workflows/.github/workflows/graphify.yml@v1'.
+The workflow is requesting 'contents: write', but is only allowed 'contents: read'.
+```
+
+This isn't a bug in `graphify.yml` — every repo in the org (confirmed via
+`gh api repos/branchLeft/<repo>/actions/permissions/workflow` across all 7)
+inherits the org-wide default Actions permission, which is `read`. A
+reusable workflow's `permissions:` block can only grant what the *calling*
+repo's Actions setting already allows, so `contents: write` gets capped
+before it ever runs.
+
+This is a repo/org settings change, not a file I can PR — per workspace
+convention (`CLAUDE.md`: "repo settings" are Rob-only), you need to run one
+of these yourself:
+
+**Scoped (recommended)** — only the 6 rollout repos + this one get write,
+everything else in the org stays safely read-only by default:
+
+```bash
+for r in shared-infra ghost-platform ghost-platform-docs website components architecture-diagrams github-workflows; do
+  gh api -X PUT repos/branchLeft/$r/actions/permissions/workflow \
+    -f default_workflow_permissions=write \
+    -F can_approve_pull_request_reviews=false
+done
+```
+
+**Org-wide (simpler, broader blast radius)** — every future repo defaults
+to write-enabled workflows unless overridden per-repo:
+
+```bash
+gh api -X PUT orgs/branchLeft/actions/permissions/workflow \
+  -f default_workflow_permissions=write \
+  -F can_approve_pull_request_reviews=false
+```
+
+Once this is set, the `--code-only` fallback (step 1 below is optional)
+should work immediately on the next push to `main` in any of the 6 repos.
+
+## 1. Get a Gemini API key (optional — enables semantic extraction)
+
+Everything works without this step — the `graphify.yml` reusable workflow
+falls back to `--code-only` (AST graph only, zero cost) when
+`GEMINI_API_KEY` isn't set. This section is the remaining step to turn on
+full extraction (docs, papers, images) org-wide.
 
 This needs a Google account with API access, which nothing in this
 automation can provision on its own — that's the whole reason it's a
 runbook and not a script.
-
-## 1. Get a Gemini API key
 
 1. Go to [Google AI Studio](https://aistudio.google.com/apikey) and sign in.
 2. Create an API key. For anything beyond light/free-tier use, attach it to
