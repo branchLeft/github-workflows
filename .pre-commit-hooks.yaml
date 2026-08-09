@@ -1,0 +1,7 @@
+- id: docs-lint
+  name: docs-lint
+  description: Enforce the org documentation standard on markdown and code comments.
+  entry: tools/docs-lint.sh
+  language: script
+  pass_filenames: true
+  files: \.(md|mdx|ts|tsx|js|jsx|mjs|cjs|py|sh|bash|ya?ml|tf)$
