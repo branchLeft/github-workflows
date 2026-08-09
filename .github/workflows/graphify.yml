@@ -62,6 +62,10 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GRAPHIFY_GEMINI_MODEL: ${{ inputs.gemini-model || vars.GRAPHIFY_GEMINI_MODEL }}
+          # graphify snapshots the previous graph into graphify-out/<date>/ before
+          # overwriting it. That guards an un-reproducible local build; here the
+          # previous graph is already in git, so the snapshot is just committed bloat.
+          GRAPHIFY_NO_BACKUP: "1"
         run: |
           set -eu
           ARGS=(extract . --no-gitignore)
@@ -83,12 +87,18 @@ jobs:
         working-directory: ${{ inputs.working-directory }}
         run: |
           set -eu
-          if [ -z "$(git status --porcelain -- graphify-out/)" ]; then
+          git config user.name "graphify-bot"
+          git config user.email "graphify-bot@users.noreply.github.com"
+          git add -A graphify-out/
+          # graphify stamps the building machine's scan root and interpreter path
+          # into these on every run, so any committed copy is a foreign absolute
+          # path that outranks the correct root derived from graph.json's location.
+          git rm --cached --ignore-unmatch -q \
+            graphify-out/.graphify_root \
+            graphify-out/.graphify_python
+          if git diff --cached --quiet; then
             echo "No graph changes to commit."
             exit 0
           fi
-          git config user.name "graphify-bot"
-          git config user.email "graphify-bot@users.noreply.github.com"
-          git add graphify-out/
           git commit -m "chore(graphify): update knowledge graph [skip ci]"
           git push
