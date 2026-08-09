@@ -15,17 +15,21 @@ whatever comes next.
 
 ## Versioning
 
-Callers should reference a tag (`@v1`), not `@main` — `main` is the dev
-branch here and can change without warning. To ship a change to all callers
-at once, cut a new tag once it's tested:
+Callers should reference an exact tag (`@v1.0.1`), not `@main` — `main` is
+the dev branch here and can change without warning. Tags are immutable
+org-wide (a ruleset blocks moving or deleting them), so there's no
+moving-`@v1`-forward convention — every change, including fixes, ships as a
+new patch/minor tag:
 
 ```bash
-git tag -f v1 <commit>
-git push -f origin v1
+git tag -a v1.0.1 -m "v1.0.1: <what changed>" <commit>
+git push origin v1.0.1
 ```
 
-(Moving-tag convention, same as `actions/checkout@v4` — bump to `v2` instead
-of force-moving `v1` if a change is breaking.)
+Bumping every caller means a one-line PR per repo (`@v1.0.0` → `@v1.0.1` in
+each `.github/workflows/graphify.yml`) rather than a single silent update —
+more PR noise, but every caller's history shows exactly which version it's
+on and when it changed.
 
 ## Workflows
 
