@@ -1,5 +1,26 @@
 # Runbook: enabling graphify CI (and full semantic extraction)
 
+## -1. Make this repo public (blocking — do this first)
+
+`website`, `components`, and `architecture-diagrams` are public repos;
+this repo is private. GitHub does not allow a public repository to call a
+reusable workflow stored in a private repository — this is a hard platform
+restriction, not something the `access_level=organization` setting (below)
+can override; that setting only extends access to other private/internal
+repos in the org. Confirmed live: `website`'s first run failed with
+`workflow was not found`, and `components`/`architecture-diagrams` will hit
+the same error once triggered. `shared-infra`, `ghost-platform`, and
+`ghost-platform-docs` are private, so they're unaffected.
+
+This repo holds no secrets or tenant-identifying data by design — just
+parameterized CI logic — so making it public fits the same standard already
+applied to `website`/`components`. Repo visibility is Rob-only per
+workspace convention:
+
+```bash
+gh repo edit branchLeft/github-workflows --visibility public --accept-visibility-change-consequences
+```
+
 ## 0. Grant the caller repos write permission (blocking — do this first)
 
 As of 2026-08-09, every graphify run fails before it even reaches the
