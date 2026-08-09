@@ -199,6 +199,7 @@ run_rule() {
 # DL000 — a suppression with no rule id or no reason
 # ---------------------------------------------------------------------------
 while IFS= read -r file; do
+  is_exempt "$file" DL000 && continue
   hits=$(grep -nE 'docs-lint-disable-next-line' "$file" | grep -vE 'docs-lint-disable-next-line[[:space:]]+DL[0-9]{3}[[:space:]]+[[:alnum:]]')
   [ -n "$hits" ] || continue
   while IFS= read -r h; do
