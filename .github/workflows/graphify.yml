@@ -29,6 +29,10 @@ on:
         description: "Gemini model for semantic extraction (overrides the org default)"
         type: string
         default: ""
+      graphify-version:
+        description: "graphifyy release to install (overrides the pinned default)"
+        type: string
+        default: "0.9.38"
       force:
         description: "Full re-scan instead of the default incremental update"
         type: boolean
@@ -107,8 +111,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      # Pinned because graphify-out/cache/ast/ is keyed by this version: an
+      # unpinned upgrade rotates that whole directory and lands as a diff that
+      # reads like graph drift rather than a dependency bump.
       - name: Install graphify
-        run: pip install --upgrade "graphifyy[gemini]"
+        env:
+          VERSION: ${{ inputs.graphify-version }}
+        run: pip install "graphifyy[gemini]==${VERSION}"
 
       - name: Run graphify extract
         working-directory: ${{ inputs.working-directory }}

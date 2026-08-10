@@ -117,6 +117,13 @@ See the runbook in this repo's PR description / the branchLeft plan archive
 for how to obtain and set that key — it requires a Google account with API
 access, which this automation cannot provision on its own.
 
+**The `graphifyy` version is pinned** by the `graphify-version` input.
+`graphify-out/cache/ast/` is keyed by that version, so an unpinned upgrade
+rotates the whole directory and the resulting PR reads like graph drift rather
+than a dependency bump. Upgrading is therefore deliberate: change the input
+default here, or set `graphify-version` on a single caller to try a release
+in one repo first. Expect one large, one-off cache diff whenever it moves.
+
 **Org-level config this workflow reads:**
 - `vars.GRAPHIFY_GEMINI_MODEL` — default Gemini model (repo caller can
   override via the `gemini-model` input).
