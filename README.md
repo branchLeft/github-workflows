@@ -96,7 +96,7 @@ jobs:
     secrets: inherit
 ```
 
-Two consequences of that mode are worth knowing before enabling it:
+Three consequences of that mode are worth knowing before enabling it:
 
 - The graph branch is rebuilt from the default branch on every run, not
   accumulated, so the open PR always carries exactly one commit and can never
@@ -104,6 +104,11 @@ Two consequences of that mode are worth knowing before enabling it:
 - The PR is opened by `GITHUB_TOKEN`, and GitHub does not start workflow runs
   from events that token raises. Required status checks on the PR therefore
   stay pending forever, and merging it needs an actor with ruleset bypass.
+- The graph branch is an *input* as well as an output: each run resumes the
+  extraction from it, falling back to the default branch's graph when the
+  branch is absent or carries none. That is what lets a graph PR sit unmerged
+  without every later run re-paying for the same extraction, but it also means
+  anything pushed to that branch seeds the next graph.
 
 **Requires** the `GEMINI_API_KEY` org secret to do doc/image (semantic)
 extraction. Without it, the workflow still runs — it falls back to
@@ -111,6 +116,13 @@ extraction. Without it, the workflow still runs — it falls back to
 See the runbook in this repo's PR description / the branchLeft plan archive
 for how to obtain and set that key — it requires a Google account with API
 access, which this automation cannot provision on its own.
+
+**The `graphifyy` version is pinned** by the `graphify-version` input.
+`graphify-out/cache/ast/` is keyed by that version, so an unpinned upgrade
+rotates the whole directory and the resulting PR reads like graph drift rather
+than a dependency bump. Upgrading is therefore deliberate: change the input
+default here, or set `graphify-version` on a single caller to try a release
+in one repo first. Expect one large, one-off cache diff whenever it moves.
 
 **Org-level config this workflow reads:**
 - `vars.GRAPHIFY_GEMINI_MODEL` — default Gemini model (repo caller can

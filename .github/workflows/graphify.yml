@@ -29,6 +29,10 @@ on:
         description: "Gemini model for semantic extraction (overrides the org default)"
         type: string
         default: ""
+      graphify-version:
+        description: "graphifyy release to install (overrides the pinned default)"
+        type: string
+        default: "0.9.38"
       force:
         description: "Full re-scan instead of the default incremental update"
         type: boolean
@@ -75,13 +79,45 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Only the default branch is checked out, so without this the extraction
+      # resumes from whatever graph last landed there. While a graph PR sits
+      # unmerged that is stale, and every run re-pays for the same extraction.
+      - name: Seed the graph from the publish branch
+        if: inputs.publish == 'pull-request'
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          BRANCH: ${{ inputs.publish-branch }}
+        run: |
+          set -eu
+          if ! git fetch --depth 1 origin "$BRANCH"; then
+            echo "No '$BRANCH' branch — resuming from the default branch's graph."
+            exit 0
+          fi
+          # The ./ is load-bearing: without it the rev:path form resolves from
+          # the repo root while the checkout pathspec below resolves from here,
+          # so the two would disagree under a non-root working-directory.
+          if ! git rev-parse --verify -q "FETCH_HEAD:./graphify-out" >/dev/null; then
+            echo "'$BRANCH' carries no graphify-out — resuming from the default branch's graph."
+            exit 0
+          fi
+          # Cleared first so paths the branch has dropped do not survive as a
+          # union of the two trees.
+          rm -rf graphify-out
+          git checkout FETCH_HEAD -- graphify-out
+          echo "Resumed from '$BRANCH'."
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      # Pinned because graphify-out/cache/ast/ is keyed by this version: an
+      # unpinned upgrade rotates that whole directory and lands as a diff that
+      # reads like graph drift rather than a dependency bump.
       - name: Install graphify
-        run: pip install --upgrade "graphifyy[gemini]"
+        env:
+          VERSION: ${{ inputs.graphify-version }}
+        run: pip install "graphifyy[gemini]==${VERSION}"
 
       - name: Run graphify extract
         working-directory: ${{ inputs.working-directory }}
