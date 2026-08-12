@@ -128,10 +128,11 @@ jobs:
           # overwriting it. That guards an un-reproducible local build; here the
           # previous graph is already in git, so the snapshot is just committed bloat.
           GRAPHIFY_NO_BACKUP: "1"
+          FORCE: ${{ inputs.force }}
         run: |
           set -eu
           ARGS=(extract . --no-gitignore)
-          if [ "${{ inputs.force }}" = "true" ]; then
+          if [ "$FORCE" = "true" ]; then
             ARGS+=(--force)
           fi
           if [ -z "${GEMINI_API_KEY:-}" ]; then
