@@ -32,14 +32,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Warn mode diffs against the merge base to decide which files are
           # enforced, so the full history has to be present.
           fetch-depth: 0
 
       - name: Checkout docs-lint
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: branchLeft/github-workflows
           # The commit this reusable workflow was called at, so the rules and
