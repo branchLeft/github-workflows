@@ -50,8 +50,10 @@ jobs:
           path: .docs-lint
 
       - name: Run docs-lint
+        env:
+          EXPLAIN: ${{ inputs.explain }}
         run: |
           set -eu
           ARGS=""
-          if [ "${{ inputs.explain }}" = "true" ]; then ARGS="--explain"; fi
+          if [ "$EXPLAIN" = "true" ]; then ARGS="--explain"; fi
           .docs-lint/tools/docs-lint.sh $ARGS
