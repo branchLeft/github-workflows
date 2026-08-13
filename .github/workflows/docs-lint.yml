@@ -14,7 +14,7 @@ name: docs-lint (reusable)
 #
 #   jobs:
 #     docs-lint:
-#       uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1.0.3
+#       uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1.0.6
 
 on:
   workflow_call:
