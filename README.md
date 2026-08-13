@@ -15,7 +15,7 @@ whatever comes next.
 
 ## Versioning
 
-Callers should reference an exact tag (`@v1.0.3`), not `@main` — `main` is
+Callers should reference an exact tag (`@v1.0.6`), not `@main` — `main` is
 the dev branch here and can change without warning. Tags are immutable
 org-wide (a ruleset blocks moving or deleting them), so there's no
 moving-`@v1`-forward convention — every change, including fixes, ships as a
@@ -28,7 +28,7 @@ git push origin v1.0.3
 
 The tag ruleset requires signatures, so `-s` rather than `-a`.
 
-Bumping every caller means a one-line PR per repo (`@v1.0.2` → `@v1.0.3` in
+Bumping every caller means a one-line PR per repo (`@v1.0.5` → `@v1.0.6` in
 each caller workflow) rather than a single silent update — more PR noise, but
 every caller's history shows exactly which version it's on and when it
 changed.
@@ -65,7 +65,7 @@ jobs:
   graphify:
     permissions:
       contents: write
-    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.3
+    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.6
     secrets: inherit
 ```
 
@@ -90,7 +90,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.3
+    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.6
     with:
       publish: pull-request
     secrets: inherit
@@ -172,7 +172,7 @@ on:
 
 jobs:
   docs-lint:
-    uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1.0.3
+    uses: branchLeft/github-workflows/.github/workflows/docs-lint.yml@v1.0.6
 ```
 
 No secrets, no write permission, no per-repo allow-list change — the job is
