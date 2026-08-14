@@ -58,13 +58,13 @@ you should be the one holding it):
 gh secret set GEMINI_API_KEY \
   --org branchLeft \
   --visibility selected \
-  --repos shared-infra,ghost-platform,ghost-platform-docs,website,components,architecture-diagrams,github-workflows
+  --repos shared-infra,ghost-platform,ghost-platform-docs,website,components,github-workflows
 ```
 
 `gh` will prompt you to paste the key value (or pipe it in via `--body`,
 but typing/pasting at the prompt keeps it out of shell history). Scoped to
-`selected` repos deliberately — this excludes `Ghost`, `Ghost-CLI`, and
-`docker-library-ghost` (the `TryGhost` forks), so the key is never exposed
+`selected` repos deliberately — this excludes `Ghost`, `Ghost-CLI`,
+`docker-library-ghost` and `Ghost-architecture-diagrams` (the `TryGhost` forks), so the key is never exposed
 to workflows running in the context of upstream-derived CI.
 
 If a new branchLeft-owned repo gets a `graphify.yml` caller workflow later

@@ -10,8 +10,7 @@ version here.
 Keeping the actual logic in one place means a fix or improvement lands once
 and every caller repo picks it up by bumping a tag, instead of copy-pasted
 YAML drifting out of sync across `shared-infra`, `ghost-platform`,
-`ghost-platform-docs`, `website`, `components`, `architecture-diagrams`, and
-whatever comes next.
+`ghost-platform-docs`, `website`, `components`, and whatever comes next.
 
 ## Versioning
 
