@@ -27,7 +27,10 @@ case_() {
   local file="fixture.md"
   printf '%s\n' "$content" > "$file"
   local out rc
-  out=$("$LINT" --explain --mode enforce "$file" 2>&1)
+  # Force docs-lint.sh's plain-text report format regardless of the ambient
+  # environment: under GITHUB_ACTIONS=true it emits `::error ...title=DL009::`
+  # workflow-command annotations instead, which this harness doesn't parse.
+  out=$(GITHUB_ACTIONS=false "$LINT" --explain --mode enforce "$file" 2>&1)
   rc=$?
   local has_dl009=no
   printf '%s' "$out" | grep -q '\[DL009\]' && has_dl009=yes
