@@ -226,10 +226,12 @@ for scope in md code; do
   # `S3` is deliberately exempt: in this corpus it is both an AWS service and a
   # real story id, and no pattern separates them. Missing the occasional story
   # S3 costs far less than 60 false positives teaching people to ignore the
-  # linter. Story ids S7 upward are still caught.
-  run_rule DL009 "$TMPDIR_LINT/$scope" "\\bS[0-9]{1,3}\\b|\\bB[0-9]{1,3}\\b" \
-    "\\bS3\\b|S3-|\\bB[0-9]+(GB|MB|KB|Gi|Mi|B)\\b" \
-    "$ext" "story or backlog id; describe the change, not the ticket"
+  # linter. Story ids S7 upward are still caught. `Q1`-`Q4` get the same
+  # exemption for the same reason: calendar quarters in roadmap and marketing
+  # prose collide with the low end of the Q-item id space.
+  run_rule DL009 "$TMPDIR_LINT/$scope" "\\bS[0-9]{1,3}\\b|\\bB[0-9]{1,3}\\b|\\bQ[0-9]{1,3}\\b" \
+    "\\bS3\\b|S3-|\\bB[0-9]+(GB|MB|KB|Gi|Mi|B)\\b|\\bQ[1-4]\\b" \
+    "$ext" "story, backlog or standards-gap id; describe the change, not the ticket"
 done
 
 run_rule DL004 "$TMPDIR_LINT/md" '^\*\*Status:\*\*' "" md_scannable \
