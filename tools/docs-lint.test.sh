@@ -88,6 +88,32 @@ case_ "DEP-<n> is out of scope for DL009 by design" \
   "The pin relaxation is tracked as DEP-12." \
   no 0
 
+# --- GITHUB_ACTIONS annotation format ---------------------------------------
+# The report() branch every consuming repo's Actions run actually renders.
+# The plain-text cases above force GITHUB_ACTIONS=false and would not catch a
+# break in the `::error file=...,title=DL009::` printf at docs-lint.sh:169.
+annotation_case() {
+  local file="fixture.md"
+  printf '%s\n' "See Q52 for the full write-up." > "$file"
+  local out rc
+  out=$(GITHUB_ACTIONS=true "$LINT" --explain --mode enforce "$file" 2>&1)
+  rc=$?
+  if printf '%s' "$out" | grep -qE '^::error file=fixture\.md,line=[0-9]+,title=DL009::'; then
+    PASS=$((PASS + 1))
+    echo "ok   GITHUB_ACTIONS=true emits a DL009 error annotation"
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: GITHUB_ACTIONS=true emits a DL009 error annotation -- no matching ::error line"
+    echo "$out" | sed 's/^/    /'
+  fi
+  if [ "$rc" != "1" ]; then
+    FAIL=$((FAIL + 1))
+    echo "FAIL: GITHUB_ACTIONS=true exit code -- expected 1, got $rc"
+  fi
+  rm -f "$file"
+}
+annotation_case
+
 echo
 echo "docs-lint.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ]

@@ -52,6 +52,8 @@ Scope is `md` (markdown, fenced code blocks excluded), `code` (comment lines onl
 
 `Q1` through `Q4` are exempt from DL009 for the same reason as `S3`: they collide with calendar quarters (`Q3 launch`, `Q4 target`), a phrase this org's roadmap and marketing prose uses routinely, and no pattern separates a quarter reference from a low-numbered `Q`-item id. Standards-gap ids from `Q5` upward are still caught. `DEP-<n>` (dependency-policy ids) is a different id shape, filed in the affected repo rather than a private tracker, and is out of scope for DL009.
 
+A real `Q<n>` (or `S<n>`) id sharing a line with its exempt low-numbered form — e.g. "the Q3 push covers the Q52 fix" — currently slips through: `run_rule`'s except-pattern filtering drops the whole line on a match, not just the matched span. Tracked as its own fix, since correcting it changes filtering for every rule that uses an except pattern.
+
 ### Why DL011 never fails
 
 The standard says a long comment is *usually* a document in the wrong file. "Usually" is a review judgement, not something a regex can settle — some infrastructure comments genuinely need six lines to explain a constraint. DL011 emits a notice with the block length so the backlog stays visible, and a reviewer decides. The test to apply: if an operator would ever follow it as a procedure, it is a runbook, not a comment.
