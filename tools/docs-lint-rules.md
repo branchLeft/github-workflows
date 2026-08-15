@@ -36,7 +36,7 @@ Scope is `md` (markdown, fenced code blocks excluded), `code` (comment lines onl
 | DL006 | md | Bolded or parenthesised ISO dates, `verified live <date>`, `As of <date>`, `Applied <date>` | Delete. History lives in `git log` and the PR |
 | DL007 | code | `verified live`, `verified against the live`, `confirmed in production on` | State the constraint, not when it was checked |
 | DL008 | code | `adversarial review`, `round N`, `per X's … decision`, `as discussed/agreed/we decided` | State what the code must satisfy, not how it got there |
-| DL009 | both | Story and backlog ids (`S10`, `B22`) | Describe the change, not the ticket |
+| DL009 | both | Story, backlog and standards-gap ids (`S10`, `B22`, `Q52`) | Describe the change, not the ticket |
 | DL010 | md | Links that escape the repo root, or point at a file that doesn't exist | Use an absolute GitHub URL for cross-repo references |
 | DL011 | code | Comment blocks of 7+ lines | **Advisory only, never fails** — see below |
 
@@ -47,6 +47,10 @@ Scope is `md` (markdown, fenced code blocks excluded), `code` (comment lines onl
 ### Known limitation: `S3`
 
 `S3` is exempt from DL009 entirely. In this codebase it is both the AWS service and a real story id, and no pattern separates them — an earlier draft without the exemption was 71% false positives, almost all `S3-compatible` and `S3Storage`. A story `S3` reference will therefore slip through; story ids from `S7` upward are still caught. Fewer, trustworthy findings beat complete ones that people learn to ignore.
+
+### Known limitation: `Q1`-`Q4`
+
+`Q1` through `Q4` are exempt from DL009 for the same reason as `S3`: they collide with calendar quarters (`Q3 launch`, `Q4 target`), a phrase this org's roadmap and marketing prose uses routinely, and no pattern separates a quarter reference from a low-numbered `Q`-item id. Standards-gap ids from `Q5` upward are still caught. `DEP-<n>` (dependency-policy ids) is a different id shape, filed in the affected repo rather than a private tracker, and is out of scope for DL009.
 
 ### Why DL011 never fails
 
