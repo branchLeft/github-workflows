@@ -21,10 +21,15 @@ git config user.name test
 PASS=0
 FAIL=0
 
-# case name, fixture content, expect-DL009 (yes|no), expect-exit (0|1)
-case_() {
-  local name="$1" content="$2" expect_dl009="$3" expect_exit="$4"
+# case name, fixture content, rule id, expect-rule-flagged (yes|no), expect-exit (0|1)
+# The fixture extension is chosen by rule: DL001/DL008 only scan comment
+# lines (code_scannable), the rest scan markdown prose.
+case_rule() {
+  local name="$1" content="$2" rule="$3" expect_flag="$4" expect_exit="$5"
   local file="fixture.md"
+  case "$rule" in
+    DL001|DL008) file="fixture.sh" ;;
+  esac
   printf '%s\n' "$content" > "$file"
   local out rc
   # Force docs-lint.sh's plain-text report format regardless of the ambient
@@ -32,13 +37,13 @@ case_() {
   # workflow-command annotations instead, which this harness doesn't parse.
   out=$(GITHUB_ACTIONS=false "$LINT" --explain --mode enforce "$file" 2>&1)
   rc=$?
-  local has_dl009=no
-  printf '%s' "$out" | grep -q '\[DL009\]' && has_dl009=yes
+  local has_flag=no
+  printf '%s' "$out" | grep -q "\[$rule\]" && has_flag=yes
 
   local ok=1
-  if [ "$has_dl009" != "$expect_dl009" ]; then
+  if [ "$has_flag" != "$expect_flag" ]; then
     ok=0
-    echo "FAIL: $name -- expected DL009=$expect_dl009, got $has_dl009"
+    echo "FAIL: $name -- expected $rule=$expect_flag, got $has_flag"
     echo "$out" | sed 's/^/    /'
   fi
   if [ "$rc" != "$expect_exit" ]; then
@@ -52,6 +57,13 @@ case_() {
     FAIL=$((FAIL + 1))
   fi
   rm -f "$file"
+}
+
+# DL009-only convenience wrapper, kept so the existing case names below read
+# the same as before this file grew rule-generic.
+case_() {
+  local name="$1" content="$2" expect_dl009="$3" expect_exit="$4"
+  case_rule "$name" "$content" DL009 "$expect_dl009" "$expect_exit"
 }
 
 # --- Q<n> is now caught, like S<n> and B<n> ---------------------------------
@@ -87,6 +99,45 @@ case_ "a run id longer than 3 digits does not false-match on a prefix" \
 case_ "DEP-<n> is out of scope for DL009 by design" \
   "The pin relaxation is tracked as DEP-12." \
   no 0
+
+# --- Span-aware exclusion: an except-pattern hit elsewhere on the line must
+# not blank out a real, distinct hit on the same line ------------------------
+case_rule "DL009: Q52 is still caught when Q3 shares its line" \
+  "Revenue improved in Q3, tracked as Q52." \
+  DL009 yes 1
+
+case_rule "DL009: S10 is still caught when S3 shares its line" \
+  "Migrating S3 storage, tracked as S10." \
+  DL009 yes 1
+
+case_rule "DL001: an unrelated 'Rob' mention is still caught when 'Rob-gated' shares its line" \
+  $'#!/bin/bash\n# per Rob'"'"'s decision, this stays Rob-gated for now' \
+  DL001 yes 1
+
+case_rule "DL008: 'as agreed' is still caught when the exempt 'round 3 robin' shares its line" \
+  $'#!/bin/bash\n# batches use round 3 robin scheduling, as agreed for fairness' \
+  DL008 yes 1
+
+# --- Span-aware exclusion: a line containing only the exempted token must
+# still be fully suppressed, for every affected rule ------------------------
+case_rule "DL009: Q3 alone (no other id) stays exempt" \
+  "Revenue improved in Q3 alone." \
+  DL009 no 0
+
+case_rule "DL009: S3 alone (no other id) stays exempt" \
+  "Static assets are served from S3 alone." \
+  DL009 no 0
+
+# DL002 has no except pattern and always fires on that gating phrase by
+# design, so the line still exits 1 -- this case isolates DL001's own
+# exemption only.
+case_rule "DL001: 'Rob-gated' alone (no bare 'Rob') stays exempt from DL001" \
+  $'#!/bin/bash\n# this step is Rob-gated and Rob-only' \
+  DL001 no 1
+
+case_rule "DL008: 'round 3 trip' alone (no other process narration) stays exempt" \
+  $'#!/bin/bash\n# scheduling happens in round 3 trip order for delivery batches' \
+  DL008 no 0
 
 # --- GITHUB_ACTIONS annotation format ---------------------------------------
 # The report() branch every consuming repo's Actions run actually renders.

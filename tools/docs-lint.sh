@@ -181,7 +181,21 @@ run_rule() {
     scan="$TMPDIR_LINT/scan"
     "$extractor" "$file" > "$scan"
     if [ -n "$except" ]; then
-      hits=$(grep -nE "$match" "$scan" | grep -vE "$except")
+      # Whole-line exclusion would drop a real hit that merely shares a line
+      # with an exempted token, so each candidate line is re-tested with its
+      # exempted spans subtracted first: only a line that still matches
+      # afterwards is a genuine hit.
+      hits=""
+      while IFS= read -r h; do
+        [ -n "$h" ] || continue
+        ln=${h%%:*}; text=${h#*:}
+        local reduced="$text" occ
+        while IFS= read -r occ; do
+          [ -n "$occ" ] || continue
+          reduced=${reduced/"$occ"/}
+        done < <(printf '%s\n' "$text" | grep -oE "$except")
+        printf '%s\n' "$reduced" | grep -qE "$match" && hits="$hits$h"$'\n'
+      done < <(grep -nE "$match" "$scan")
     else
       hits=$(grep -nE "$match" "$scan")
     fi
