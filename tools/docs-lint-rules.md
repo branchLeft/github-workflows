@@ -50,9 +50,7 @@ Scope is `md` (markdown, fenced code blocks excluded), `code` (comment lines onl
 
 ### Known limitation: `Q1`-`Q4`
 
-`Q1` through `Q4` are exempt from DL009 for the same reason as `S3`: they collide with calendar quarters (`Q3 launch`, `Q4 target`), a phrase this org's roadmap and marketing prose uses routinely, and no pattern separates a quarter reference from a low-numbered `Q`-item id. Standards-gap ids from `Q5` upward are still caught. `DEP-<n>` (dependency-policy ids) is a different id shape, filed in the affected repo rather than a private tracker, and is out of scope for DL009.
-
-A real `Q<n>` (or `S<n>`) id sharing a line with its exempt low-numbered form — e.g. "the Q3 push covers the Q52 fix" — currently slips through: `run_rule`'s except-pattern filtering drops the whole line on a match, not just the matched span. Tracked as its own fix, since correcting it changes filtering for every rule that uses an except pattern.
+`Q1` through `Q4` are exempt from DL009 for the same reason as `S3`: they collide with calendar quarters (`Q3 launch`, `Q4 target`), a phrase this org's roadmap and marketing prose uses routinely, and no pattern separates a quarter reference from a low-numbered `Q`-item id. Standards-gap ids from `Q5` upward are still caught, including when a real id shares a line with an exempt low-numbered form — e.g. "the Q3 push covers the Q52 fix" still flags `Q52`. `DEP-<n>` (dependency-policy ids) is a different id shape, filed in the affected repo rather than a private tracker, and is out of scope for DL009.
 
 ### Why DL011 never fails
 
