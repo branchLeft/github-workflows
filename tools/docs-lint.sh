@@ -172,6 +172,26 @@ report() { # rule file line message matched-text
   fi
 }
 
+# Blank every span an ERE ($2) matches out of text ($1), replacing each with
+# spaces of the same length so match offsets earlier in the same line stay
+# valid. Blanking by position (not by searching for the matched text again)
+# matters: a text-search removal can strip the wrong occurrence of that text
+# (e.g. blanking "S3" must never eat the "S3" inside "S30"). LC_ALL=C is
+# forced so grep's byte offsets and bash's substring indexing agree on
+# multibyte content — under a UTF-8 locale they diverge (grep counts bytes,
+# bash counts characters) and offsets silently misalign.
+blank_spans() { # text except -> blanked text on stdout
+  local text="$1" except="$2" reduced off span len
+  export LC_ALL=C
+  reduced="$text"
+  while IFS=: read -r off span; do
+    [ -n "$off" ] || continue
+    len=${#span}
+    reduced="${reduced:0:off}$(printf '%*s' "$len" '')${reduced:off+len}"
+  done < <(printf '%s\n' "$text" | grep -boE "$except")
+  printf '%s' "$reduced"
+}
+
 # rule, file-list, match-ere, except-ere (or ""), extractor, message
 run_rule() {
   local rule="$1" list="$2" match="$3" except="$4" extractor="$5" msg="$6"
@@ -183,17 +203,13 @@ run_rule() {
     if [ -n "$except" ]; then
       # Whole-line exclusion would drop a real hit that merely shares a line
       # with an exempted token, so each candidate line is re-tested with its
-      # exempted spans subtracted first: only a line that still matches
+      # exempted spans blanked out first: only a line that still matches
       # afterwards is a genuine hit.
       hits=""
       while IFS= read -r h; do
         [ -n "$h" ] || continue
         ln=${h%%:*}; text=${h#*:}
-        local reduced="$text" occ
-        while IFS= read -r occ; do
-          [ -n "$occ" ] || continue
-          reduced=${reduced/"$occ"/}
-        done < <(printf '%s\n' "$text" | grep -oE "$except")
+        reduced=$(blank_spans "$text" "$except")
         printf '%s\n' "$reduced" | grep -qE "$match" && hits="$hits$h"$'\n'
       done < <(grep -nE "$match" "$scan")
     else
@@ -210,6 +226,34 @@ run_rule() {
 }
 
 # ---------------------------------------------------------------------------
+# Content rules
+# ---------------------------------------------------------------------------
+NAME_MATCH="\\bRob\\b|\\bRob's\\b|\\bRobert\\b"
+# Case-sensitive by design: it must not match rob@branchleft.co.uk, which is an
+# operational value runbooks legitimately carry. \b rejects Roboto, robots,
+# robust, probably, problem.
+GATE_MATCH="\\bRob-(only|gated)\\b"
+
+# `S3` is deliberately exempt: in this corpus it is both an AWS service and a
+# real story id, and no pattern separates them. Missing the occasional story
+# S3 costs far less than 60 false positives teaching people to ignore the
+# linter. Story ids S7 upward are still caught. `Q1`-`Q4` get the same
+# exemption for the same reason: calendar quarters in roadmap and marketing
+# prose collide with the low end of the Q-item id space.
+DL009_MATCH="\\bS[0-9]{1,3}\\b|\\bB[0-9]{1,3}\\b|\\bQ[0-9]{1,3}\\b"
+DL009_EXCEPT="\\bS3\\b|S3-|\\bB[0-9]+(GB|MB|KB|Gi|Mi|B)\\b|\\bQ[1-4]\\b"
+
+# Test-only escape hatch: `DOCS_LINT_SOURCE_ONLY=1 source docs-lint.sh` runs
+# everything above (option parsing, the git-root check, blank_spans/run_rule's
+# own definitions, and the match/except constants) and returns before any
+# file is scanned, so docs-lint.test.sh can call blank_spans directly against
+# the real patterns and assert on its output instead of only on a rule's
+# final verdict.
+if [ "${DOCS_LINT_SOURCE_ONLY:-0}" = "1" ]; then
+  return 0 2>/dev/null || exit 0
+fi
+
+# ---------------------------------------------------------------------------
 # DL000 — a suppression with no rule id or no reason
 # ---------------------------------------------------------------------------
 while IFS= read -r file; do
@@ -222,29 +266,13 @@ while IFS= read -r file; do
   done <<< "$hits"
 done < <(cat "$TMPDIR_LINT/md" "$TMPDIR_LINT/code")
 
-# ---------------------------------------------------------------------------
-# Content rules
-# ---------------------------------------------------------------------------
-NAME_MATCH="\\bRob\\b|\\bRob's\\b|\\bRobert\\b"
-# Case-sensitive by design: it must not match rob@branchleft.co.uk, which is an
-# operational value runbooks legitimately carry. \b rejects Roboto, robots,
-# robust, probably, problem.
-GATE_MATCH="\\bRob-(only|gated)\\b"
-
 for scope in md code; do
   ext=md_scannable; [ "$scope" = "code" ] && ext=code_scannable
   run_rule DL002 "$TMPDIR_LINT/$scope" "$GATE_MATCH" "" "$ext" \
     "process gating names a person; use a role (platform owner / repo admin / operator)"
   run_rule DL001 "$TMPDIR_LINT/$scope" "$NAME_MATCH" "$GATE_MATCH" "$ext" \
     "names a person; state the decision itself, or use a role noun"
-  # `S3` is deliberately exempt: in this corpus it is both an AWS service and a
-  # real story id, and no pattern separates them. Missing the occasional story
-  # S3 costs far less than 60 false positives teaching people to ignore the
-  # linter. Story ids S7 upward are still caught. `Q1`-`Q4` get the same
-  # exemption for the same reason: calendar quarters in roadmap and marketing
-  # prose collide with the low end of the Q-item id space.
-  run_rule DL009 "$TMPDIR_LINT/$scope" "\\bS[0-9]{1,3}\\b|\\bB[0-9]{1,3}\\b|\\bQ[0-9]{1,3}\\b" \
-    "\\bS3\\b|S3-|\\bB[0-9]+(GB|MB|KB|Gi|Mi|B)\\b|\\bQ[1-4]\\b" \
+  run_rule DL009 "$TMPDIR_LINT/$scope" "$DL009_MATCH" "$DL009_EXCEPT" \
     "$ext" "story, backlog or standards-gap id; describe the change, not the ticket"
 done
 

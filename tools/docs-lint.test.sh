@@ -21,6 +21,16 @@ git config user.name test
 PASS=0
 FAIL=0
 
+# The real DL009 except pattern, read out of the script itself (not
+# retyped here) so a future edit to the pattern can't silently desync from
+# what assert_blank below actually exercises.
+DL009_EXCEPT_LIVE=$(
+  cd "$WORK" || exit 2
+  set --
+  DOCS_LINT_SOURCE_ONLY=1 source "$LINT" >/dev/null 2>&1
+  printf '%s' "$DL009_EXCEPT"
+)
+
 # case name, fixture content, rule id, expect-rule-flagged (yes|no), expect-exit (0|1)
 # The fixture extension is chosen by rule: DL001/DL008 only scan comment
 # lines (code_scannable), the rest scan markdown prose.
@@ -64,6 +74,34 @@ case_rule() {
 case_() {
   local name="$1" content="$2" expect_dl009="$3" expect_exit="$4"
   case_rule "$name" "$content" DL009 "$expect_dl009" "$expect_exit"
+}
+
+# Whitebox: assert on blank_spans' own output, not just a rule's final
+# verdict. This matters because the final verdict alone cannot distinguish a
+# genuinely span-aware exclusion from a text-search removal that happens to
+# self-heal for today's except patterns (every one of which is a literal
+# prefix of the id family it collides with) -- it would only diverge on a
+# future except pattern that isn't a prefix, by which point a verdict-only
+# test suite would already be lying green. Sourcing with
+# DOCS_LINT_SOURCE_ONLY=1 runs the real docs-lint.sh up through blank_spans'
+# definition and returns before it touches any file, so this calls the
+# actual production function, not a reimplementation that could drift from it.
+assert_blank() {
+  local name="$1" text="$2" except="$3" expected="$4"
+  local got
+  got=$(
+    cd "$WORK" || exit 2
+    set --
+    DOCS_LINT_SOURCE_ONLY=1 source "$LINT" >/dev/null 2>&1
+    blank_spans "$text" "$except"
+  )
+  if [ "$got" = "$expected" ]; then
+    PASS=$((PASS + 1))
+    echo "ok   $name"
+  else
+    FAIL=$((FAIL + 1))
+    echo "FAIL: $name -- expected [$expected], got [$got]"
+  fi
 }
 
 # --- Q<n> is now caught, like S<n> and B<n> ---------------------------------
@@ -138,6 +176,33 @@ case_rule "DL001: 'Rob-gated' alone (no bare 'Rob') stays exempt from DL001" \
 case_rule "DL008: 'round 3 trip' alone (no other process narration) stays exempt" \
   $'#!/bin/bash\n# scheduling happens in round 3 trip order for delivery batches' \
   DL008 no 0
+
+# --- Whitebox: exemption removal is by matched position, not matched text --
+# The real hazard here is an exempt token that is a *prefix* of the real id
+# on the same line: a text-search removal strips the first literal
+# occurrence of the exempted string, which for a prefix pair lands inside
+# the real id rather than on the exempted token itself.
+assert_blank \
+  "blank_spans: exempt S3 removed from its own span, not from inside S30" \
+  "S30 uses S3 storage" "$DL009_EXCEPT_LIVE" \
+  "S30 uses    storage"
+
+assert_blank \
+  "blank_spans: exempt Q1 removed from its own span, not from inside Q10" \
+  "Q10 tracked in Q1" "$DL009_EXCEPT_LIVE" \
+  "Q10 tracked in   "
+
+# The verdict-level case still matters as an end-to-end check, but on its
+# own it cannot tell a genuinely span-aware removal from a text-search
+# removal that happens to self-heal for a prefix pair -- that's exactly what
+# the two assert_blank cases above are for.
+case_rule "DL009: S30 the real id is still caught when S3 shares its line" \
+  "S30 uses S3 storage." \
+  DL009 yes 1
+
+case_rule "DL009: Q10 the real id is still caught when Q1 shares its line" \
+  "Q10 tracked in Q1." \
+  DL009 yes 1
 
 # --- GITHUB_ACTIONS annotation format ---------------------------------------
 # The report() branch every consuming repo's Actions run actually renders.
