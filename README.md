@@ -64,7 +64,7 @@ jobs:
   graphify:
     permissions:
       contents: write
-    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.6
+    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.7
     secrets: inherit
 ```
 
@@ -89,7 +89,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
-    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.6
+    uses: branchLeft/github-workflows/.github/workflows/graphify.yml@v1.0.7
     with:
       publish: pull-request
     secrets: inherit
