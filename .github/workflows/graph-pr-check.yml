@@ -10,7 +10,10 @@ name: graph-pr-check (reusable)
 # triggered a different way: the *caller* listens for the completion of the
 # repo's own `graphify` workflow run (a `workflow_run` event, which is not
 # subject to that restriction, because the completing run was itself started
-# by an ordinary push), then calls this with the commit the graph PR sits on.
+# by an ordinary push), then calls this with the commit that triggered that
+# run. `tools/graph-pr-resolve.sh` turns that into the open graph PR it
+# belongs to — see its header for why that match is on `baseRefOid`, not
+# `headRefOid`.
 #
 # What it checks mirrors the shape the org's `--admin` merge authorisation
 # already covers: bot author, the `graphify` head branch, the `chore(graphify)`
@@ -76,16 +79,23 @@ jobs:
         run: |
           set -eu
 
-          # The branch is force-rebuilt and may have moved past $SHA by the
-          # time this runs. Matching on headRefOid rather than trusting "the
-          # open PR on this branch" pins the status to the exact commit this
-          # run was asked about, so a status never lands on a commit nobody
-          # verified.
-          PR_JSON=$(gh pr list --repo "$REPO" --head graphify --state open \
-            --json number,title,author,headRefName,headRefOid,baseRefName,state,isCrossRepository,files \
-            --jq "[.[] | select(.headRefOid == \"$SHA\")] | .[0] // empty")
+          # $SHA (workflow_run.head_sha) is the commit that TRIGGERED the
+          # parent graphify run — a commit on the default branch — never a
+          # commit the run goes on to create on the graphify branch. That
+          # run's `pull-request` publish mode force-rebuilds graphify from
+          # exactly that triggering commit every time, so it always equals
+          # the open PR's baseRefOid, never its headRefOid. See the header
+          # comment in graph-pr-resolve.sh for why, and
+          # graph-pr-resolve.test.sh for the pinned regression case.
+          PR_LIST=$(gh pr list --repo "$REPO" --head graphify --state open \
+            --json number,title,author,headRefName,headRefOid,baseRefName,baseRefOid,state,isCrossRepository,files)
 
-          if [ -z "$PR_JSON" ]; then
+          set +e
+          PR_JSON=$(printf '%s' "$PR_LIST" | .graph-pr-check/tools/graph-pr-resolve.sh "$SHA")
+          RESOLVE_RC=$?
+          set -e
+
+          if [ "$RESOLVE_RC" -ne 0 ] || [ -z "$PR_JSON" ]; then
             echo "No open graph PR at ${SHA} — superseded or already merged. Nothing to report."
             exit 0
           fi
