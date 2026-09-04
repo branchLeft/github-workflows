@@ -1,0 +1,19 @@
+version: 2
+
+updates:
+  # Reusable workflows in .github/workflows, and the actions they use
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      github-actions-minor-and-patch:
+        applies-to: version-updates
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+      - github-actions
