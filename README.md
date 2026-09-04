@@ -152,6 +152,59 @@ snapshot into `graphify-out/<date>/` protects an un-reproducible local build,
 but in CI the previous graph is already in git history, so each snapshot is a
 duplicate copy of the graph added to the repo on every day it changes.
 
+### `graph-pr-check.yml`
+
+Posts a commit status onto `graphify.yml`'s own `chore(graphify)` pull
+requests, so a graph PR carries a check that actually reports instead of
+sitting on a required check that never runs.
+
+**Why it needs its own trigger.** `graphify.yml` in `pull-request` publish
+mode opens its PR with `GITHUB_TOKEN`, and GitHub does not start new
+`push`/`pull_request`-triggered workflow runs for events raised by that
+token — see **Publish modes** above. A required check declared the normal
+way therefore never fires on these PRs. This workflow is triggered instead
+by the completion of the repo's own `graphify` workflow run — a
+`workflow_run` event, which is not subject to that restriction because the
+completing run was itself started by an ordinary push to the default branch.
+
+**What it checks** mirrors the shape that makes a graph PR safe to merge
+without full review: bot author, the `graphify` head branch, the base
+branch, the `chore(graphify)` title, and — the substantive part — a diff
+confined to `graphify-out/`. That last check is what stops a graph PR
+smuggling a source change through a merge path that otherwise skips review.
+The check logic lives in [`tools/graph-pr-check.sh`](tools/graph-pr-check.sh)
+so it can be run and tested directly, outside CI; its cases are exercised by
+[`tools/graph-pr-check.test.sh`](tools/graph-pr-check.test.sh).
+
+**Caller usage** — add to the target repo as
+`.github/workflows/graph-pr-check.yml`, alongside its existing
+`graphify.yml` (only meaningful where that repo runs `graphify.yml` in
+`publish: pull-request` mode):
+
+```yaml
+name: graph-pr-check
+
+on:
+  workflow_run:
+    workflows: ["graphify"]
+    types: [completed]
+
+jobs:
+  graph-pr-check:
+    permissions:
+      pull-requests: read
+      statuses: write
+    uses: branchLeft/github-workflows/.github/workflows/graph-pr-check.yml@v1.0.7
+    with:
+      head-sha: ${{ github.event.workflow_run.head_sha }}
+```
+
+The commit status context defaults to `graph-pr-check`; a caller that needs a
+different name for its branch ruleset can override it with a `status-context`
+input. Adopting this in a repo also means adding `graph-pr-check` as a
+required status check on that repo's default-branch ruleset — a ruleset
+change is owner-only and outside what this workflow does on its own.
+
 ### `docs-lint.yml`
 
 Enforces the mechanical parts of the org documentation standard over markdown
