@@ -1,0 +1,109 @@
+name: graph-pr-check (reusable)
+
+# Posts a commit status onto CI's own `chore(graphify)` pull requests, callable
+# from any branchLeft-owned repo via `workflow_call`.
+#
+# Those PRs are opened with `GITHUB_TOKEN`, and GitHub does not start new
+# `push`/`pull_request`-triggered workflow runs for events raised by that
+# token — so a required check declared with either trigger never fires on
+# them, and they can only be merged with a ruleset bypass. This workflow is
+# triggered a different way: the *caller* listens for the completion of the
+# repo's own `graphify` workflow run (a `workflow_run` event, which is not
+# subject to that restriction, because the completing run was itself started
+# by an ordinary push), then calls this with the commit the graph PR sits on.
+#
+# What it checks mirrors the shape the org's `--admin` merge authorisation
+# already covers: bot author, the `graphify` head branch, the `chore(graphify)`
+# title, and — the substantive part — a diff confined to `graphify-out/`. That
+# last check is what stops a graph PR smuggling a source change through a
+# merge path that otherwise skips review. The check logic lives in
+# `tools/graph-pr-check.sh` so it can be exercised directly, outside CI.
+#
+# Caller usage (in the target repo, alongside its existing graphify.yml):
+#
+#   name: graph-pr-check
+#
+#   on:
+#     workflow_run:
+#       workflows: ["graphify"]
+#       types: [completed]
+#
+#   jobs:
+#     graph-pr-check:
+#       permissions:
+#         pull-requests: read
+#         statuses: write
+#       uses: branchLeft/github-workflows/.github/workflows/graph-pr-check.yml@v1.0.7
+#       with:
+#         head-sha: ${{ github.event.workflow_run.head_sha }}
+
+on:
+  workflow_call:
+    inputs:
+      head-sha:
+        description: "Commit to evaluate and post the status against (the completed workflow run's head_sha)"
+        type: string
+        required: true
+      status-context:
+        description: "Commit status context name — must match the required check name configured on the branch"
+        type: string
+        default: "graph-pr-check"
+
+permissions:
+  pull-requests: read
+  statuses: write
+
+jobs:
+  graph-pr-check:
+    runs-on: ubuntu-latest
+    steps:
+      # Own tooling, not the caller's — the script this job runs never lives
+      # in the calling repo, so it is fetched from the exact commit this
+      # reusable workflow was called at (never a tag: see docs-lint.yml).
+      - name: Checkout graph-pr-check tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/github-workflows
+          ref: ${{ github.job_workflow_sha }}
+          path: .graph-pr-check
+
+      - name: Evaluate and report
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ inputs.head-sha }}
+          CONTEXT: ${{ inputs.status-context }}
+        run: |
+          set -eu
+
+          # The branch is force-rebuilt and may have moved past $SHA by the
+          # time this runs. Matching on headRefOid rather than trusting "the
+          # open PR on this branch" pins the status to the exact commit this
+          # run was asked about, so a status never lands on a commit nobody
+          # verified.
+          PR_JSON=$(gh pr list --repo "$REPO" --head graphify --state open \
+            --json number,title,author,headRefName,headRefOid,baseRefName,state,isCrossRepository,files \
+            --jq "[.[] | select(.headRefOid == \"$SHA\")] | .[0] // empty")
+
+          if [ -z "$PR_JSON" ]; then
+            echo "No open graph PR at ${SHA} — superseded or already merged. Nothing to report."
+            exit 0
+          fi
+
+          set +e
+          RESULT=$(printf '%s' "$PR_JSON" | .graph-pr-check/tools/graph-pr-check.sh)
+          RC=$?
+          set -e
+
+          echo "$RESULT"
+          if [ "$RC" -eq 0 ]; then
+            STATE="success"
+          else
+            STATE="failure"
+          fi
+          DESC=$(printf '%s' "$RESULT" | cut -c1-140)
+
+          gh api "repos/${REPO}/statuses/${SHA}" \
+            -f state="$STATE" \
+            -f context="$CONTEXT" \
+            -f description="$DESC"
