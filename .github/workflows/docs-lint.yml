@@ -30,6 +30,10 @@ permissions:
 jobs:
   docs-lint:
     runs-on: ubuntu-latest
+    # Observed 0.2-0.63min p95 across 60 caller runs (shared-infra,
+    # ghost-platform, website, components; 15 each) plus one 7.35min outlier —
+    # headroom set above that outlier, not just the p95.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
