@@ -39,6 +39,7 @@ Scope is `md` (markdown, fenced code blocks excluded), `code` (comment lines onl
 | DL009 | both | Story, backlog and standards-gap ids (`S10`, `B22`, `Q52`) | Describe the change, not the ticket |
 | DL010 | md | Links that escape the repo root, or point at a file that doesn't exist | Use an absolute GitHub URL for cross-repo references |
 | DL011 | code | Comment blocks of 7+ lines | **Advisory only, never fails** — see below |
+| DL012 | code | `owner/repo#N` work-item references (`branchLeft/ghost-platform#139`) | Put the reference in the PR body or a doc; state the constraint in the comment |
 
 ### Why DL001 is case-sensitive
 
@@ -55,6 +56,14 @@ Scope is `md` (markdown, fenced code blocks excluded), `code` (comment lines onl
 ### Why DL011 never fails
 
 The standard says a long comment is *usually* a document in the wrong file. "Usually" is a review judgement, not something a regex can settle — some infrastructure comments genuinely need six lines to explain a constraint. DL011 emits a notice with the block length so the backlog stays visible, and a reviewer decides. The test to apply: if an operator would ever follow it as a procedure, it is a runbook, not a comment.
+
+### Why DL012 is code-only, and fires on the *correct* reference form too
+
+DL009 catches the id shape the estate retired. It has no opinion on the shape that replaced it — `owner/repo#N` — so a comment built entirely from the correct, current identifier passes every gate. DL012 closes that: it matches `owner/repo#N` in a source comment and fails, regardless of whether the reference itself is well-formed, because the standard's comment-style rule doesn't carve out an exception for a correctly-shaped ticket id — a comment states what the code itself cannot, never development-process context, and a work-item reference is process context by definition. The fix is never "use the other id form"; it's moving the reference to the PR body or a doc and leaving the comment to state the constraint on its own.
+
+This is why DL012 has no `md` scope, unlike DL009. `owner/repo#N` is the standard's own mandated, correct form for a reference in commit messages, PR bodies and Markdown prose — flagging it there would be flagging correct usage. The rule only has anything to say about comments in source.
+
+A bare `#N` is deliberately not matched, for the same reason `S3` and `Q1`-`Q4` are carved out of DL009: it collides with far too much (CSS ids, shell `$#`, port numbers, markdown footnotes) for a regex to separate a real reference from noise. The false negative is accepted; a rule people learn to ignore is worse than one with a known gap.
 
 ## Suppressing a finding
 

@@ -32,14 +32,22 @@ DL009_EXCEPT_LIVE=$(
 )
 
 # case name, fixture content, rule id, expect-rule-flagged (yes|no), expect-exit (0|1)
-# The fixture extension is chosen by rule: DL001/DL008 only scan comment
-# lines (code_scannable), the rest scan markdown prose.
+# The fixture extension is chosen by rule: DL001/DL008/DL012 only scan
+# comment lines (code_scannable), the rest scan markdown prose.
 case_rule() {
   local name="$1" content="$2" rule="$3" expect_flag="$4" expect_exit="$5"
   local file="fixture.md"
   case "$rule" in
-    DL001|DL008) file="fixture.sh" ;;
+    DL001|DL008|DL012) file="fixture.sh" ;;
   esac
+  case_file "$name" "$file" "$content" "$rule" "$expect_flag" "$expect_exit"
+}
+
+# Same assertion as case_rule, but with an explicit fixture filename instead
+# of one derived from the rule id -- needed to pin a rule's scope itself,
+# e.g. proving DL012 does *not* fire on the same content in a .md file.
+case_file() {
+  local name="$1" file="$2" content="$3" rule="$4" expect_flag="$5" expect_exit="$6"
   printf '%s\n' "$content" > "$file"
   local out rc
   # Force docs-lint.sh's plain-text report format regardless of the ambient
@@ -203,6 +211,34 @@ case_rule "DL009: S30 the real id is still caught when S3 shares its line" \
 case_rule "DL009: Q10 the real id is still caught when Q1 shares its line" \
   "Q10 tracked in Q1." \
   DL009 yes 1
+
+# --- DL012: owner/repo#N in a source comment ------------------------------
+# The fixture below is a comment that DL009, DL007, DL008 and DL001 each
+# return zero matches against, which is exactly the coverage gap DL012
+# closes: an owner/repo#N reference is the one ticket-reference shape none
+# of the existing rules were watching for.
+case_rule "DL012: owner/repo#N reference in a shell comment is flagged" \
+  $'#!/bin/bash\n# branchLeft/ghost-platform#139: pasted verbatim into two runbooks\x27 fenced commands' \
+  DL012 yes 1
+
+case_file "DL012: the same owner/repo#N reference in a YAML comment is flagged" \
+  "fixture.yml" \
+  $'name: example\n# branchLeft/workspace#323: tracked here rather than restated' \
+  DL012 yes 1
+
+# --- DL012 false-positive guards --------------------------------------------
+case_file "DL012: owner/repo#N in a Markdown document is NOT flagged (correct home)" \
+  "fixture.md" \
+  "See branchLeft/ghost-platform#139 for the full write-up." \
+  DL012 no 0
+
+case_rule "DL012: owner/repo#N inside a string literal (not a comment line) is NOT flagged" \
+  $'#!/bin/bash\nURL="https://github.com/branchLeft/ghost-platform/issues/139"\necho "see branchLeft/ghost-platform#139"' \
+  DL012 no 0
+
+case_rule "DL012: a bare, unqualified #N is deliberately out of scope" \
+  $'#!/bin/bash\n# see #64 for context' \
+  DL012 no 0
 
 # --- GITHUB_ACTIONS annotation format ---------------------------------------
 # The report() branch every consuming repo's Actions run actually renders.
