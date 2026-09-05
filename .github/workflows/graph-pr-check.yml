@@ -59,6 +59,10 @@ permissions:
 jobs:
   graph-pr-check:
     runs-on: ubuntu-latest
+    # No caller wired up yet anywhere in the fleet (added 2026-09-04) — zero
+    # runs to sample. Deliberately generous vs. the similarly-lean
+    # docs-lint/graphify reusable jobs (10-15min on real data), not observed.
+    timeout-minutes: 20
     steps:
       # Own tooling, not the caller's — the script this job runs never lives
       # in the calling repo, so it is fetched from the exact commit this

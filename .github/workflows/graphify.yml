@@ -60,6 +60,9 @@ concurrency:
 jobs:
   graphify:
     runs-on: ubuntu-latest
+    # Observed 0.37-0.75min p95 0.63min across 60 caller runs (shared-infra,
+    # ghost-platform, website, components; 15 each).
+    timeout-minutes: 10
     steps:
       # Checked before extraction so a typo fails in seconds rather than after
       # a full paid Gemini run.
