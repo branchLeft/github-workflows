@@ -194,7 +194,7 @@ jobs:
     permissions:
       pull-requests: read
       statuses: write
-    uses: branchLeft/github-workflows/.github/workflows/graph-pr-check.yml@v1.0.7
+    uses: branchLeft/github-workflows/.github/workflows/graph-pr-check.yml@v1.0.8
     with:
       head-sha: ${{ github.event.workflow_run.head_sha }}
 ```
