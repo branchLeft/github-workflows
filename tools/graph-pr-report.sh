@@ -26,7 +26,8 @@
 # at $SHA — a superseded or already-merged PR is not a failure. Exits
 # non-zero only when it could not do its job at all. The check's own verdict
 # is carried by the status, not by this script's exit code, because the job
-# running it is a `workflow_run` job whose conclusion appears on no PR.
+# running it is a `workflow_run` job whose conclusion appears on no PR — so
+# a red job here means "no verdict was reached", never "the PR failed".
 
 set -uo pipefail
 
@@ -45,9 +46,22 @@ PR_LIST=$(gh pr list --repo "$REPO" --head graphify --state open \
 PR_JSON=$(printf '%s' "$PR_LIST" | "$HERE/graph-pr-resolve.sh" "$SHA")
 RESOLVE_RC=$?
 
-if [ "$RESOLVE_RC" -ne 0 ] || [ -z "$PR_JSON" ]; then
+# Exit 1 is the resolver's "no open PR matches this sha", which is an ordinary
+# outcome — the PR was superseded by a newer force-rebuild, or already merged.
+# Every other non-zero means it could not answer at all: exit 2 for JSON it
+# could not parse (a `gh pr list` that returned an error object rather than an
+# array), or 126/127 for a missing script or a runner without `jq`. Folding
+# those into "nothing to report" would print a sentence that is false about
+# what happened and leave the job green — the same observable state as the
+# defect this file exists to fix, reached by a different route.
+if [ "$RESOLVE_RC" -eq 1 ]; then
   echo "No open graph PR at ${SHA} — superseded or already merged. Nothing to report."
   exit 0
+fi
+
+if [ "$RESOLVE_RC" -ne 0 ] || [ -z "$PR_JSON" ]; then
+  echo "graph-pr-report: graph-pr-resolve.sh could not answer (exit ${RESOLVE_RC}) — no verdict was reached for ${SHA}" >&2
+  exit 1
 fi
 
 RESULT=$(printf '%s' "$PR_JSON" | "$HERE/graph-pr-check.sh")
