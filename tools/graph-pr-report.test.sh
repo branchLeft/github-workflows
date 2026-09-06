@@ -184,6 +184,36 @@ run_report "$NO_HEAD_PR" "$BASE_SHA"
 check "no-head-oid/exit-code"           "1"   "$RC"
 check "no-head-oid/no-api-call"         "0"   "$(api_calls)"
 
+# --- a check script that cannot run posts a red that says so --------------
+# Run a copy of the tools directory whose graph-pr-check.sh is not executable:
+# exit 127, no output. A bare red reads as "this PR is ineligible", which is a
+# different claim from "the check could not run".
+mkdir -p "$TMP/tools"
+cp "$HERE/graph-pr-report.sh" "$HERE/graph-pr-resolve.sh" "$HERE/graph-pr-check.sh" "$TMP/tools/"
+chmod -x "$TMP/tools/graph-pr-check.sh"
+SAVED_REPORT="$REPORT"
+REPORT="$TMP/tools/graph-pr-report.sh"
+run_report "$ONE_CLEAN_PR" "$BASE_SHA"
+check "check-unrunnable/state-failure"  "yes" "$(has_arg 'state=failure')"
+check "check-unrunnable/says-why"       "yes" "$(has_arg 'description=FAIL: graph-pr-check.sh produced no output (exit 126) — the check could not be run')"
+check "check-unrunnable/posts-to-head"  "yes" "$(has_arg "$STATUS_URL")"
+
+# A check that exits 0 saying nothing is the case that isolates the
+# empty-result rule. The unrunnable case above cannot: its exit code is
+# already non-zero, so it reads failure with or without the emptiness test —
+# it passed unchanged when that test was deliberately removed. Only a silent
+# SUCCESS distinguishes them.
+cat > "$TMP/tools/graph-pr-check.sh" <<'SILENT'
+#!/usr/bin/env bash
+exit 0
+SILENT
+chmod +x "$TMP/tools/graph-pr-check.sh"
+run_report "$ONE_CLEAN_PR" "$BASE_SHA"
+check "check-silent-success/is-failure" "yes" "$(has_arg 'state=failure')"
+check "check-silent-success/not-success" "no" "$(has_arg 'state=success')"
+check "check-silent-success/says-why"   "yes" "$(has_arg 'description=FAIL: graph-pr-check.sh produced no output (exit 0) — the check could not be run')"
+REPORT="$SAVED_REPORT"
+
 # --- a failed POST must not be reported as a posted status ----------------
 export STUB_API_RC=1
 run_report "$ONE_CLEAN_PR" "$BASE_SHA"

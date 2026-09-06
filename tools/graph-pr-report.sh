@@ -68,10 +68,19 @@ RESULT=$(printf '%s' "$PR_JSON" | "$HERE/graph-pr-check.sh")
 RC=$?
 
 echo "$RESULT"
-if [ "$RC" -eq 0 ]; then
+
+# A missing or non-executable graph-pr-check.sh exits 127 with no output. That
+# is already a failure, but posting it with an empty description puts a red on
+# the PR that says nothing about why — and "the check could not run" is a
+# different thing from "the PR is ineligible", which is what a bare red reads
+# as. An empty result is a failure whatever the exit code said.
+if [ "$RC" -eq 0 ] && [ -n "$RESULT" ]; then
   STATE="success"
 else
   STATE="failure"
+fi
+if [ -z "$RESULT" ]; then
+  RESULT="FAIL: graph-pr-check.sh produced no output (exit ${RC}) — the check could not be run"
 fi
 DESC=$(printf '%s' "$RESULT" | cut -c1-140)
 
