@@ -243,6 +243,13 @@ GATE_MATCH="\\bRob-(only|gated)\\b"
 DL009_MATCH="\\bS[0-9]{1,3}\\b|\\bB[0-9]{1,3}\\b|\\bQ[0-9]{1,3}\\b"
 DL009_EXCEPT="\\bS3\\b|S3-|\\bB[0-9]+(GB|MB|KB|Gi|Mi|B)\\b|\\bQ[1-4]\\b"
 
+# DL012 catches the *replacement* id shape for branchLeft's own items:
+# branchLeft/repo#N. Rationale, scope and known limitations: docs-lint-rules.md.
+# Scoped to the literal `branchLeft` owner, not any owner/repo#N: an upstream
+# reference (`actions/runner#1327`) is a workaround citation, not board
+# narration, and a generic owner/repo#N shape false-matches doc URL fragments.
+DL012_MATCH="\\bbranchLeft/[A-Za-z0-9._-]+#[0-9]+\\b"
+
 # Test-only escape hatch: `DOCS_LINT_SOURCE_ONLY=1 source docs-lint.sh` runs
 # everything above (option parsing, the git-root check, blank_spans/run_rule's
 # own definitions, and the match/except constants) and returns before any
@@ -290,6 +297,8 @@ run_rule DL008 "$TMPDIR_LINT/code" \
   "[Aa]dversarial review|\\bround [0-9]\\b|\\bper [A-Z][a-z]+'s .{0,30}decision|\\bas (discussed|agreed|we decided)\\b" \
   '\bround [0-9] (trip|robin)\b' code_scannable \
   "development-process narration in a comment"
+run_rule DL012 "$TMPDIR_LINT/code" "$DL012_MATCH" "" code_scannable \
+  "branchLeft/repo#N work-item reference in a comment; state the constraint, put the reference in the PR or a doc"
 
 # ---------------------------------------------------------------------------
 # DL010 — links must resolve inside the repo
