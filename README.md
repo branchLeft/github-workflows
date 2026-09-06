@@ -176,6 +176,20 @@ The check logic lives in [`tools/graph-pr-check.sh`](tools/graph-pr-check.sh)
 so it can be run and tested directly, outside CI; its cases are exercised by
 [`tools/graph-pr-check.test.sh`](tools/graph-pr-check.test.sh).
 
+**Which commit the status lands on.** Two different commits are in play, and
+the workflow reads one to find the other. The input it is called with is the
+completed run's `head_sha`, which is the commit on the default branch that
+triggered the parent `graphify` run — the PR's `baseRefOid`, never a commit
+on the `graphify` branch, which is why
+[`tools/graph-pr-resolve.sh`](tools/graph-pr-resolve.sh) matches on that
+field. The status is then posted to the resolved PR's own `headRefOid`,
+because GitHub evaluates a pull request's checks against its head commit and
+nothing else. Posting to the input sha instead put a green status on the
+default branch's merge commits and left every graph PR with zero statuses,
+so the sequence lives in [`tools/graph-pr-report.sh`](tools/graph-pr-report.sh)
+where [`tools/graph-pr-report.test.sh`](tools/graph-pr-report.test.sh) can
+pin it.
+
 **Caller usage** — add to the target repo as
 `.github/workflows/graph-pr-check.yml`, alongside its existing
 `graphify.yml` (only meaningful where that repo runs `graphify.yml` in
@@ -201,9 +215,14 @@ jobs:
 
 The commit status context defaults to `graph-pr-check`; a caller that needs a
 different name for its branch ruleset can override it with a `status-context`
-input. Adopting this in a repo also means adding `graph-pr-check` as a
-required status check on that repo's default-branch ruleset — a ruleset
-change is owner-only and outside what this workflow does on its own.
+input.
+
+**Posting a status is not gating on it.** Adopting this in a repo also means
+adding `graph-pr-check` as a required status check on that repo's
+default-branch ruleset — a ruleset change is owner-only and outside what this
+workflow does on its own. Until that is done the status reports on the PR and
+blocks nothing, and the workspace-root merge hook's `--admin` squash-merge
+still bypasses it regardless.
 
 ### `docs-lint.yml`
 
