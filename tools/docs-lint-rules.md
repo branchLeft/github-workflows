@@ -39,7 +39,7 @@ Scope is `md` (markdown, fenced code blocks excluded), `code` (comment lines onl
 | DL009 | both | Story, backlog and standards-gap ids (`S10`, `B22`, `Q52`) | Describe the change, not the ticket |
 | DL010 | md | Links that escape the repo root, or point at a file that doesn't exist | Use an absolute GitHub URL for cross-repo references |
 | DL011 | code | Comment blocks of 7+ lines | **Advisory only, never fails** — see below |
-| DL012 | code | `owner/repo#N` work-item references (`branchLeft/ghost-platform#139`) | Put the reference in the PR body or a doc; state the constraint in the comment |
+| DL012 | code | `branchLeft/repo#N` work-item references (`branchLeft/ghost-platform#139`) | Put the reference in the PR body or a doc; state the constraint in the comment |
 
 ### Why DL001 is case-sensitive
 
@@ -59,9 +59,20 @@ The standard says a long comment is *usually* a document in the wrong file. "Usu
 
 ### Why DL012 is code-only, and fires on the *correct* reference form too
 
-DL009 catches the id shape the estate retired. It has no opinion on the shape that replaced it — `owner/repo#N` — so a comment built entirely from the correct, current identifier passes every gate. DL012 closes that: it matches `owner/repo#N` in a source comment and fails, regardless of whether the reference itself is well-formed, because the standard's comment-style rule doesn't carve out an exception for a correctly-shaped ticket id — a comment states what the code itself cannot, never development-process context, and a work-item reference is process context by definition. The fix is never "use the other id form"; it's moving the reference to the PR body or a doc and leaving the comment to state the constraint on its own.
+DL009 catches the id shape the estate retired. It has no opinion on the shape that replaced it — `branchLeft/repo#N` — so a comment built entirely from the correct, current identifier passes every gate. DL012 closes that: it matches `branchLeft/repo#N` in a source comment and fails, regardless of whether the reference itself is well-formed, because the standard's comment-style rule doesn't carve out an exception for a correctly-shaped ticket id — a comment states what the code itself cannot, never development-process context, and a work-item reference is process context by definition. The fix is never "use the other id form"; it's moving the reference to the PR body or a doc and leaving the comment to state the constraint on its own.
 
-This is why DL012 has no `md` scope, unlike DL009. `owner/repo#N` is the standard's own mandated, correct form for a reference in commit messages, PR bodies and Markdown prose — flagging it there would be flagging correct usage. The rule only has anything to say about comments in source.
+This is why DL012 has no `md` scope, unlike DL009. `branchLeft/repo#N` is the standard's own mandated, correct form for a reference in commit messages, PR bodies and Markdown prose — flagging it there would be flagging correct usage. The rule only has anything to say about comments in source.
+
+### Known limitation: only the `branchLeft` owner is matched
+
+DL012 matches `branchLeft/<repo>#<n>`, not a generic `<owner>/<repo>#<n>`. Two reasons, both found by review rather than assumed up front:
+
+- **Upstream references are a different thing than board narration.** A comment citing a third-party issue to explain a workaround — `# workaround for actions/runner#1327, remove once upstream ships a fix` — is exactly the kind of constraint the code-comment standard asks for, not development-process narration about branchLeft's own board. A generic `owner/repo#N` match cannot tell that citation apart from a reference to branchLeft's own tracker, and the two call for opposite verdicts.
+- **A generic pattern also collides with ordinary URL fragments.** `word/word#digits` matches things like a documentation link's numbered anchor (`docs.example.com/guide/setup#42`) that have nothing to do with an issue reference at all.
+
+Restricting the owner to the literal, case-sensitive string `branchLeft` — matching this org's own naming convention (`## Naming repos and PRs`: a repo is always `org/full-name`, and every reference is `org/repo#N`, and every one of them is `branchLeft/...`) — resolves both: an upstream citation and a URL fragment never start with that literal, so neither false-matches, and every real branchLeft board reference still does.
+
+### Known limitation: a bare `#N`
 
 A bare `#N` is deliberately not matched, for the same reason `S3` and `Q1`-`Q4` are carved out of DL009: it collides with far too much (CSS ids, shell `$#`, port numbers, markdown footnotes) for a regex to separate a real reference from noise. The false negative is accepted; a rule people learn to ignore is worse than one with a known gap.
 

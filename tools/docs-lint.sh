@@ -243,18 +243,12 @@ GATE_MATCH="\\bRob-(only|gated)\\b"
 DL009_MATCH="\\bS[0-9]{1,3}\\b|\\bB[0-9]{1,3}\\b|\\bQ[0-9]{1,3}\\b"
 DL009_EXCEPT="\\bS3\\b|S3-|\\bB[0-9]+(GB|MB|KB|Gi|Mi|B)\\b|\\bQ[1-4]\\b"
 
-# DL012 catches the *replacement* id shape: owner/repo#N, the only form the
-# work-tracking standard now mints. It is deliberately code-scope only and
-# has no md counterpart -- owner/repo#N is the correct, expected home for a
-# reference in commit messages, PR bodies and Markdown prose, and is not a
-# defect there. A bare `#N` is deliberately not matched: it collides with
-# CSS ids, shell parameter expansion and much else, and no pattern separates
-# those from a real reference -- the same reasoning that keeps DL009 off S3
-# and Q1-Q4. Comments are excluded from carrying a work-item reference at
-# all (branchLeft's code-comment style: a comment states what the code
-# itself cannot, never development-process context), so this fires on a
-# correctly-formed reference exactly as readily as a malformed one.
-DL012_MATCH="\\b[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9._-]+#[0-9]+\\b"
+# DL012 catches the *replacement* id shape for branchLeft's own items:
+# branchLeft/repo#N. Rationale, scope and known limitations: docs-lint-rules.md.
+# Scoped to the literal `branchLeft` owner, not any owner/repo#N: an upstream
+# reference (`actions/runner#1327`) is a workaround citation, not board
+# narration, and a generic owner/repo#N shape false-matches doc URL fragments.
+DL012_MATCH="\\bbranchLeft/[A-Za-z0-9._-]+#[0-9]+\\b"
 
 # Test-only escape hatch: `DOCS_LINT_SOURCE_ONLY=1 source docs-lint.sh` runs
 # everything above (option parsing, the git-root check, blank_spans/run_rule's
@@ -304,7 +298,7 @@ run_rule DL008 "$TMPDIR_LINT/code" \
   '\bround [0-9] (trip|robin)\b' code_scannable \
   "development-process narration in a comment"
 run_rule DL012 "$TMPDIR_LINT/code" "$DL012_MATCH" "" code_scannable \
-  "owner/repo#N work-item reference in a comment; state the constraint, put the reference in the PR or a doc"
+  "branchLeft/repo#N work-item reference in a comment; state the constraint, put the reference in the PR or a doc"
 
 # ---------------------------------------------------------------------------
 # DL010 — links must resolve inside the repo

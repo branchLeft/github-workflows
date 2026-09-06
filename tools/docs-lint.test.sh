@@ -240,6 +240,14 @@ case_rule "DL012: a bare, unqualified #N is deliberately out of scope" \
   $'#!/bin/bash\n# see #64 for context' \
   DL012 no 0
 
+case_rule "DL012: an upstream owner/repo#N (not branchLeft) is a workaround citation, not flagged" \
+  $'#!/bin/bash\n# workaround for actions/runner#1327, remove once upstream ships a fix' \
+  DL012 no 0
+
+case_rule "DL012: a generic owner/repo#N URL fragment is not a work-item reference, not flagged" \
+  $'#!/bin/bash\n# see docs.example.com/guide/setup#42 for background' \
+  DL012 no 0
+
 # --- GITHUB_ACTIONS annotation format ---------------------------------------
 # The report() branch every consuming repo's Actions run actually renders.
 # The plain-text cases above force GITHUB_ACTIONS=false and would not catch a
