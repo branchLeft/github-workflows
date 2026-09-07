@@ -13,7 +13,9 @@ name: graph-pr-check (reusable)
 # by an ordinary push), then calls this with the commit that triggered that
 # run. `tools/graph-pr-resolve.sh` turns that into the open graph PR it
 # belongs to — see its header for why that match is on `baseRefOid`, not
-# `headRefOid`.
+# `headRefOid` — and the status is then posted to that PR's own
+# `headRefOid`, which is the only commit GitHub evaluates a PR's checks
+# against. Those are two different commits; see `tools/graph-pr-report.sh`.
 #
 # What it checks mirrors the shape the org's `--admin` merge authorisation
 # already covers: bot author, the `graphify` head branch, the `chore(graphify)`
@@ -36,7 +38,7 @@ name: graph-pr-check (reusable)
 #       permissions:
 #         pull-requests: read
 #         statuses: write
-#       uses: branchLeft/github-workflows/.github/workflows/graph-pr-check.yml@v1.0.8
+#       uses: branchLeft/github-workflows/.github/workflows/graph-pr-check.yml@v1.0.9
 #       with:
 #         head-sha: ${{ github.event.workflow_run.head_sha }}
 
@@ -44,7 +46,7 @@ on:
   workflow_call:
     inputs:
       head-sha:
-        description: "Commit to evaluate and post the status against (the completed workflow run's head_sha)"
+        description: "The completed workflow run's head_sha — the commit the graph PR is resolved FROM, not the commit the status is posted to"
         type: string
         required: true
       status-context:
@@ -59,9 +61,11 @@ permissions:
 jobs:
   graph-pr-check:
     runs-on: ubuntu-latest
-    # No caller wired up yet anywhere in the fleet (added 2026-09-04) — zero
-    # runs to sample. Deliberately generous vs. the similarly-lean
-    # docs-lint/graphify reusable jobs (10-15min on real data), not observed.
+    # Observed 0.15-0.20min over the first five real runs (shared-infra,
+    # 2026-09-05). Left generous rather than retuned to that: the job is two
+    # `gh` API calls, so anything approaching a minute means API trouble
+    # rather than work, and a tight bound would only convert a slow API into
+    # a red that says nothing about the PR being checked.
     timeout-minutes: 20
     steps:
       # Own tooling, not the caller's — the script this job runs never lives
@@ -80,44 +84,10 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ inputs.head-sha }}
           CONTEXT: ${{ inputs.status-context }}
-        run: |
-          set -eu
-
-          # $SHA (workflow_run.head_sha) is the commit that TRIGGERED the
-          # parent graphify run — a commit on the default branch — never a
-          # commit the run goes on to create on the graphify branch. That
-          # run's `pull-request` publish mode force-rebuilds graphify from
-          # exactly that triggering commit every time, so it always equals
-          # the open PR's baseRefOid, never its headRefOid. See the header
-          # comment in graph-pr-resolve.sh for why, and
-          # graph-pr-resolve.test.sh for the pinned regression case.
-          PR_LIST=$(gh pr list --repo "$REPO" --head graphify --state open \
-            --json number,title,author,headRefName,headRefOid,baseRefName,baseRefOid,state,isCrossRepository,files)
-
-          set +e
-          PR_JSON=$(printf '%s' "$PR_LIST" | .graph-pr-check/tools/graph-pr-resolve.sh "$SHA")
-          RESOLVE_RC=$?
-          set -e
-
-          if [ "$RESOLVE_RC" -ne 0 ] || [ -z "$PR_JSON" ]; then
-            echo "No open graph PR at ${SHA} — superseded or already merged. Nothing to report."
-            exit 0
-          fi
-
-          set +e
-          RESULT=$(printf '%s' "$PR_JSON" | .graph-pr-check/tools/graph-pr-check.sh)
-          RC=$?
-          set -e
-
-          echo "$RESULT"
-          if [ "$RC" -eq 0 ]; then
-            STATE="success"
-          else
-            STATE="failure"
-          fi
-          DESC=$(printf '%s' "$RESULT" | cut -c1-140)
-
-          gh api "repos/${REPO}/statuses/${SHA}" \
-            -f state="$STATE" \
-            -f context="$CONTEXT" \
-            -f description="$DESC"
+        # Resolves the open graph PR from $SHA and posts the verdict to that
+        # PR's own head commit — see the header of graph-pr-report.sh for why
+        # those are two different commits, and graph-pr-report.test.sh for the
+        # pinned regression case. The logic lives in a script so it can be
+        # exercised outside CI; inline in this step it could not be tested at
+        # all, which is how it shipped posting to the wrong commit.
+        run: .graph-pr-check/tools/graph-pr-report.sh

@@ -38,13 +38,23 @@ pr_at() { # baseRefOid headRefOid state -> one PR object
   }'
 }
 
-# name, pr-list json, sha to resolve, expect FOUND|EMPTY
+# name, pr-list json, sha to resolve, expect FOUND|EMPTY|ERROR
+#
+# EMPTY and ERROR are deliberately distinct. EMPTY (exit 1) means "no open PR
+# matches this sha", an ordinary outcome the caller reports as nothing to do.
+# ERROR (exit 2) means "this input is not a pull-request list", which the
+# caller must surface rather than silently treat as nothing to do -- otherwise
+# a failed `gh pr list` reads as a clean run.
 case_check() {
   local name="$1" list="$2" sha="$3" expect="$4"
   local out rc got
   out=$(printf '%s' "$list" | "$RESOLVE" "$sha" 2>&1)
   rc=$?
-  got="EMPTY"; [ "$rc" = "0" ] && got="FOUND"
+  case "$rc" in
+    0) got="FOUND" ;;
+    1) got="EMPTY" ;;
+    *) got="ERROR" ;;
+  esac
 
   if [ "$got" = "$expect" ]; then
     PASS=$((PASS + 1))
@@ -76,6 +86,14 @@ case_check "merged-pr-does-not-resolve" "$CLOSED_PR" "$BASE_SHA" EMPTY
 # matches, an older one that used to be current does not.
 STALE_BASE="1111111111111111111111111111111111111111"
 case_check "stale-base-does-not-resolve" "$ONE_OPEN_PR" "$STALE_BASE" EMPTY
+
+# Input that is not a PR list must be an ERROR, never an EMPTY. The second
+# case is the one that bites: `gh pr list` failing returns well-formed JSON,
+# so a bare "is this parseable" check passes it through and the whole run
+# reports "superseded or already merged" having examined nothing.
+case_check "not-json-is-an-error"        "not json at all" "$BASE_SHA" ERROR
+case_check "json-object-is-an-error"     '{"message":"Bad credentials"}' "$BASE_SHA" ERROR
+case_check "json-string-is-an-error"     '"hello"' "$BASE_SHA" ERROR
 
 echo
 echo "graph-pr-resolve tests: $PASS passed, $FAIL failed"

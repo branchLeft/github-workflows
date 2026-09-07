@@ -21,7 +21,10 @@
 # `pr-list.json` is the array `gh pr list --json
 # number,title,author,headRefName,headRefOid,baseRefName,baseRefOid,state,isCrossRepository,files`
 # returns. Prints the matched PR object and exits 0, or prints nothing and
-# exits 1 when no open PR's `baseRefOid` matches `<sha>`.
+# exits 1 when no open PR's `baseRefOid` matches `<sha>`. Exit 2 means the
+# input could not be read as a pull-request list at all -- a distinct outcome
+# from exit 1, because "I found nothing" and "I could not look" must not be
+# reported to a pull request as the same thing.
 
 set -uo pipefail
 
@@ -34,6 +37,17 @@ fi
 LIST=$(cat)
 echo "$LIST" | jq -e . >/dev/null 2>&1 || {
   echo "graph-pr-resolve: input is not valid JSON" >&2
+  exit 2
+}
+
+# Valid JSON is not enough. A failing `gh pr list` returns a well-formed
+# object -- {"message":"Bad credentials"} -- which parses, then makes the
+# select below fail at runtime with an empty result. That is indistinguishable
+# from "no open PR matches", so the caller reports "superseded or already
+# merged" and goes green having checked nothing. Reject anything that is not
+# an array here, so the caller sees an error it can report as one.
+echo "$LIST" | jq -e 'type == "array"' >/dev/null 2>&1 || {
+  echo "graph-pr-resolve: input is not a JSON array of pull requests" >&2
   exit 2
 }
 
