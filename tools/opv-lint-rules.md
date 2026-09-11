@@ -46,7 +46,7 @@ fence language, are structurally out of scope for that one rule.
 | ID | Scope | Catches | Fix |
 |---|---|---|---|
 | OPV000 | whole file | A suppression comment with no rule id or no reason | Write `opv-disable-next-line OPV001 <why>` |
-| OPV001 | whole file | A committed concrete operational value: an IPv4 literal or private subnet, or one of the estate's fixed operational hostnames (`edge1`/`app1`/`db1`/`mx1`) | Resolve it with a lookup (`hcloud server describe`, `pulumi stack output`, …) into an env var, don't commit the literal |
+| OPV001 | whole file | A committed concrete operational value: an IPv4 literal or private subnet, or one of the estate's fixed operational hostnames (`edge1`/`app1`/`db1`/`mx1`/`mon1`) | Resolve it with a lookup (`hcloud server describe`, `pulumi stack output`, …) into an env var, don't commit the literal |
 | OPV002 | `bash`/`sh`/`shell`/`console` fences only | An unsubstituted placeholder in a copy-pasteable command (`<edge1-ipv4>`, `<host>`, …) | Resolve it before committing, or restructure the step as a lookup |
 | OPV003 | whole file | A committed AWS-style access key id (`AKIA`/`ASIA` + 16 more characters) | `read -rs VAR; export VAR`, never the literal value |
 | OPV004 | whole file | A credential-shaped variable (`SECRET`, `PASSWORD`, `PASSPHRASE`, `ACCESS_KEY`, `PRIVATE_KEY`, `TOKEN`, `CREDENTIAL`, `API_KEY`, `ENCRYPTIONSALT` — matched case-insensitively, so `db_password`, `apiToken` and `DB_PASSWORD` all fire) assigned a literal instead of a variable reference | `read -rs VAR; export VAR`, then reference `$VAR` |
@@ -90,19 +90,38 @@ OPV002-vs-OPV001 split above.
   netmask-shape check**: `255.255.255.128` and other valid but less common
   netmasks still fire and need the same inline suppression as any other
   address.
-- **Hostname form**: `edge1`, `app1`, `db1`, `mx1` — this estate's own fixed,
-  small set of operational hostnames, word-bounded (`hetzner-edge1`
-  matches, `edge10` does not) and case-sensitive (these names are always
-  written lowercase). No FQDN form (`*.branchleft.co.uk`) is matched — the
-  runbooks that motivated this rule reference the estate exclusively by
-  bare short name, both in prose and as an `hcloud server describe <name>`
-  resource argument, never as a dotted domain. **Naming which host to look
-  up is itself a literal**: `hcloud server describe edge1` still fires even
-  though the *address* it returns is resolved at runtime, because the
-  *hostname* is still hardcoded rather than threaded through a variable.
-  Extend the list as the estate's fixed inventory grows; it is deliberately
-  not a general hostname-shape detector, the same tradeoff `docs-lint`
-  makes for its own fixed id-shape exemptions.
+- **Hostname form**: `edge1`, `app1`, `db1`, `mx1`, `mon1` — this estate's
+  own fixed, small set of operational hostnames, word-bounded
+  (`hetzner-edge1` matches, `edge10` does not) and case-sensitive (these
+  names are always written lowercase). No FQDN form (`*.branchleft.co.uk`)
+  is matched — the runbooks that motivated this rule reference the estate
+  exclusively by bare short name, both in prose and as an `hcloud server
+  describe <name>` resource argument, never as a dotted domain. **Naming
+  which host to look up is itself a literal**: `hcloud server describe
+  edge1` still fires even though the *address* it returns is resolved at
+  runtime, because the *hostname* is still hardcoded rather than threaded
+  through a variable. **A hostname substring inside a placeholder token is
+  not a hit**: `edge1` inside `<edge1-ipv4>` is excepted, because it is
+  textually part of an OPV002 placeholder standing in for a value, not a
+  committed value itself — without this exception the two rules would
+  co-fire on the same span, which contradicts their own reason for being
+  separate ids. Extend the list as the estate's fixed inventory grows; it
+  is deliberately not a general hostname-shape detector, the same tradeoff
+  `docs-lint` makes for its own fixed id-shape exemptions.
+
+### Known limitation: the hostname list is a snapshot, not a promise
+
+`edge1`/`app1`/`db1`/`mx1`/`mon1` is the estate's fixed-hostname inventory as
+measured when this rule shipped, not a self-maintaining list. `mon1` is the
+concrete case worth naming: it currently shares a machine with another host,
+but it is a real, separately-addressable name already referenced in
+architecture documentation, and it is exactly the shape of host this list
+has to keep pace with — a service that starts out co-located and later gets
+its own box. A host that gets provisioned, renamed, or split out after this
+rule ships is invisible to OPV001 until someone adds it here; nothing
+detects the gap automatically. Add a name to the list as soon as a host it
+should cover exists, the same discipline `docs-lint`'s own hand-maintained
+id-shape exemptions ask of whoever touches them.
 
 ### OPV002: an unsubstituted placeholder in a copy-pasteable command
 
@@ -138,8 +157,11 @@ paste-and-run failure, so OPV002 scans **only** `bash`/`sh`/`shell`/
 `console` fenced code blocks in markdown files. An untagged fence is **not**
 treated as a command fence here, unlike a reply-time placeholder guard's own
 convention — this estate's own runbooks consistently tag their
-copy-pasteable blocks, so the narrower rule is the correct default; widen it
-if that stops holding.
+copy-pasteable blocks, so the narrower rule is the correct default. This is
+a settled scope decision, not an open question this rule is still deciding:
+widening it (untagged fences, other extensions, other fence languages) is
+separately tracked follow-up, taken up on its own schedule rather than as
+part of shipping this check.
 
 ### The two documented exemption cases
 

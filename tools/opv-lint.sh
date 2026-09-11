@@ -73,18 +73,36 @@ ALL_SCANNABLE="$TMPDIR_LINT/all_scannable"
 CHECK_SOURCE_ONLY="${OPV_LINT_SOURCE_ONLY:-0}"
 
 # ---------------------------------------------------------------------------
+# Shared: the placeholder token shape, defined once because it is used both
+# as OPV002's own match (below) and as OPV001's except (immediately below):
+# a hostname substring sitting inside a placeholder token (`<edge1-ipv4>`)
+# is a placeholder standing in for a value, not a committed one, so OPV001
+# must not treat it as a hit -- see OPV001's own comment for the collision
+# this prevents. Kept as one definition so the two rules can never silently
+# disagree about what counts as "inside a placeholder."
+# ---------------------------------------------------------------------------
+PLACEHOLDER_HYPHEN_TOKEN="<[a-z0-9]+([.-][a-z0-9]+)+>"
+PLACEHOLDER_BARE_WORDS="host|domain|secret|password|passphrase|token|key|value|ip|uuid|id|salt|region|hostname|address|url|email|port|username|repo|slug"
+PLACEHOLDER_BARE_TOKEN="<(${PLACEHOLDER_BARE_WORDS})>"
+
+# ---------------------------------------------------------------------------
 # OPV001 — a committed concrete operational value: an IPv4 literal/private
 # subnet (outside loopback/documentation/link-local/four netmask literals),
-# or one of the estate's fixed operational hostnames (edge1/app1/db1/mx1,
-# word-bounded). Two shapes, reported under one rule id via two run_rule
-# calls below. Private ranges, public constants and CIDR prose are
-# deliberately NOT excluded. Full rationale and known limitations:
-# tools/opv-lint-rules.md.
+# or one of the estate's fixed operational hostnames (edge1/app1/db1/mx1/
+# mon1, word-bounded). Two shapes, reported under one rule id via two
+# run_rule calls below. Private ranges, public constants and CIDR prose are
+# deliberately NOT excluded. The hostname half excepts a placeholder token
+# (PLACEHOLDER_HYPHEN_TOKEN/PLACEHOLDER_BARE_TOKEN): `edge1` inside
+# `<edge1-ipv4>` is textually a placeholder, not a committed value, and
+# without this except OPV001 and OPV002 co-fire on the same span, which
+# contradicts the ruling's own framing of the two rules as normally
+# independent. Full rationale and known limitations: tools/opv-lint-rules.md.
 # ---------------------------------------------------------------------------
 OPV001_OCTET="(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
 OPV001_ADDR_MATCH="\\b${OPV001_OCTET}\\.${OPV001_OCTET}\\.${OPV001_OCTET}\\.${OPV001_OCTET}\\b"
 OPV001_ADDR_EXCEPT="\\b127(\\.[0-9]{1,3}){3}\\b|\\b0\\.0\\.0\\.0\\b|\\b255\\.255\\.255\\.255\\b|\\b255\\.255\\.255\\.0\\b|\\b255\\.255\\.0\\.0\\b|\\b255\\.0\\.0\\.0\\b|\\b192\\.0\\.2\\.[0-9]{1,3}\\b|\\b198\\.51\\.100\\.[0-9]{1,3}\\b|\\b203\\.0\\.113\\.[0-9]{1,3}\\b|\\b169\\.254(\\.[0-9]{1,3}){2}\\b"
-OPV001_HOST_MATCH="\\b(edge1|app1|db1|mx1)\\b"
+OPV001_HOST_MATCH="\\b(edge1|app1|db1|mx1|mon1)\\b"
+OPV001_HOST_EXCEPT="${PLACEHOLDER_HYPHEN_TOKEN}|${PLACEHOLDER_BARE_TOKEN}"
 
 # ---------------------------------------------------------------------------
 # OPV002 — an unsubstituted placeholder in a copy-pasteable command. Scoped
@@ -97,9 +115,8 @@ OPV001_HOST_MATCH="\\b(edge1|app1|db1|mx1)\\b"
 # closing `>` so it can never match either shape. Full rationale and known
 # limitations: tools/opv-lint-rules.md.
 # ---------------------------------------------------------------------------
-OPV002_HYPHEN_MATCH="<[a-z0-9]+([.-][a-z0-9]+)+>"
-OPV002_BARE_WORDS="host|domain|secret|password|passphrase|token|key|value|ip|uuid|id|salt|region|hostname|address|url|email|port|username|repo|slug"
-OPV002_BARE_MATCH="<(${OPV002_BARE_WORDS})>"
+OPV002_HYPHEN_MATCH="$PLACEHOLDER_HYPHEN_TOKEN"
+OPV002_BARE_MATCH="$PLACEHOLDER_BARE_TOKEN"
 
 # ---------------------------------------------------------------------------
 # OPV003 — an AWS-style access key id literal. `AKIA`/`ASIA` + 16 more chars
@@ -140,7 +157,7 @@ check_malformed_suppression "OPV000" "$LINT_PREFIX" "OPV[0-9]{3}" "$ALL_SCANNABL
 
 run_rule OPV001 "$ALL_SCANNABLE" "$OPV001_ADDR_MATCH" "$OPV001_ADDR_EXCEPT" raw_scannable \
   "committed host address; thread it through a lookup (e.g. hcloud server describe) or an env var, not a literal"
-run_rule OPV001 "$ALL_SCANNABLE" "$OPV001_HOST_MATCH" "" raw_scannable \
+run_rule OPV001 "$ALL_SCANNABLE" "$OPV001_HOST_MATCH" "$OPV001_HOST_EXCEPT" raw_scannable \
   "committed fixed operational hostname; thread it through a lookup or an env var, not a literal"
 run_rule OPV002 "$MD_FILES" "$OPV002_HYPHEN_MATCH" "" command_fence_scannable \
   "unsubstituted placeholder in a copy-pasteable command; resolve it before committing, or restructure the step as a lookup"

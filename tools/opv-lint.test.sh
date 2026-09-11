@@ -71,6 +71,46 @@ case_md_fence() {
   case_file "$name" "fixture.md" "$content" "$rule" "$expect_flag" "$expect_exit"
 }
 
+# Runs the tool ONCE on one fixture and asserts on TWO rules' flag state
+# from the SAME output. This is the only way to catch a cross-rule
+# collision -- one rule over-firing on a span that is genuinely another
+# rule's territory -- because case_file/case_sh/case_md_fence each assert
+# only on the rule under test and are structurally blind to what every
+# OTHER rule did on the same line.
+case_dual() {
+  local name="$1" file="$2" content="$3" \
+        rule_a="$4" expect_a="$5" rule_b="$6" expect_b="$7" expect_exit="$8"
+  printf '%s\n' "$content" > "$file"
+  local out rc
+  out=$(GITHUB_ACTIONS=false "$LINT" --explain --mode enforce "$file" 2>&1)
+  rc=$?
+  local has_a=no has_b=no
+  printf '%s' "$out" | grep -q "\[$rule_a\]" && has_a=yes
+  printf '%s' "$out" | grep -q "\[$rule_b\]" && has_b=yes
+
+  local ok=1
+  if [ "$has_a" != "$expect_a" ]; then
+    ok=0
+    echo "FAIL: $name -- expected $rule_a=$expect_a, got $has_a"
+  fi
+  if [ "$has_b" != "$expect_b" ]; then
+    ok=0
+    echo "FAIL: $name -- expected $rule_b=$expect_b, got $has_b"
+  fi
+  if [ "$rc" != "$expect_exit" ]; then
+    ok=0
+    echo "FAIL: $name -- expected exit=$expect_exit, got $rc"
+  fi
+  if [ "$ok" = "1" ]; then
+    PASS=$((PASS + 1))
+    echo "ok   $name"
+  else
+    FAIL=$((FAIL + 1))
+    echo "$out" | sed 's/^/    /'
+  fi
+  rm -f "$file"
+}
+
 # ==== OPV001: a committed concrete operational value =========================
 # ---- address half (IPv4 literal / private subnet) --------------------------
 case_sh "OPV001: a private-range host address is flagged" \
@@ -141,6 +181,10 @@ case_sh "OPV001: app1 is flagged" \
   "app1 hosts the tenant containers" \
   OPV001 yes 1
 
+case_sh "OPV001: mon1 (a currently co-located host that splits out later) is flagged" \
+  "mon1 currently shares a machine with another host" \
+  OPV001 yes 1
+
 case_sh "OPV001: a hyphenated compound (hetzner-edge1) still catches the bare name" \
   "see hetzner-edge1 for the host record" \
   OPV001 yes 1
@@ -154,11 +198,18 @@ case_sh "OPV001: db1-mysql-bin (a binlog naming convention, not a hostname refer
   OPV001 yes 1
 
 # ==== OPV002: an unsubstituted placeholder in a copy-pasteable command ======
-# ---- hyphen/dot-shaped tokens (the estate's own most frequent examples) ---
-case_md_fence "OPV002: a hyphenated placeholder (<edge1-ipv4>) in a bash fence is flagged" \
-  "bash" "ssh root@<edge1-ipv4>" \
-  OPV002 yes 1
+# ---- Cross-rule regression: OPV001 and OPV002 must not co-fire on the same
+# span. `<edge1-ipv4>` is the ruling's own canonical placeholder example,
+# and it textually contains the hostname `edge1` -- a per-rule assertion
+# (case_md_fence checking OPV002 alone) cannot see OPV001 firing on the same
+# fixture, which is exactly how this collision shipped unnoticed. case_dual
+# runs the tool once and checks both rules against the one output.
+case_dual "OPV001/OPV002 do not co-fire on <edge1-ipv4>: OPV002 fires (it is a real placeholder), OPV001 stays silent (edge1 here is not a committed value)" \
+  "fixture.md" \
+  $'## fixture\n\n```bash\nssh root@<edge1-ipv4>\n```\n' \
+  OPV001 no OPV002 yes 1
 
+# ---- hyphen/dot-shaped tokens (the estate's own most frequent examples) ---
 case_md_fence "OPV002: <mail-host>, the single most frequent measured token, is flagged" \
   "sh" "dig +short <mail-host>" \
   OPV002 yes 1
