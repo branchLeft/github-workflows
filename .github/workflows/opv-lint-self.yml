@@ -1,0 +1,29 @@
+name: opv-lint
+
+# This repo lints itself with its own working copy rather than by calling the
+# reusable workflow at @v1 -- otherwise a PR that changes the rules would be
+# checked by the previously tagged version of them.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  opv-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Run opv-lint unit tests
+        run: ./tools/opv-lint.test.sh
+
+      - name: Run opv-lint
+        run: ./tools/opv-lint.sh --explain

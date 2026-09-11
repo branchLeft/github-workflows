@@ -24,6 +24,7 @@ A repo admin grants a new caller repo write permission — scoped per repo, so
 everything else in the org stays read-only by default:
 
 ```bash
+# opv-disable-next-line OPV002 the admin supplies which repo is being granted; there is nothing to look up
 gh api -X PUT repos/branchLeft/<repo>/actions/permissions/workflow \
   -f default_workflow_permissions=write \
   -F can_approve_pull_request_reviews=false
