@@ -81,8 +81,9 @@ change, and the ratchet means the first PR is green.
 ### `opv-lint.yml`
 
 Blocks a committed operational value in place of the reference the org
-convention mandates: an access key id, a credential assigned directly
-instead of via `read`, or a bare host address. Rules, suppression syntax and
+convention mandates: a concrete address or fixed hostname, an unsubstituted
+placeholder in a copy-pasteable command, an access key id, or a credential
+assigned directly instead of via `read`. Rules, suppression syntax and
 rationale: [`tools/opv-lint-rules.md`](tools/opv-lint-rules.md). Shares its
 scan/report/exemption machinery with `docs-lint.yml`
 ([`tools/lint-common.sh`](tools/lint-common.sh)) rather than a second

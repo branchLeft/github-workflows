@@ -190,6 +190,31 @@ raw_scannable() {
   cat "$1"
 }
 
+# The inverse of md_scannable: everything BLANKED except the content of a
+# fenced code block whose language is a shell/command dialect
+# (bash/sh/shell/console). For a rule about a copy-pasteable command -- an
+# unsubstituted placeholder -- prose and non-command fences are structurally
+# out of scope, the opposite of a concrete-value rule that must read
+# everything. Language detection takes the fence's first info-string word,
+# lowercased; an untagged fence is NOT a command fence here (unlike a reply
+# guard's own convention) because a runbook's copy-pasteable blocks are
+# consistently tagged in this estate's own measured corpus.
+command_fence_scannable() {
+  awk '
+    /^[[:space:]]*(```|~~~)/ {
+      if (fence) { fence = 0; print ""; next }
+      line = $0
+      sub(/^[[:space:]]*(```|~~~)/, "", line)
+      n = split(line, parts, /[[:space:]]+/)
+      lang = tolower(parts[1])
+      fence = (lang == "bash" || lang == "sh" || lang == "shell" || lang == "console") ? 1 : 0
+      print ""
+      next
+    }
+    { print (fence ? $0 : "") }
+  ' "$1"
+}
+
 # ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
