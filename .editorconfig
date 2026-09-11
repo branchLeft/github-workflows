@@ -15,5 +15,5 @@ trim_trailing_whitespace = false
 indent_style = tab
 
 # Tab-separated by format, so an editor must not helpfully expand them.
-[{*.tsv,.standardsignore,.docs-lintignore}]
+[{*.tsv,.standardsignore,.docs-lintignore,.opv-lintignore}]
 indent_style = tab

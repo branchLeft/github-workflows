@@ -1,0 +1,61 @@
+name: opv-lint (reusable)
+
+# Blocks a committed operational value in place of a reference (an access
+# key id, a credential assigned directly instead of via `read`, a bare host
+# address), callable from any branchLeft-owned repo via `workflow_call`.
+#
+# Uses only actions/checkout plus `run:` steps, so it passes under
+# `allowed_actions: selected` without any per-repo allow-list change.
+#
+# Behaviour is controlled by files in the calling repo, not by inputs:
+#   .opv-lint.mode        absent = enforce, `warn` = ratchet (see rules doc)
+#   .opv-lintignore       path-scoped rule exemptions
+#
+# Caller usage (in the target repo):
+#
+#   jobs:
+#     opv-lint:
+#       uses: branchLeft/github-workflows/.github/workflows/opv-lint.yml@v1.0.6
+
+on:
+  workflow_call:
+    inputs:
+      explain:
+        description: "Print the matched text for each finding"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  opv-lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Warn mode diffs against the merge base to decide which files are
+          # enforced, so the full history has to be present.
+          fetch-depth: 0
+
+      - name: Checkout opv-lint
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/github-workflows
+          # The commit this reusable workflow was called at, so the rules and
+          # the workflow that runs them are always the same revision. A literal
+          # tag here would break every caller the moment it named a tag cut
+          # before tools/ existed.
+          ref: ${{ github.job_workflow_sha }}
+          path: .opv-lint
+
+      - name: Run opv-lint
+        env:
+          EXPLAIN: ${{ inputs.explain }}
+        run: |
+          set -eu
+          ARGS=""
+          if [ "$EXPLAIN" = "true" ]; then ARGS="--explain"; fi
+          .opv-lint/tools/opv-lint.sh $ARGS

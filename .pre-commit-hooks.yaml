@@ -5,3 +5,10 @@
   language: script
   pass_filenames: true
   files: \.(md|mdx|ts|tsx|js|jsx|mjs|cjs|py|sh|bash|ya?ml|tf)$
+- id: opv-lint
+  name: opv-lint
+  description: Block a committed operational value in place of a reference.
+  entry: tools/opv-lint.sh
+  language: script
+  pass_filenames: true
+  files: \.(md|mdx|ts|tsx|js|jsx|mjs|cjs|py|sh|bash|ya?ml|tf)$

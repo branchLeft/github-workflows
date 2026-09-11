@@ -1,0 +1,4 @@
+# glob<TAB>RULE_IDS<TAB># reason
+tools/opv-lint-rules.md	ALL	# documents the patterns it would otherwise match
+tools/opv-lint.sh	ALL	# the rule definitions themselves
+tools/opv-lint.test.sh	ALL	# fixture content is deliberately shaped like every anti-pattern
