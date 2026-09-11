@@ -1,3 +1,4 @@
 # glob<TAB>RULE_IDS<TAB># reason
 tools/docs-lint-rules.md	ALL	# documents the patterns it would otherwise match
 tools/docs-lint.sh	ALL	# the rule definitions themselves
+tools/lint-common.sh	ALL	# shared implementation moved out of docs-lint.sh; carries the same self-referential examples

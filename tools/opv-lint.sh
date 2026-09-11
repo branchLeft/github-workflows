@@ -70,63 +70,31 @@ ALL_SCANNABLE="$TMPDIR_LINT/all_scannable"
 CHECK_SOURCE_ONLY="${OPV_LINT_SOURCE_ONLY:-0}"
 
 # ---------------------------------------------------------------------------
-# OPV001 — an AWS-style access key id literal
+# OPV001 — an AWS-style access key id literal. `AKIA`/`ASIA` + 16 more chars
+# is a reserved, unambiguous shape, so this needs no except pattern. Known
+# limitations (Hetzner has no comparable shape): tools/opv-lint-rules.md.
 # ---------------------------------------------------------------------------
-# `AKIA`/`ASIA` (long-term / temporary-session credential) plus exactly 16
-# more base32-ish characters is a reserved, unambiguous AWS shape: nothing
-# else is generated in that form, so this fires with no except pattern.
-#
-# Known limitation: a Hetzner Object Storage access key id has no comparable
-# fixed prefix to key on, so a Hetzner-issued key id is not caught by shape
-# here -- OPV002 catches it if it is committed the way this estate's runbooks
-# actually commit one, as a direct assignment.
 OPV001_MATCH="\\b(AKIA|ASIA)[A-Z0-9]{16}\\b"
 
 # ---------------------------------------------------------------------------
-# OPV002 — a secret/token assigned directly instead of via `read`
+# OPV002 — a credential-shaped variable assigned a literal via `=` instead of
+# the mandated `read -rs VAR; export VAR`. `export VAR="$VAR"` and
+# `export VAR="$(cmd)"` are excluded (the char after the opening quote is
+# `$`). Known limitations (assignment-shaped only, no YAML `key:` form):
+# tools/opv-lint-rules.md.
 # ---------------------------------------------------------------------------
-# The mandated pattern (CLAUDE.md's `## Replying`) is `read -rs VAR; export
-# VAR`. This catches its opposite: a credential-shaped name on the left of an
-# `=`, immediately followed by a quoted value that is not a variable
-# reference. A bare `export VAR` (no `=`) is the correct form and never
-# matches; `export VAR="$VAR"` and `export VAR="$(cmd)"` are re-exports of an
-# already-read value and are excluded because the character right after the
-# opening quote is `$`.
-#
-# Known limitation: this is `=`-assignment-shaped only. A value handed to a
-# command positionally (`printf '...%s...' 'literal secret'`) has no `=` to
-# anchor on. A token-by-token scan of a whole line to catch that shape was
-# tried elsewhere and found to be the wrong design: an embedded apostrophe in
-# the quoted value closes a naive quoted-token match early and lets most of
-# the offending lines in a file through silently. That shape is deliberately
-# left uncaught here rather than reproduced.
-#
-# Known limitation: a YAML `key: value` credential (a Pulumi config secret
-# written in place rather than through `pulumi config set --secret`) is also
-# not matched -- `:` was deliberately not added alongside `=` because a
-# credential-name substring appears in plenty of non-secret YAML keys
-# (`passwordHashAlgo: bcrypt`, `tokenTtlSeconds: 3600`), and a colon-based
-# match would need a much narrower name list to avoid teaching people to
-# ignore this rule the way DL009's own known limitations describe.
 OPV002_CRED_NAME="[A-Za-z0-9_]*(SECRET|PASSWORD|PASSPHRASE|ACCESS_KEY|PRIVATE_KEY|TOKEN|CREDENTIAL|API_KEY|ENCRYPTIONSALT)[A-Za-z0-9_]*"
 OPV002_MATCH="\\b(export[[:space:]]+)?${OPV002_CRED_NAME}[[:space:]]*=[[:space:]]*['\"][^'\"\$]"
 
 # ---------------------------------------------------------------------------
-# OPV003 — a bare IPv4 host address outside an obviously-public/example range
+# OPV003 — a bare IPv4 host address outside loopback/documentation/link-local
+# ranges. Octets validated <=255, so an out-of-range component
+# (`999.1.1.1`) is rejected rather than merely filtered. Private ranges are
+# deliberately NOT excluded: real topology is exactly what this rule exists
+# to catch. Full range list and rationale: tools/opv-lint-rules.md.
 # ---------------------------------------------------------------------------
-# Octets validated <=255, so a version-shaped string with an out-of-range
-# component (`999.1.1.1`) is rejected rather than merely filtered, and a
-# dotted 4-part string only ever matches when every component is a real
-# octet.
 OPV003_OCTET="(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
 OPV003_MATCH="\\b${OPV003_OCTET}\\.${OPV003_OCTET}\\.${OPV003_OCTET}\\.${OPV003_OCTET}\\b"
-# Excluded as never a real host: loopback, unspecified, broadcast, the three
-# IANA documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24),
-# link-local/metadata (169.254.0.0/16), and the handful of fixed netmask
-# literals that show up in networking config rather than as an address.
-# Private ranges (10.x, 172.16-31.x, 192.168.x) are deliberately NOT
-# excluded: they are real internal topology, which is exactly the class this
-# rule exists to catch.
 OPV003_EXCEPT="\\b127(\\.[0-9]{1,3}){3}\\b|\\b0\\.0\\.0\\.0\\b|\\b255\\.255\\.255\\.255\\b|\\b255\\.255\\.255\\.0\\b|\\b255\\.255\\.0\\.0\\b|\\b255\\.0\\.0\\.0\\b|\\b192\\.0\\.2\\.[0-9]{1,3}\\b|\\b198\\.51\\.100\\.[0-9]{1,3}\\b|\\b203\\.0\\.113\\.[0-9]{1,3}\\b|\\b169\\.254(\\.[0-9]{1,3}){2}\\b"
 
 if lint_source_only; then
