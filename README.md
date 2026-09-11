@@ -89,7 +89,9 @@ scan/report/exemption machinery with `docs-lint.yml`
 implementation of the same mechanism.
 
 **Caller usage** — add to the target repo as
-`.github/workflows/opv-lint.yml`:
+`.github/workflows/opv-lint.yml`, pinned to the tag cut once this workflow
+first ships (see `git tag -l` in this repo for the current one — `opv-lint.yml`
+is not in any tag yet, so `@v1.0.6` above would 404 if copied verbatim today):
 
 ```yaml
 name: opv-lint
@@ -101,7 +103,7 @@ on:
 
 jobs:
   opv-lint:
-    uses: branchLeft/github-workflows/.github/workflows/opv-lint.yml@v1.0.6
+    uses: branchLeft/github-workflows/.github/workflows/opv-lint.yml@vX.Y.Z
 ```
 
 No secrets, no write permission, no per-repo allow-list change.

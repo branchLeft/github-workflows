@@ -231,23 +231,28 @@ report() { # rule file line message matched-text advisory(optional: non-empty = 
 # forced so grep's byte offsets and bash's substring indexing agree on
 # multibyte content -- under a UTF-8 locale they diverge (grep counts bytes,
 # bash counts characters) and offsets silently misalign.
-blank_spans() { # text except -> blanked text on stdout
-  local text="$1" except="$2" reduced off span len
+blank_spans() { # text except ci(optional: "1" = case-insensitive) -> blanked text on stdout
+  local text="$1" except="$2" ci="${3:-}" reduced off span len flags="-boE"
   export LC_ALL=C
+  [ -n "$ci" ] && flags="-iboE"
   reduced="$text"
   while IFS=: read -r off span; do
     [ -n "$off" ] || continue
     len=${#span}
     reduced="${reduced:0:off}$(printf '%*s' "$len" '')${reduced:off+len}"
-  done < <(printf '%s\n' "$text" | grep -boE "$except")
+  done < <(printf '%s\n' "$text" | grep $flags "$except")
   printf '%s' "$reduced"
 }
 
 # rule, file-list, match-ere, except-ere (or ""), extractor, message,
-# advisory ("1" = never fails, only a notice: mirrors docs-lint's DL011).
+# advisory ("1" = never fails, only a notice: mirrors docs-lint's DL011),
+# ci ("1" = case-insensitive match and except -- docs-lint's own rules stay
+# case-sensitive by design (see docs-lint.sh's DL001 comment), so this
+# defaults off rather than changing existing behavior).
 run_rule() {
-  local rule="$1" list="$2" match="$3" except="$4" extractor="$5" msg="$6" advisory="${7:-}"
-  local file scan hits ln text reduced
+  local rule="$1" list="$2" match="$3" except="$4" extractor="$5" msg="$6" advisory="${7:-}" ci="${8:-}"
+  local file scan hits ln text reduced mflags="-nE" qflags="-qE"
+  [ -n "$ci" ] && mflags="-inE" && qflags="-iqE"
   while IFS= read -r file; do
     is_exempt "$LINT_IGNOREFILE" "$file" "$rule" && continue
     scan="$TMPDIR_LINT/scan"
@@ -261,11 +266,11 @@ run_rule() {
       while IFS= read -r h; do
         [ -n "$h" ] || continue
         ln=${h%%:*}; text=${h#*:}
-        reduced=$(blank_spans "$text" "$except")
-        printf '%s\n' "$reduced" | grep -qE "$match" && hits="$hits$h"$'\n'
-      done < <(grep -nE "$match" "$scan")
+        reduced=$(blank_spans "$text" "$except" "$ci")
+        printf '%s\n' "$reduced" | grep $qflags "$match" && hits="$hits$h"$'\n'
+      done < <(grep $mflags "$match" "$scan")
     else
-      hits=$(grep -nE "$match" "$scan")
+      hits=$(grep $mflags "$match" "$scan")
     fi
     [ -n "$hits" ] || continue
     while IFS= read -r h; do

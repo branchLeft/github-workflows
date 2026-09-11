@@ -106,6 +106,67 @@ case_sh "OPV002: an unrelated variable assigned a literal is not flagged" \
   "export TENANT_SLUG='example-tenant'" \
   OPV002 no 0
 
+# --- OPV002: case-insensitive name matching (snake_case/camelCase) --------
+case_sh "OPV002: snake_case db_password is flagged (case-insensitive)" \
+  'db_password = "hunter2-a-real-looking-value"' \
+  OPV002 yes 1
+
+case_sh "OPV002: camelCase apiToken is flagged (case-insensitive)" \
+  'apiToken = "sk-realtoken-not-a-real-key-0000000000"' \
+  OPV002 yes 1
+
+# --- OPV002: default-expansion re-export still carries a literal ----------
+case_sh "OPV002: \${VAR:-literal} default expansion is flagged, not excused as a re-export" \
+  'export DB_PASSWORD="${DB_PASSWORD:-s3cr3t-literal-fallback}"' \
+  OPV002 yes 1
+
+# --- OPV002: non-secret-shaped boolean/flag literals are excluded ----------
+case_sh "OPV002: a boolean-flag literal (true) is not flagged" \
+  'FEATURE_TOKEN="true"' \
+  OPV002 no 0
+
+case_sh "OPV002: a boolean-flag literal (false), mixed case, is not flagged" \
+  'FEATURE_TOKEN="False"' \
+  OPV002 no 0
+
+case_sh "OPV002: a boolean-flag literal (enabled) is not flagged" \
+  "export FEATURE_ACCESS_KEY_CHECK='enabled'" \
+  OPV002 no 0
+
+# --- OPV002: positive coverage for the credential names not exercised above,
+# and their case-sensitivity edges (per the case-insensitivity fix above) --
+case_sh "OPV002: TOKEN (upper snake_case) is flagged" \
+  "export API_TOKEN='literal-token-value-not-a-real-one'" \
+  OPV002 yes 1
+
+case_sh "OPV002: TOKEN (camelCase) is flagged" \
+  "authToken = 'literal-token-value-not-a-real-one'" \
+  OPV002 yes 1
+
+case_sh "OPV002: PRIVATE_KEY (upper snake_case) is flagged" \
+  "export SSH_PRIVATE_KEY='-----BEGIN RSA PRIVATE KEY-----not-real-----'" \
+  OPV002 yes 1
+
+case_sh "OPV002: PRIVATE_KEY (lower snake_case) is flagged" \
+  "ssh_private_key = 'literal-key-data-not-real'" \
+  OPV002 yes 1
+
+case_sh "OPV002: CREDENTIAL (upper snake_case) is flagged" \
+  "export SERVICE_CREDENTIAL='literal-credential-value-not-real'" \
+  OPV002 yes 1
+
+case_sh "OPV002: CREDENTIAL (camelCase) is flagged" \
+  "myCredential = \"literal-credential-value-not-real\"" \
+  OPV002 yes 1
+
+case_sh "OPV002: ENCRYPTIONSALT (lowercase, the real Pulumi key spelling) is flagged" \
+  "encryptionsalt='literal-salt-value-not-real'" \
+  OPV002 yes 1
+
+case_sh "OPV002: ENCRYPTIONSALT (mixed case) is flagged" \
+  'EncryptionSalt="literal-salt-value-not-real"' \
+  OPV002 yes 1
+
 # --- OPV003: bare IPv4 host address ------------------------------------------
 case_sh "OPV003: a private-range host address is flagged" \
   "ssh root@10.20.1.20" \
@@ -133,6 +194,18 @@ case_sh "OPV003: the IANA TEST-NET-1 documentation range is not flagged" \
 case_sh "OPV003: a common netmask literal is not flagged" \
   "netmask 255.255.255.0" \
   OPV003 no 0
+
+case_sh "OPV003: a less-common netmask (255.255.255.128) still fires -- documented gap, not a general netmask check" \
+  "subnet mask 255.255.255.128" \
+  OPV003 yes 1
+
+case_sh "OPV003: a well-known public constant (8.8.8.8) is still flagged -- Reading B is every address, not only sensitive ones" \
+  "the fallback resolver is 8.8.8.8" \
+  OPV003 yes 1
+
+case_sh "OPV003: a CIDR block in architecture prose (10.0.0.0/8) is still flagged" \
+  "the internal network is described as 10.0.0.0/8 in the topology diagram" \
+  OPV003 yes 1
 
 case_sh "OPV003: an out-of-range octet does not false-match a version-shaped string" \
   "built from image 999.1.2.3" \

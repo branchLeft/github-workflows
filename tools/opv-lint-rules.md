@@ -43,8 +43,8 @@ inside a pasted command, a YAML value or a table cell as inside a comment.
 |---|---|---|
 | OPV000 | A suppression comment with no rule id or no reason | Write `opv-disable-next-line OPV003 <why>` |
 | OPV001 | A committed AWS-style access key id (`AKIA`/`ASIA` + 16 more characters) | `read -rs VAR; export VAR`, never the literal value |
-| OPV002 | A credential-shaped variable (`SECRET`, `PASSWORD`, `PASSPHRASE`, `ACCESS_KEY`, `PRIVATE_KEY`, `TOKEN`, `CREDENTIAL`, `API_KEY`, `ENCRYPTIONSALT`) assigned a literal instead of a variable reference | `read -rs VAR; export VAR`, then reference `$VAR` |
-| OPV003 | A bare IPv4 address outside loopback/documentation/link-local ranges | Resolve it with a lookup (`hcloud server describe`, `pulumi stack output`, …) into an env var, don't commit the literal |
+| OPV002 | A credential-shaped variable (`SECRET`, `PASSWORD`, `PASSPHRASE`, `ACCESS_KEY`, `PRIVATE_KEY`, `TOKEN`, `CREDENTIAL`, `API_KEY`, `ENCRYPTIONSALT` — matched case-insensitively, so `db_password`, `apiToken` and `DB_PASSWORD` all fire) assigned a literal instead of a variable reference | `read -rs VAR; export VAR`, then reference `$VAR` |
+| OPV003 | A bare IPv4 address outside loopback/documentation/link-local ranges (private ranges and well-known public constants are **not** excluded — see below) | Resolve it with a lookup (`hcloud server describe`, `pulumi stack output`, …) into an env var, don't commit the literal |
 
 ### Why OPV001 and OPV002 are separate rules
 
@@ -62,6 +62,33 @@ A Hetzner Object Storage access key id has no comparable fixed prefix to key
 on, so it is not caught by shape. It is still caught by OPV002 when it is
 committed the way this estate's runbooks actually commit one: as a direct
 assignment (`export AWS_ACCESS_KEY_ID='...'`) rather than a `read`.
+
+### OPV002 is case-insensitive, and a fixed set of non-secret literals is excluded
+
+The name match (`SECRET`, `PASSWORD`, `PASSPHRASE`, `ACCESS_KEY`,
+`PRIVATE_KEY`, `TOKEN`, `CREDENTIAL`, `API_KEY`, `ENCRYPTIONSALT`) is
+case-insensitive: `db_password`, `apiToken`, `SSH_PRIVATE_KEY` and
+`EncryptionSalt` all fire identically. camelCase and snake_case are the
+idiomatic naming convention in two of the six extensions this check covers
+(`.py`, `.js`/`.ts`), so a case-sensitive match would have missed most of
+its real target in exactly those files.
+
+A small fixed set of non-secret-shaped literal values is excluded so a
+feature flag doesn't fire identically to a leak: `true`, `false`, `yes`,
+`no`, `on`, `off`, `enabled`, `disabled` (case-insensitively). This is
+**minimal shape discrimination, not general value-shape analysis** — a short
+enum-like value outside that fixed list (`FEATURE_TOKEN="beta"`,
+`LOG_LEVEL_TOKEN="prod"`) still fires, because nothing distinguishes a
+genuinely short secret from a genuinely short non-secret word without a much
+larger, harder-to-maintain list. Extend the list, or suppress inline, as
+real cases turn up — the exemption's own reasoning (an inline reason beats a
+silent carve-out) applies here too.
+
+A default-value expansion is **not** treated as a safe re-export, even
+though it starts with `$`: `export DB_PASSWORD="${DB_PASSWORD:-a-literal-fallback}"`
+still fires, because the fallback itself can be a real secret. Only a bare
+`$VAR`, `${VAR}` or `$(...)` — nothing else inside the quotes — is recognised
+as a pure re-export.
 
 ### Known limitation: OPV002 is `=`-assignment-shaped only
 
@@ -81,15 +108,28 @@ deliberately not:
   `tokenTtlSeconds: 3600`), and catching the real case without those would
   need a narrower name list than this rule currently carries.
 
-### Known limitation: OPV003 catches private ranges on purpose
+### Known limitation: OPV003 catches private ranges, public constants and CIDR prose on purpose
 
 `10.x`, `172.16-31.x` and `192.168.x` are **not** excluded. They are real
 internal topology — the address a host actually has — and the owner ruling
-behind this check ranks that the same as a public address: both are a
-concrete operational value where a lookup belongs. Only ranges that can
-never be a real host are excluded: loopback, unspecified, broadcast, the
-three IANA documentation ranges, link-local/metadata, and a short fixed list
-of netmask literals.
+behind this check (Reading B: the principle governs everything committed,
+not only what is pasted into a shell) ranks that the same as a public
+address: both are a concrete operational value where a lookup belongs. The
+same reading means a well-known public constant (`8.8.8.8`, a public DNS
+resolver) and a CIDR block named in architecture prose (`10.0.0.0/8` in a
+topology table) fire identically to a sensitive address — the rule has no
+concept of "sensitive," only "a literal where a reference belongs."
+
+**This is expected, frequent friction, not an oversight** — a doc that
+legitimately discusses a public constant or a CIDR range in prose will need
+either an inline suppression per occurrence or, if the whole file is about
+describing addresses rather than pasting commands, a `.opv-lintignore`
+entry. Only ranges that can never be a real host are excluded outright:
+loopback, unspecified, broadcast, the three IANA documentation ranges,
+link-local/metadata, and exactly four netmask literals (`255.255.255.255`,
+`255.255.255.0`, `255.255.0.0`, `255.0.0.0`) — **not a general netmask-shape
+check**: `255.255.255.128` and other valid but less common netmasks still
+fire and need the same inline suppression as any other address.
 
 ### Known limitation: file types
 

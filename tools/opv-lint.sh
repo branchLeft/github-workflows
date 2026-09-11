@@ -78,20 +78,36 @@ OPV001_MATCH="\\b(AKIA|ASIA)[A-Z0-9]{16}\\b"
 
 # ---------------------------------------------------------------------------
 # OPV002 — a credential-shaped variable assigned a literal via `=` instead of
-# the mandated `read -rs VAR; export VAR`. `export VAR="$VAR"` and
-# `export VAR="$(cmd)"` are excluded (the char after the opening quote is
-# `$`). Known limitations (assignment-shaped only, no YAML `key:` form):
-# tools/opv-lint-rules.md.
+# the mandated `read -rs VAR; export VAR`. Case-insensitive (camelCase/
+# snake_case are the idiom in .py/.js/.ts). `export VAR="$VAR"` and
+# `export VAR="$(cmd)"` are excluded as pure re-exports, and a fixed set of
+# non-secret-shaped literals (true/false/yes/no/on/off/enabled/disabled) is
+# excluded too -- but `${VAR:-a-literal-default}` is NOT excluded: a default
+# expansion can still carry a real fallback secret. Known limitations
+# (assignment-shaped only, no YAML `key:` form, the boolean list is fixed
+# and small): tools/opv-lint-rules.md.
 # ---------------------------------------------------------------------------
 OPV002_CRED_NAME="[A-Za-z0-9_]*(SECRET|PASSWORD|PASSPHRASE|ACCESS_KEY|PRIVATE_KEY|TOKEN|CREDENTIAL|API_KEY|ENCRYPTIONSALT)[A-Za-z0-9_]*"
-OPV002_MATCH="\\b(export[[:space:]]+)?${OPV002_CRED_NAME}[[:space:]]*=[[:space:]]*['\"][^'\"\$]"
+OPV002_MATCH="\\b(export[[:space:]]+)?${OPV002_CRED_NAME}[[:space:]]*=[[:space:]]*['\"][^'\"]*['\"]"
+# The except pattern mirrors MATCH's own prefix (same credential name, same
+# `=`) so it only ever blanks a safe VALUE, never an unrelated quoted token
+# elsewhere on the line. A pure re-export's value is exactly `$IDENT`,
+# `${IDENT}` or `$(...)` inside double quotes and nothing else -- `${VAR:-x}`
+# does not fit this shape (no `:`/`-`/`=`/`+` operator is allowed between the
+# identifier and the closing brace), so it falls through to MATCH unblanked.
+OPV002_SAFE="\\b(export[[:space:]]+)?${OPV002_CRED_NAME}[[:space:]]*=[[:space:]]*(\"\\\$(\\{[A-Za-z_][A-Za-z0-9_]*\\}|[A-Za-z_][A-Za-z0-9_]*|\\([^\"]*\\))\"|['\"](true|false|yes|no|on|off|enabled|disabled)['\"])"
 
 # ---------------------------------------------------------------------------
 # OPV003 — a bare IPv4 host address outside loopback/documentation/link-local
-# ranges. Octets validated <=255, so an out-of-range component
-# (`999.1.1.1`) is rejected rather than merely filtered. Private ranges are
-# deliberately NOT excluded: real topology is exactly what this rule exists
-# to catch. Full range list and rationale: tools/opv-lint-rules.md.
+# ranges, plus exactly four netmask literals (255.255.255.255,
+# 255.255.255.0, 255.255.0.0, 255.0.0.0 -- NOT a general netmask-shape
+# check: 255.255.255.128 and other valid but less common netmasks still
+# fire, exemptable inline). Octets validated <=255, so an out-of-range
+# component (`999.1.1.1`) is rejected rather than merely filtered. Private
+# ranges, and well-known public constants (8.8.8.8) and CIDRs in prose
+# (10.0.0.0/8), are deliberately NOT excluded: Reading B (the ruling this
+# ranks against) is every routable address, not only sensitive ones. Full
+# range list, worked examples and rationale: tools/opv-lint-rules.md.
 # ---------------------------------------------------------------------------
 OPV003_OCTET="(25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])"
 OPV003_MATCH="\\b${OPV003_OCTET}\\.${OPV003_OCTET}\\.${OPV003_OCTET}\\.${OPV003_OCTET}\\b"
@@ -108,8 +124,8 @@ check_malformed_suppression "OPV000" "$LINT_PREFIX" "OPV[0-9]{3}" "$ALL_SCANNABL
 
 run_rule OPV001 "$ALL_SCANNABLE" "$OPV001_MATCH" "" raw_scannable \
   "committed AWS-style access key id; read it (read -rs VAR; export VAR), never commit the value"
-run_rule OPV002 "$ALL_SCANNABLE" "$OPV002_MATCH" "" raw_scannable \
-  "credential assigned directly instead of via read; use read -rs VAR; export VAR"
+run_rule OPV002 "$ALL_SCANNABLE" "$OPV002_MATCH" "$OPV002_SAFE" raw_scannable \
+  "credential assigned directly instead of via read; use read -rs VAR; export VAR" "" 1
 run_rule OPV003 "$ALL_SCANNABLE" "$OPV003_MATCH" "$OPV003_EXCEPT" raw_scannable \
   "committed host address; thread it through a lookup (e.g. hcloud server describe) or an env var, not a literal"
 
