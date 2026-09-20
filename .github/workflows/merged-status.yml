@@ -56,6 +56,10 @@ on:
         description: "Report what would be written and write nothing"
         type: boolean
         default: false
+    secrets:
+      projects_app_key:
+        description: "PEM private key of the GitHub App named by projects-app-id"
+        required: true
 
 permissions:
   contents: read
