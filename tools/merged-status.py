@@ -48,6 +48,7 @@ evidence it could not gather.
 """
 
 import argparse
+import io
 import json
 import os
 import re
@@ -522,6 +523,28 @@ def _self_test():
             pass
     check("statuses parse", resolve_statuses(" In progress , In review "),
           flight)
+
+    # An HTTP error must stop the run, never become an empty result: a
+    # revoked credential answering 403 would otherwise be indistinguishable
+    # from an issue with no siblings, and the write that followed would be
+    # made on evidence that was never gathered.
+    real_urlopen = urllib.request.urlopen
+
+    def _boom(*args, **kwargs):
+        raise urllib.error.HTTPError(
+            "https://api.github.com/x", 403, "Forbidden", {},
+            io.BytesIO(b'{"message":"Resource not accessible by integration"}'))
+
+    urllib.request.urlopen = _boom
+    try:
+        try:
+            Client("t", "t", "branchLeft").pull("workspace", 1)
+            failures.append("an HTTP error did not stop the run")
+        except Refused as exc:
+            if "403" not in str(exc):
+                failures.append("the refusal does not name the status code")
+    finally:
+        urllib.request.urlopen = real_urlopen
 
     logged = []
 
