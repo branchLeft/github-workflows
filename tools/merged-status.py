@@ -11,17 +11,15 @@ sibling branch is still unreviewed.
 
 ## The delivery seam
 
-Nothing in the data distinguishes a pull request that DELIVERED an issue from
-one that merely NAMED it. Both spellings of the body trailer -- the closing
-keywords GitHub acts on and the non-closing `Refs` used where a merge must
-not close anything -- parse to the same edge, and the org convention makes
-`Refs` the spelling for hand-delivered work, which is exactly the work this
-status exists to describe. Measured across the whole estate: of 26 items
-whose every linked pull request had landed while the board disagreed, 26 were
-linked by a non-closing keyword and none by a closing one. So the trailer
-kind separates nothing, and a rule keyed on it alone would either write
-nothing at all or write onto every epic a pull request name-checked in
-passing.
+Nothing in a trailer distinguishes a pull request that DELIVERED an issue
+from one that merely NAMED it. The closing keywords GitHub acts on and the
+non-closing `Refs` spelling parse to the same edge -- and the keyword cannot
+be used to tell them apart in either direction, because a repo is free to
+adopt the opposite convention from the obvious one. A repo that delivers some
+paths by hand, for instance, has every reason to require the NON-closing
+spelling on exactly the pull requests that did the delivering, so that the
+merge cannot close an issue whose work is not yet live; there, keying on a
+closing keyword writes nothing, ever.
 
 Two knobs express the rule instead, and they are the only place this question
 is answered:
@@ -29,14 +27,14 @@ is answered:
   --link-kinds     which trailer spellings create an edge at all
   --from-statuses  which board statuses an item may be moved OUT of
 
-The second carries the discrimination the first cannot. On the same 26 rows,
-restricting the move to items already in flight leaves 4 -- the same 4 a human
-reading them judged genuine. An unstarted epic sitting in the backlog is not
-completed by a merge that mentioned it, whatever keyword did the mentioning.
+The second carries the discrimination the first cannot: an unstarted item
+sitting in a backlog column is not completed by a merge that mentioned it in
+passing, whatever keyword did the mentioning, while an item a team had moved
+into a working column plausibly is.
 
-Both are inputs with no hidden default: an unrecognised value is refused
-rather than silently narrowed, because a typo that quietly disabled the write
-would look exactly like an estate with nothing to write.
+Both are inputs with no default here: an unrecognised or empty value is
+refused rather than silently narrowed, because a typo that quietly disabled
+the write would look exactly like a board with nothing to write.
 
 ## Fail closed, everywhere
 
@@ -74,14 +72,41 @@ LINK_KIND_SETS = {
     "all": frozenset(CLOSING + REFS + PART_OF),
 }
 
+_KEYWORD = (r"\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|part\s+of)"
+            r"(?::\s*|\s+)")
+
 # Matches the consuming repo's trailer pattern deliberately, colon separator
 # included: a spelling one side reads as a link and the other does not is a
 # silent disagreement about what is linked to what.
 _LINK_RE = re.compile(
-    r"\b(close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?|part\s+of)"
-    r"(?::\s*|\s+)"
-    r"(?:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+))?#(\d+)",
+    _KEYWORD + r"(?:([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+))?#(\d+)",
     re.IGNORECASE)
+
+# The same trailer written as a markdown hyperlink, which the plain pattern
+# above cannot see at all: the `[` sits where it expects an owner or a `#`.
+#
+# That is not a hypothetical spelling. A repo whose convention requires every
+# reference to be a hyperlink -- so that a reader can tell an issue from a
+# pull request, which share a number space and redirect to each other --
+# produces `Refs [ISSUE repo#12](https://github.com/org/repo/issues/12)` as
+# its ORDINARY form, and every such trailer parsed to nothing.
+#
+# The target is taken from the URL, never from the link text. The text is
+# free-form and routinely omits the owner (`[ISSUE repo#12]`), so reading it
+# would resolve a cross-repo reference against the wrong repository -- a
+# silent mis-link rather than a missed one, which is worse.
+_LINK_URL_RE = re.compile(
+    _KEYWORD
+    + r"\[[^\]\n]*\]\(\s*https?://github\.com/"
+    r"([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/(?:issues|pull)/(\d+)",
+    re.IGNORECASE)
+
+# A fenced block or a quoted line is text the body is SHOWING, not text it is
+# SAYING. Pull request bodies here quote job logs and reviewer verdicts as a
+# matter of course, and a quoted `Closes #123` is a report of what something
+# else said -- acting on it would link an issue nobody claimed.
+_FENCE_RE = re.compile(r"^\s*(?:```|~~~)", re.MULTILINE)
+_QUOTE_RE = re.compile(r"^\s{0,3}>", re.MULTILINE)
 
 OPEN = "open"
 MERGED = "merged"
@@ -105,22 +130,57 @@ def normalise_kind(raw):
     return re.sub(r"\s+", " ", raw.strip().lower())
 
 
+def uninterpreted(body):
+    """`body` with fenced blocks and quoted lines blanked out.
+
+    Blanked rather than deleted, so that every offset in the result still
+    lines up with the original -- the two patterns below are merged by
+    position, and a shortened string would interleave them wrongly.
+    """
+    lines = (body or "").split("\n")
+    out = []
+    fenced = False
+    for line in lines:
+        if _FENCE_RE.match(line):
+            fenced = not fenced
+            out.append("")
+            continue
+        if fenced or _QUOTE_RE.match(line):
+            out.append("")
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def parse_links(body, default_repo, org, kinds):
     """`[(repo, number), ...]` for every trailer in `body` whose keyword is in
     `kinds`, in first-seen order and de-duplicated.
+
+    Both spellings are read -- the plain trailer and the markdown hyperlink --
+    because a convention that mandates one of them would otherwise make every
+    reference invisible here while remaining perfectly readable to a person.
 
     A trailer naming an owner other than `org` is dropped: this tool writes to
     one organisation's boards, and an edge pointing outside it can only ever
     resolve to something it must not touch.
     """
+    found = []
+    text = uninterpreted(body)
+    for pattern, from_url in ((_LINK_RE, False), (_LINK_URL_RE, True)):
+        for match in pattern.finditer(text):
+            keyword, owner, repo, number = match.groups()
+            if normalise_kind(keyword) not in kinds:
+                continue
+            if owner and owner.lower() != org.lower():
+                continue
+            # The hyperlink form always carries an owner and a repo in the
+            # URL; the plain form may carry neither, and then the trailer is
+            # about the repository whose body it is.
+            found.append((match.start(),
+                          (repo if (repo and (owner or not from_url))
+                           else default_repo, int(number))))
     out = []
-    for match in _LINK_RE.finditer(body or ""):
-        keyword, owner, repo, number = match.groups()
-        if normalise_kind(keyword) not in kinds:
-            continue
-        if owner and owner.lower() != org.lower():
-            continue
-        key = (repo or default_repo, int(number))
+    for _offset, key in sorted(found):
         if key not in out:
             out.append(key)
     return out
@@ -404,13 +464,32 @@ def run(client, subject_repo, subject_number, kinds, from_statuses,
                 repo, number):
             if (pull_repo, pull_number) == (subject_repo, subject_number):
                 continue
-            if (repo, number) not in parse_links(
-                    node.get("body"), pull_repo, client.org, kinds):
-                continue
             state = pull_state(node)
+            declared = (repo, number) in parse_links(
+                node.get("body"), pull_repo, client.org, kinds)
+            # The two directions are deliberately not symmetric.
+            #
+            # An OPEN pull request blocks whether or not this tool can find
+            # the trailer in its body. A cross-reference it cannot parse is
+            # not evidence that the pull request is unrelated -- it is the
+            # absence of evidence either way, and the two are the same shape
+            # to a reader of this code. Treating an unparseable open sibling
+            # as unrelated is precisely how a body written in a spelling this
+            # tool has not met yet becomes a completion it never was.
+            #
+            # A landed one is held to the trailer, because that direction
+            # creates the evidence rather than withholding it: counting a
+            # merge nobody declared would manufacture a delivery out of a
+            # passing mention. Both rules fail the same way -- towards not
+            # writing.
+            if state != OPEN and not declared:
+                continue
             states.append(state)
-            log("  %s#%d <- %s#%d (%s)"
-                % (repo, number, pull_repo, pull_number, state))
+            log("  %s#%d <- %s#%d (%s%s)"
+                % (repo, number, pull_repo, pull_number, state,
+                   "" if declared
+                   else ", cross-referenced with no trailer this tool "
+                        "can read"))
 
         for item in items:
             value = item.get("fieldValueByName") or {}
@@ -480,6 +559,43 @@ def _self_test():
           [("r", 1)])
     check("no trailer", parse_links("mentions #4 in passing", "r", org,
                                     all_kinds), [])
+
+    check("a hyperlinked trailer resolves from the URL, not the link text",
+          parse_links("Refs [ISSUE workspace#12]"
+                      "(https://github.com/branchLeft/workspace/issues/12)",
+                      "somewhere-else", org, all_kinds),
+          [("workspace", 12)])
+    check("a hyperlinked pull-request reference resolves too",
+          parse_links("Refs [PR workspace#12]"
+                      "(https://github.com/branchLeft/workspace/pull/12)",
+                      "somewhere-else", org, all_kinds),
+          [("workspace", 12)])
+    check("a hyperlink to another owner is dropped",
+          parse_links("Refs [ISSUE x#1](https://github.com/otherorg/x/"
+                      "issues/1)", "r", org, all_kinds), [])
+    check("a hyperlink with no keyword is not a trailer",
+          parse_links("see [ISSUE workspace#12]"
+                      "(https://github.com/branchLeft/workspace/issues/12)",
+                      "r", org, all_kinds), [])
+    check("both spellings of the same target collapse",
+          parse_links("Refs branchLeft/workspace#12 and refs "
+                      "[ISSUE workspace#12]"
+                      "(https://github.com/branchLeft/workspace/issues/12)",
+                      "r", org, all_kinds),
+          [("workspace", 12)])
+    check("a fenced trailer is not read",
+          parse_links("```\nCloses #99\n```\nRefs #5", "r", org, all_kinds),
+          [("r", 5)])
+    check("a quoted trailer is not read",
+          parse_links("> Closes #99\n\nRefs #5", "r", org, all_kinds),
+          [("r", 5)])
+    check("an unterminated fence swallows the rest",
+          parse_links("~~~\nRefs #5", "r", org, all_kinds), [])
+    check("order follows the body, across both spellings",
+          parse_links("Refs [ISSUE workspace#2]"
+                      "(https://github.com/branchLeft/workspace/issues/2)\n"
+                      "Refs branchLeft/workspace#1", "r", org, all_kinds),
+          [("workspace", 2), ("workspace", 1)])
 
     check("open outranks merged", classify([MERGED, OPEN]), OPEN)
     check("merged outranks closed", classify([CLOSED_UNMERGED, MERGED]),
@@ -615,11 +731,35 @@ def _self_test():
     check("a landed sibling does not block", len(_run(_Fake(
         siblings=merged_sibling))), 1)
 
-    unrelated = [("workspace", 9,
-                  {"state": "open", "pull_request": {"merged_at": None},
-                   "body": "mentions #7 with no trailer"})]
-    check("an open pull request with no trailer does not block",
-          len(_run(_Fake(siblings=unrelated))), 1)
+    # This asserted the opposite until a review found that the convention
+    # this estate had adopted that same morning -- a mandatory hyperlinked
+    # reference -- parsed to nothing here, so a real open sibling was
+    # silently dropped and the write proceeded. The test agreed with the
+    # parser rather than with the contract.
+    unreadable = [("workspace", 9,
+                   {"state": "open", "pull_request": {"merged_at": None},
+                    "body": "mentions #7 in a spelling this tool "
+                            "cannot parse"})]
+    client = _Fake(siblings=unreadable)
+    check("an open pull request this tool cannot parse still blocks",
+          _run(client), [])
+    check("and no write was made on an unreadable sibling",
+          client.writes, [])
+
+    quoted = [("workspace", 9,
+               {"state": "closed",
+                "pull_request": {"merged_at": "2026-01-01T00:00:00Z"},
+                "body": "> Refs branchLeft/workspace#7\n\nquoting a review"}
+               )]
+    check("a quoted trailer creates no landed-sibling evidence",
+          len(_run(_Fake(siblings=quoted))), 1)
+
+    linked = [("workspace", 9,
+               {"state": "open", "pull_request": {"merged_at": None},
+                "body": "Refs [ISSUE workspace#7]"
+                        "(https://github.com/branchLeft/workspace/issues/7)"})]
+    check("a hyperlinked trailer on an open sibling blocks",
+          _run(_Fake(siblings=linked)), [])
 
     check("link header",
           _next_link('<https://a/2>; rel="next", <https://a/9>; rel="last"'),

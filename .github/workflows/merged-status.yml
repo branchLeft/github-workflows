@@ -21,7 +21,7 @@ name: merged-status (reusable)
 #   jobs:
 #     merged-status:
 #       if: github.event.pull_request.merged == true
-#       uses: branchLeft/github-workflows/.github/workflows/merged-status.yml@v1.0.9
+#       uses: branchLeft/github-workflows/.github/workflows/merged-status.yml@vX.Y.Z
 #       with:
 #         link-kinds: closing+refs
 #         from-statuses: In progress,In review
@@ -48,10 +48,6 @@ on:
         description: "The status written when every linked pull request has landed"
         type: string
         default: Merged
-      subject-pr:
-        description: "Act on this pull request instead of the one that triggered the run"
-        type: string
-        default: ''
       dry-run:
         description: "Report what would be written and write nothing"
         type: boolean
@@ -128,7 +124,7 @@ jobs:
           APP_KEY: ${{ secrets.projects_app_key }}
           ORG: ${{ github.repository_owner }}
           CALLER_REPO: ${{ github.repository }}
-          SUBJECT_PR: ${{ inputs.subject-pr != '' && inputs.subject-pr || github.event.pull_request.number }}
+          SUBJECT_PR: ${{ github.event.pull_request.number }}
           LINK_KINDS: ${{ inputs.link-kinds }}
           FROM_STATUSES: ${{ inputs.from-statuses }}
           TARGET_STATUS: ${{ inputs.target-status }}

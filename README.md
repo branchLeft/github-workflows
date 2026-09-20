@@ -121,16 +121,43 @@ empty organisation secret in the same step. Set both at repository level.
 
 **`link-kinds` and `from-statuses` are required and have no default here.**
 Together they are the only place this workflow answers what counts as
-delivery, and the reason both exist is that the first cannot answer it alone:
-the closing trailers GitHub acts on and the non-closing `Refs` spelling parse
-to the same edge, and in an estate where hand-delivered work uses `Refs` by
-convention, the keyword separates nothing. `from-statuses` carries the
-discrimination — an unstarted backlog epic is not completed by a merge that
-mentioned it, whatever keyword did the mentioning.
+delivery, and the reason both exist is that the first cannot answer it alone.
+A repo that delivers some paths by hand has every reason to require the
+**non-closing** `Refs` spelling on exactly the pull requests that did the
+delivering, so that the merge cannot close an issue whose work is not yet
+live; there, `link-kinds: closing` writes nothing, ever. `from-statuses`
+carries the discrimination instead — an unstarted item in a backlog column is
+not completed by a merge that mentioned it in passing, whatever keyword did
+the mentioning.
 
-An unrecognised value for either is refused rather than narrowed, because a
-typo that quietly wrote nothing would look exactly like an estate with
+An unrecognised or empty value for either is refused rather than narrowed,
+because a typo that quietly wrote nothing would look exactly like a board with
 nothing to write.
+
+**Both trailer spellings are read**: the plain `Refs org/repo#12` and the
+markdown hyperlink `Refs [ISSUE repo#12](https://github.com/org/repo/issues/12)`.
+The second is not decoration — a repo may mandate it so a reader can tell an
+issue from a pull request, which share a number space and redirect to each
+other. The target is taken from the **URL**, never the link text, because the
+text routinely omits the owner and reading it would resolve a cross-repo
+reference against the wrong repository. Fenced blocks and quoted lines are not
+read at all: a quoted `Closes #123` is a report of what something else said.
+
+An **open** cross-referencing pull request blocks the write even when this
+workflow cannot find a trailer in its body — an unparseable reference is the
+absence of evidence, not evidence of absence. A landed one is held to the
+trailer. Both rules fail towards not writing.
+
+### Pinning, and the one thing that will bite an adopter
+
+The job resolves its own revision by grepping the **caller's** checked-out
+`.github/workflows/` for the pin, because nothing the runner exposes names it.
+It requires exactly one distinct match and refuses on none or two.
+
+**That grep is textual. A second pin in a comment counts.** Pasting the caller
+block above into a repo that already has a real caller — or leaving an old pin
+commented out beside a new one — produces `found 2` and the job refuses. Keep
+exactly one occurrence of the string `merged-status.yml@` in that directory.
 
 ### `opv-lint.yml`
 
