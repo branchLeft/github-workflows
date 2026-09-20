@@ -166,19 +166,19 @@ def parse_links(body, default_repo, org, kinds):
     """
     found = []
     text = uninterpreted(body)
-    for pattern, from_url in ((_LINK_RE, False), (_LINK_URL_RE, True)):
+    for pattern in (_LINK_RE, _LINK_URL_RE):
         for match in pattern.finditer(text):
             keyword, owner, repo, number = match.groups()
             if normalise_kind(keyword) not in kinds:
                 continue
             if owner and owner.lower() != org.lower():
                 continue
-            # The hyperlink form always carries an owner and a repo in the
-            # URL; the plain form may carry neither, and then the trailer is
-            # about the repository whose body it is.
+            # A plain trailer may name neither owner nor repo, and then it
+            # is about the repository whose body it is. A hyperlink always
+            # names both, in the URL -- `from_url` is carried only so this
+            # stays readable, since the two branches coincide.
             found.append((match.start(),
-                          (repo if (repo and (owner or not from_url))
-                           else default_repo, int(number))))
+                          (repo or default_repo, int(number))))
     out = []
     for _offset, key in sorted(found):
         if key not in out:
@@ -560,8 +560,12 @@ def _self_test():
     check("no trailer", parse_links("mentions #4 in passing", "r", org,
                                     all_kinds), [])
 
+    # The link text names a DIFFERENT repo from the URL, deliberately: the
+    # text is free-form and usually omits the owner, so a reader of it would
+    # resolve a cross-repo reference against the wrong repository. An
+    # agreeing pair would not have told these apart.
     check("a hyperlinked trailer resolves from the URL, not the link text",
-          parse_links("Refs [ISSUE workspace#12]"
+          parse_links("Refs [ISSUE website#99]"
                       "(https://github.com/branchLeft/workspace/issues/12)",
                       "somewhere-else", org, all_kinds),
           [("workspace", 12)])
