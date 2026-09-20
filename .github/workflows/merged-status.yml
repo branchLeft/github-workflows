@@ -63,6 +63,13 @@ on:
 
 permissions:
   contents: read
+  # The App cannot read a pull request -- an installation granted
+  # `issues: read` is refused `/repos/.../issues/<n>` for one, measured on
+  # this runner -- and the subject pull request is always in the repository
+  # this job is running in, which is what GITHUB_TOKEN already covers. A
+  # reusable workflow can only narrow the caller's permissions, so the caller
+  # grants the same pair.
+  pull-requests: read
 
 jobs:
   merged-status:
@@ -126,6 +133,7 @@ jobs:
           FROM_STATUSES: ${{ inputs.from-statuses }}
           TARGET_STATUS: ${{ inputs.target-status }}
           DRY_RUN: ${{ inputs.dry-run }}
+          MERGED_STATUS_REPO_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 

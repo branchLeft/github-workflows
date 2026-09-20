@@ -174,13 +174,31 @@ def decide(linked_states, current_status, from_statuses):
 
 
 class Client(object):
-    def __init__(self, token, org):
-        self.token = token
+    """Two credentials, because no single one can do both halves.
+
+    The App installation token is the only thing that can touch an
+    organisation project at all -- `GITHUB_TOKEN` answers NOT_FOUND on
+    `projectV2` -- and it is also the only one that reaches an issue in a
+    sibling repository. It cannot read a pull request: an App granted
+    `issues: read` is refused `/repos/.../issues/<n>` for a pull request with
+    "Resource not accessible by integration", measured on this runner.
+
+    The subject pull request is always in the repository the workflow is
+    running in, which is exactly what the job's own `GITHUB_TOKEN` can read.
+    So the split is not a convenience: it is what lets this run on the two
+    permissions the App already holds, rather than on a third one nobody has
+    granted.
+    """
+
+    def __init__(self, project_token, repo_token, org):
+        self.project_token = project_token
+        self.repo_token = repo_token or project_token
         self.org = org
 
-    def _request(self, url, data=None, accept="application/vnd.github+json"):
+    def _request(self, url, data=None, accept="application/vnd.github+json",
+                 token=None):
         headers = {
-            "Authorization": "Bearer " + self.token,
+            "Authorization": "Bearer " + (token or self.project_token),
             "Accept": accept,
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "branchleft-merged-status",
@@ -202,18 +220,23 @@ class Client(object):
             raise Refused("%s %s -> HTTP %s: %s"
                           % ("POST" if data else "GET", url, exc.code, detail))
 
-    def issue(self, repo, number):
+    def pull(self, repo, number):
+        """The subject pull request, read with the repository token."""
         return self._request(
-            "%s/repos/%s/%s/issues/%d" % (API, self.org, repo, number))[0]
+            "%s/repos/%s/%s/pulls/%d" % (API, self.org, repo, number),
+            token=self.repo_token)[0]
 
-    def cross_referencing_pulls(self, repo, number):
+    def referencing_pulls(self, repo, number):
         """Every pull request in the org whose timeline entry cross-references
-        this issue, as `(repo, number)`.
+        this issue, as `(repo, number, node)` where `node` carries the body
+        and lifecycle state the timeline already embeds.
 
         This is a candidate list, not the answer: the timeline counts a
-        mention made anywhere, including in a comment written long after the
-        fact, while the edge this tool acts on is the one a pull request
-        declares in its own body. Each candidate's body is read back below.
+        mention made anywhere, including one in a comment written long after
+        the fact, while the edge this tool acts on is the one a pull request
+        declares in its own body. The body is filtered on below, from the copy
+        the timeline supplies -- reading each candidate back individually
+        would need a permission the App does not hold and would buy nothing.
         """
         found = []
         url = ("%s/repos/%s/%s/issues/%d/timeline?per_page=100"
@@ -235,8 +258,8 @@ class Client(object):
                 if not src_repo or not isinstance(source.get("number"), int):
                     continue
                 key = (src_repo, source["number"])
-                if key not in found:
-                    found.append(key)
+                if key not in [(r, n) for r, n, _ in found]:
+                    found.append((src_repo, source["number"], source))
             url = _next_link(headers.get("Link"))
         return found
 
@@ -254,8 +277,7 @@ class Client(object):
             "field": status_field})
         issue = (data.get("repository") or {}).get("issue")
         if issue is None:
-            raise Refused("no issue %s/%s#%d visible to this token"
-                          % (self.org, repo, number))
+            return None
         nodes = (issue.get("projectItems") or {}).get("nodes") or []
         page = (issue.get("projectItems") or {}).get("pageInfo") or {}
         if page.get("hasNextPage"):
@@ -347,11 +369,8 @@ def resolve_statuses(spec):
 
 def run(client, subject_repo, subject_number, kinds, from_statuses,
         target_status, status_field, dry_run, log):
-    subject = client.issue(subject_repo, subject_number)
-    if not subject.get("pull_request"):
-        raise Refused("%s/%s#%d is not a pull request"
-                      % (client.org, subject_repo, subject_number))
-    if not (subject.get("pull_request") or {}).get("merged_at"):
+    subject = client.pull(subject_repo, subject_number)
+    if not subject.get("merged"):
         raise Refused(
             "%s/%s#%d did not merge. Refusing to run: this tool records that "
             "work landed, and a closed-unmerged subject is the case where it "
@@ -365,21 +384,24 @@ def run(client, subject_repo, subject_number, kinds, from_statuses,
 
     written = []
     for repo, number in candidates:
-        issue = client.issue(repo, number)
-        if issue.get("pull_request"):
-            log("  %s#%d is a pull request, not an issue -- skipped"
+        items = client.project_items(repo, number, status_field)
+        if items is None:
+            # A trailer can name a pull request, or an issue this token
+            # cannot see. Neither is written to, and neither is treated as a
+            # reading about whether the work landed.
+            log("  %s#%d is not an issue visible to this token -- skipped"
                 % (repo, number))
             continue
+        if not items:
+            log("  %s#%d is on no board -- nothing to write" % (repo, number))
+            continue
 
-        linked = [(subject_repo, subject_number)]
-        for key in client.cross_referencing_pulls(repo, number):
-            if key not in linked:
-                linked.append(key)
-
-        states = []
-        for pull_repo, pull_number in linked:
-            node = client.issue(pull_repo, pull_number)
-            if not node.get("pull_request"):
+        states = [MERGED]
+        log("  %s#%d <- %s#%d (%s)"
+            % (repo, number, subject_repo, subject_number, MERGED))
+        for pull_repo, pull_number, node in client.referencing_pulls(
+                repo, number):
+            if (pull_repo, pull_number) == (subject_repo, subject_number):
                 continue
             if (repo, number) not in parse_links(
                     node.get("body"), pull_repo, client.org, kinds):
@@ -388,11 +410,6 @@ def run(client, subject_repo, subject_number, kinds, from_statuses,
             states.append(state)
             log("  %s#%d <- %s#%d (%s)"
                 % (repo, number, pull_repo, pull_number, state))
-
-        items = client.project_items(repo, number, status_field)
-        if not items:
-            log("  %s#%d is on no board -- nothing to write" % (repo, number))
-            continue
 
         for item in items:
             value = item.get("fieldValueByName") or {}
@@ -506,6 +523,81 @@ def _self_test():
     check("statuses parse", resolve_statuses(" In progress , In review "),
           flight)
 
+    logged = []
+
+    class _Fake(object):
+        """Stands in for the API so `run`'s own refusals can be exercised.
+
+        Deliberately not a stand-in for GitHub: it answers the four calls
+        `run` makes and nothing more. What it proves is that the decision
+        logic refuses where it should, never that the requests resemble the
+        real ones -- see the live run recorded with this change for that.
+        """
+
+        org = "branchLeft"
+
+        def __init__(self, merged=True, siblings=(), status="In review"):
+            self._merged = merged
+            self._siblings = list(siblings)
+            self._status = status
+            self.writes = []
+
+        def pull(self, repo, number):
+            return {"merged": self._merged,
+                    "body": "Refs branchLeft/workspace#7"}
+
+        def project_items(self, repo, number, field):
+            return [{"id": "item", "project": {"id": "proj", "number": 4},
+                     "fieldValueByName": {
+                         "name": self._status,
+                         "field": {"id": "field",
+                                   "options": [{"id": "opt",
+                                                "name": "Merged"}]}}}]
+
+        def referencing_pulls(self, repo, number):
+            return self._siblings
+
+        def set_status(self, *args):
+            self.writes.append(args)
+
+    def _run(client):
+        del logged[:]
+        return run(client, "workspace", 1, LINK_KIND_SETS["closing+refs"],
+                   flight, "Merged", "Status", False, logged.append)
+
+    try:
+        _run(_Fake(merged=False))
+        failures.append("run accepted a subject that did not merge")
+    except Refused:
+        pass
+
+    open_sibling = [("workspace", 9,
+                     {"state": "open", "pull_request": {"merged_at": None},
+                      "body": "Refs branchLeft/workspace#7"})]
+    client = _Fake(siblings=open_sibling)
+    check("an open sibling blocks the write", _run(client), [])
+    check("and nothing was written", client.writes, [])
+
+    client = _Fake()
+    check("no open sibling writes", len(_run(client)), 1)
+    check("the write reached the board", len(client.writes), 1)
+
+    client = _Fake(status="Backlog")
+    check("a backlog item is left alone", _run(client), [])
+
+    merged_sibling = [("workspace", 9,
+                       {"state": "closed",
+                        "pull_request": {"merged_at": "2026-01-01T00:00:00Z"},
+                        "body": "Refs branchLeft/workspace#7"})]
+    check("a landed sibling does not block", len(_run(_Fake(
+        siblings=merged_sibling))), 1)
+
+    unrelated = [("workspace", 9,
+                  {"state": "open", "pull_request": {"merged_at": None},
+                   "body": "mentions #7 with no trailer"})]
+    check("an open pull request with no trailer does not block",
+          len(_run(_Fake(siblings=unrelated))), 1)
+
     check("link header",
           _next_link('<https://a/2>; rel="next", <https://a/9>; rel="last"'),
           "https://a/2")
@@ -554,8 +646,18 @@ def main(argv=None):
         token = os.environ.get("MERGED_STATUS_TOKEN") or ""
         if not token:
             raise Refused("MERGED_STATUS_TOKEN is empty")
+        if not os.environ.get("MERGED_STATUS_REPO_TOKEN"):
+            # Falling back to the project token is right for a workstation
+            # run, where one credential covers both, and wrong to do
+            # silently on a runner -- the App cannot read a pull request, so
+            # the fallback would fail several calls later with an error that
+            # named the wrong cause.
+            log("no MERGED_STATUS_REPO_TOKEN: reading the subject pull "
+                "request with the project token")
         written = run(
-            Client(token, args.org), args.repo, args.pr,
+            Client(token, os.environ.get("MERGED_STATUS_REPO_TOKEN"),
+                   args.org),
+            args.repo, args.pr,
             resolve_kinds(args.link_kinds),
             resolve_statuses(args.from_statuses),
             args.target_status, args.status_field, args.dry_run, log)
