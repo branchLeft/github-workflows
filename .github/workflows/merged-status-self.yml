@@ -1,0 +1,24 @@
+name: merged-status
+
+# This repo tests the writer with its own working copy rather than by calling
+# the reusable workflow at a tag -- otherwise a pull request that changes the
+# rules would be checked by the previously tagged version of them.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  merged-status-self-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run the merged-status unit tests
+        run: python3 tools/merged-status.py --self-test

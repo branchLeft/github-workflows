@@ -78,6 +78,60 @@ caller block works everywhere:
 Adopting the gate in a repo that has never run it is therefore a two-file
 change, and the ratchet means the first PR is green.
 
+### `merged-status.yml`
+
+Records on a GitHub Projects board that a pull request's work has landed,
+once **every** pull request naming the same issue has stopped being open. A
+merge is evidence about one edge: an issue routinely spans several pull
+requests in several repos, so the question is re-asked of all of them before
+anything is written. Logic and rationale:
+[`tools/merged-status.py`](tools/merged-status.py).
+
+Unlike the lint workflows this one holds a credential. `GITHUB_TOKEN` cannot
+read an organisation project at all — `projectV2` answers `NOT_FOUND` — so the
+caller passes a GitHub App id and private key, and the job mints a short-lived
+installation token with `openssl` and `curl`. No third-party action is used
+for it, so the job still passes under `allowed_actions: selected`.
+
+**Caller usage** — add to the target repo as
+`.github/workflows/merged-status.yml`:
+
+```yaml
+name: merged-status
+
+on:
+  pull_request:
+    types: [closed]
+
+jobs:
+  merged-status:
+    if: github.event.pull_request.merged == true
+    uses: branchLeft/github-workflows/.github/workflows/merged-status.yml@vX.Y.Z
+    with:
+      link-kinds: closing+refs
+      from-statuses: In progress,In review
+      projects-app-id: ${{ vars.BRANCHLEFT_PROJECTS_APP_ID }}
+    secrets:
+      projects_app_key: ${{ secrets.BRANCHLEFT_PROJECTS_APP_KEY }}
+```
+
+Organisation-level Actions secrets are **not** delivered to a private repo's
+runner on the free plan — measured, with `GITHUB_TOKEN` arriving beside an
+empty organisation secret in the same step. Set both at repository level.
+
+**`link-kinds` and `from-statuses` are required and have no default here.**
+Together they are the only place this workflow answers what counts as
+delivery, and the reason both exist is that the first cannot answer it alone:
+the closing trailers GitHub acts on and the non-closing `Refs` spelling parse
+to the same edge, and in an estate where hand-delivered work uses `Refs` by
+convention, the keyword separates nothing. `from-statuses` carries the
+discrimination — an unstarted backlog epic is not completed by a merge that
+mentioned it, whatever keyword did the mentioning.
+
+An unrecognised value for either is refused rather than narrowed, because a
+typo that quietly wrote nothing would look exactly like an estate with
+nothing to write.
+
 ### `opv-lint.yml`
 
 Blocks a committed operational value in place of the reference the org
