@@ -1,0 +1,26 @@
+# This repo had no ignore file at all until a compiled bytecode cache was
+# committed to it. Every sibling public repo carries one; this is the same
+# shape, not the workspace root's deny-by-default form -- that one is
+# load-bearing for a private scaffolding repo whose default must be "not
+# published", and it would be wrong here, where the whole tree is meant to be
+# readable.
+
+# Python bytecode. Written when the module is imported -- not by running it,
+# since a `__main__` script is never cached -- and version-stamped per
+# interpreter, so a tracked copy churns and differs per machine.
+__pycache__/
+*.py[cod]
+
+.DS_Store
+
+# Sibling worktrees live in both of these and are never part of this repo's
+# tree. Two spellings because both are in use here; neither is a typo to be
+# tidied away, because ignoring only one leaves a whole checkout one
+# `git add -A` from being committed.
+.worktrees/
+worktrees/
+.claude/worktrees/
+
+# Optional local workspace-wide code graph. Never committed anywhere: it
+# holds absolute home paths.
+graphify-out/

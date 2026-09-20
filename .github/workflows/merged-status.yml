@@ -1,0 +1,193 @@
+name: merged-status (reusable)
+
+# Records on the board that a pull request's work has landed, once every pull
+# request naming the same issue has stopped being open. A merge is evidence
+# about one edge: one issue routinely spans several pull requests in several
+# repos, so the question is re-asked of all of them before anything is written.
+#
+# Uses only actions/checkout plus `run:` steps, so it passes under
+# `allowed_actions: selected` without any per-repo allow-list change.
+#
+# Which links count as delivery is the caller's to state -- `link-kinds` and
+# `from-statuses` are required inputs with no default here, and
+# tools/merged-status.py refuses a value it does not recognise rather than
+# quietly selecting nothing.
+#
+# Caller usage (in the target repo), guarded on the merge:
+#
+#   on:
+#     pull_request:
+#       types: [closed]
+#   jobs:
+#     merged-status:
+#       if: github.event.pull_request.merged == true
+#       uses: branchLeft/github-workflows/.github/workflows/merged-status.yml@vX.Y.Z
+#       with:
+#         link-kinds: closing+refs
+#         from-statuses: In progress,In review
+#         projects-app-id: ${{ vars.BRANCHLEFT_PROJECTS_APP_ID }}
+#       secrets:
+#         projects_app_key: ${{ secrets.BRANCHLEFT_PROJECTS_APP_KEY }}
+
+on:
+  workflow_call:
+    inputs:
+      link-kinds:
+        description: "Which body-trailer spellings create an edge: closing, closing+refs or all"
+        type: string
+        required: true
+      from-statuses:
+        description: "Comma-separated board statuses an item may be moved out of"
+        type: string
+        required: true
+      projects-app-id:
+        description: "The GitHub App id whose installation token writes the board"
+        type: string
+        required: true
+      target-status:
+        description: "The status written when every linked pull request has landed"
+        type: string
+        default: Merged
+      dry-run:
+        description: "Report what would be written and write nothing"
+        type: boolean
+        default: false
+    secrets:
+      projects_app_key:
+        description: "PEM private key of the GitHub App named by projects-app-id"
+        required: true
+
+permissions:
+  contents: read
+  # The App cannot read a pull request -- an installation granted
+  # `issues: read` is refused `/repos/.../issues/<n>` for one, measured on
+  # this runner -- and the subject pull request is always in the repository
+  # this job is running in, which is what GITHUB_TOKEN already covers. A
+  # reusable workflow can only narrow the caller's permissions, so the caller
+  # grants the same pair.
+  pull-requests: read
+
+jobs:
+  merged-status:
+    name: Write the board status
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the caller
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Nothing the runner provides identifies the revision the caller asked
+      # for: `github.job_workflow_sha` and `github.job_workflow_ref` are both
+      # empty here, and an empty `ref:` makes actions/checkout fall back to the
+      # default branch -- so the caller would silently get main's script under
+      # a workflow it pinned to a tag. The caller's own workflow file does name
+      # it, and it is checked out above. Exactly one distinct pin is required:
+      # two callers in one repo naming different revisions is drift, and
+      # guessing which governs reintroduces the same silence.
+      - name: Resolve the revision the caller pinned
+        id: pin
+        run: |
+          set -euo pipefail
+
+          # `|| true` so that no match reaches the count below with its
+          # message, rather than aborting under `set -e` with a bare exit 1.
+          refs=$(grep -rhoE 'branchLeft/github-workflows/\.github/workflows/merged-status\.yml@[^[:space:]"]+' \
+                   .github/workflows/ | sed 's/.*@//' | sort -u || true)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          if [ "$n" -ne 1 ]; then
+            echo "::error::expected exactly one pinned branchLeft/github-workflows revision under .github/workflows/, found ${n}: ${refs}. Refusing to write a board status from an unknown revision."
+            exit 1
+          fi
+
+          printf 'ref=%s\n' "$refs" >> "$GITHUB_OUTPUT"
+          echo "Running branchLeft/github-workflows@$refs"
+
+      - name: Check out this repo at the revision the caller pinned
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/github-workflows
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .merged-status
+          persist-credentials: false
+
+      - name: Verify the writer before trusting it
+        run: python3 .merged-status/tools/merged-status.py --self-test
+
+      - name: Mint an installation token and write the board
+        env:
+          # An App installation token, not GITHUB_TOKEN: the repository token
+          # cannot so much as read an organisation project -- `projectV2`
+          # answers NOT_FOUND -- so there is no narrower credential that works.
+          APP_ID: ${{ inputs.projects-app-id }}
+          APP_KEY: ${{ secrets.projects_app_key }}
+          ORG: ${{ github.repository_owner }}
+          CALLER_REPO: ${{ github.repository }}
+          SUBJECT_PR: ${{ github.event.pull_request.number }}
+          LINK_KINDS: ${{ inputs.link-kinds }}
+          FROM_STATUSES: ${{ inputs.from-statuses }}
+          TARGET_STATUS: ${{ inputs.target-status }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          MERGED_STATUS_REPO_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${APP_ID:-}" ]; then echo "::error::no App id supplied"; exit 1; fi
+          if [ -z "${APP_KEY:-}" ]; then echo "::error::no App key supplied"; exit 1; fi
+          if [ -z "${SUBJECT_PR:-}" ]; then echo "::error::no pull request to act on"; exit 1; fi
+
+          b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+          umask 077
+          printf '%s' "$APP_KEY" > key.pem
+          case "$(head -1 key.pem)" in
+            *"PRIVATE KEY"*) : ;;
+            *) echo "::error::the App key is not a PEM"; exit 1 ;;
+          esac
+
+          now=$(date +%s)
+          hdr=$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)
+          # Backdated by a minute against clock skew, and short-lived: GitHub
+          # refuses a JWT more than ten minutes ahead of its own clock.
+          pl=$(printf '{"iat":%d,"exp":%d,"iss":"%s"}' "$((now - 60))" "$((now + 540))" "$APP_ID" | b64url)
+          sig=$(printf '%s.%s' "$hdr" "$pl" | openssl dgst -sha256 -sign key.pem | b64url)
+          jwt="$hdr.$pl.$sig"
+          rm -f key.pem
+
+          curl -sS --fail-with-body -o installations.json \
+            -H "Authorization: Bearer $jwt" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/app/installations
+
+          install_id=$(python3 -c '
+          import json, os, sys
+          org = os.environ["ORG"].lower()
+          for entry in json.load(open("installations.json")):
+              if (entry.get("account") or {}).get("login", "").lower() == org:
+                  print(entry["id"]); sys.exit(0)
+          sys.stderr.write("no installation of this App on %s\n" % org)
+          sys.exit(1)')
+
+          curl -sS --fail-with-body -o token.json -X POST \
+            -H "Authorization: Bearer $jwt" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/app/installations/$install_id/access_tokens"
+
+          # Masked before it is ever read into a variable: everything after
+          # this point can appear in a log line without leaking the token.
+          echo "::add-mask::$(python3 -c 'import json;print(json.load(open("token.json"))["token"])')"
+          MERGED_STATUS_TOKEN=$(python3 -c 'import json;print(json.load(open("token.json"))["token"])')
+          export MERGED_STATUS_TOKEN
+          rm -f token.json installations.json
+
+          args=()
+          if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
+          python3 .merged-status/tools/merged-status.py \
+            --org "$ORG" \
+            --repo "${CALLER_REPO#*/}" \
+            --pr "$SUBJECT_PR" \
+            --link-kinds "$LINK_KINDS" \
+            --from-statuses "$FROM_STATUSES" \
+            --target-status "$TARGET_STATUS" \
+            "${args[@]+"${args[@]}"}"
