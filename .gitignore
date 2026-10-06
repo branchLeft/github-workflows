@@ -23,4 +23,3 @@ worktrees/
 
 # Optional local workspace-wide code graph. Never committed anywhere: it
 # holds absolute home paths.
-graphify-out/
