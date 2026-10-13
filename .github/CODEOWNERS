@@ -1,36 +1,54 @@
 # Code owners for gating files only (m14, workspace#2314). A file listed here
 # judges or gates a merge or a deploy, so the owner approves it. Every other
 # file is unowned, so an agent PR touching only those merges on the reviewer
-# App's approval. There is deliberately no catch-all line.
+# App's approval. There is deliberately no catch-all line. GitHub CODEOWNERS
+# matches case-sensitively and has no character classes, so the name forms
+# below are the lower-case, Capitalised and UPPER-case spellings.
 
 # CI workflows and actions: they decide pass or fail on every pull request.
-/.github/                       @branchLeft/branchleft-admin
-**/.github/workflows/           @branchLeft/branchleft-admin
-**/.github/actions/             @branchLeft/branchleft-admin
+/.github/                                      @branchLeft/branchleft-admin
+**/.github/workflows/                          @branchLeft/branchleft-admin
+**/.github/actions/                            @branchLeft/branchleft-admin
 
 # CODEOWNERS and ruleset or branch-protection files: they say who must approve.
-**/[Cc][Oo][Dd][Ee][Oo][Ww][Nn][Ee][Rr][Ss]          @branchLeft/branchleft-admin
-**/*[Rr][Uu][Ll][Ee][Ss][Ee][Tt]*                    @branchLeft/branchleft-admin
-**/*[Bb][Rr][Aa][Nn][Cc][Hh]-[Pp][Rr][Oo][Tt][Ee][Cc][Tt][Ii][Oo][Nn]*  @branchLeft/branchleft-admin
-**/*[Bb][Rr][Aa][Nn][Cc][Hh]_[Pp][Rr][Oo][Tt][Ee][Cc][Tt][Ii][Oo][Nn]*  @branchLeft/branchleft-admin
-**/*[Bb][Rr][Aa][Nn][Cc][Hh][Pp][Rr][Oo][Tt][Ee][Cc][Tt][Ii][Oo][Nn]*   @branchLeft/branchleft-admin
+**/CODEOWNERS                                  @branchLeft/branchleft-admin
+**/codeowners                                  @branchLeft/branchleft-admin
+**/CodeOwners                                  @branchLeft/branchleft-admin
+**/*ruleset*                                   @branchLeft/branchleft-admin
+**/*Ruleset*                                   @branchLeft/branchleft-admin
+**/*RULESET*                                   @branchLeft/branchleft-admin
+**/*branch-protection*                         @branchLeft/branchleft-admin
+**/*Branch-Protection*                         @branchLeft/branchleft-admin
+**/*BRANCH-PROTECTION*                         @branchLeft/branchleft-admin
+**/*branch_protection*                         @branchLeft/branchleft-admin
+**/*Branch_Protection*                         @branchLeft/branchleft-admin
+**/*BRANCH_PROTECTION*                         @branchLeft/branchleft-admin
+**/*branchprotection*                          @branchLeft/branchleft-admin
+**/*BranchProtection*                          @branchLeft/branchleft-admin
+**/*BRANCHPROTECTION*                          @branchLeft/branchleft-admin
 
 # Lint and merged-status tools every repo's CI calls, the hook registry that
 # runs them, and the ignore files that switch checks off.
-/tools/                         @branchLeft/branchleft-admin
-/.pre-commit-hooks.yaml         @branchLeft/branchleft-admin
-/.docs-lint*                    @branchLeft/branchleft-admin
-/.opv-lintignore                @branchLeft/branchleft-admin
+/tools/                                        @branchLeft/branchleft-admin
+/.pre-commit-hooks.yaml                        @branchLeft/branchleft-admin
+/.docs-lint*                                   @branchLeft/branchleft-admin
+/.opv-lintignore                               @branchLeft/branchleft-admin
 
 # Standards gate: the floors, skip rules and mode the standards CI reads.
-/.standardsignore               @branchLeft/branchleft-admin
-/.standards.mode                @branchLeft/branchleft-admin
-/tools/floors.tsv               @branchLeft/branchleft-admin
-/.standards-db-tooling          @branchLeft/branchleft-admin
+/.standardsignore                              @branchLeft/branchleft-admin
+/.standards.mode                               @branchLeft/branchleft-admin
+/tools/floors.tsv                              @branchLeft/branchleft-admin
+/.standards-db-tooling                         @branchLeft/branchleft-admin
 
 # Gate scripts at any depth: the merge script reads a scripts directory, or a
 # name containing guard, approval or deploy, as a gate.
-**/scripts/                     @branchLeft/branchleft-admin
-**/*[Gg][Uu][Aa][Rr][Dd]*       @branchLeft/branchleft-admin
-**/*[Aa][Pp][Pp][Rr][Oo][Vv]*   @branchLeft/branchleft-admin
-**/*[Dd][Ee][Pp][Ll][Oo][Yy]*   @branchLeft/branchleft-admin
+**/scripts/                                    @branchLeft/branchleft-admin
+**/*guard*                                     @branchLeft/branchleft-admin
+**/*Guard*                                     @branchLeft/branchleft-admin
+**/*GUARD*                                     @branchLeft/branchleft-admin
+**/*approv*                                    @branchLeft/branchleft-admin
+**/*Approv*                                    @branchLeft/branchleft-admin
+**/*APPROV*                                    @branchLeft/branchleft-admin
+**/*deploy*                                    @branchLeft/branchleft-admin
+**/*Deploy*                                    @branchLeft/branchleft-admin
+**/*DEPLOY*                                    @branchLeft/branchleft-admin
