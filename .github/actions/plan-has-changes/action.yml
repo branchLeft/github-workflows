@@ -68,6 +68,6 @@ runs:
         python3 -I "$SCRIPT" "$PREVIEW_JSON" "$PLAN_FILE" \
           --github-output "$GITHUB_OUTPUT" --github-summary "$summary"
         printf 'summary_file=%s\n' "$summary" >> "$GITHUB_OUTPUT"
-        if [ "$WRITE_SUMMARY" = true ]; then
+        if [ -n "$WRITE_SUMMARY" ]; then
           cat "$summary" >> "$GITHUB_STEP_SUMMARY"
         fi
