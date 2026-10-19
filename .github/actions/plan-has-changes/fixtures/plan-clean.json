@@ -1,0 +1,11 @@
+{
+  "manifest": {"version": "v0"},
+  "config": {},
+  "resourcePlans": {
+    "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production": {
+      "goal": {"inputDiff": {}, "outputDiff": {}, "type": "pulumi:pulumi:Stack"},
+      "steps": ["same"],
+      "state": {"k": "v"}
+    }
+  }
+}

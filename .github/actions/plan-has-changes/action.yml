@@ -1,0 +1,73 @@
+name: Plan has changes
+description: >-
+  Decide whether a saved Pulumi plan would change anything. Fails closed:
+  only a plan that parsed and is wholly unchanged reports `false`.
+
+# The rules and their reasons are in plan-has-changes.md beside this file.
+# The script is run from the revision the caller pinned, via github.action_path,
+# so this file never names a tag of this repo.
+
+inputs:
+  preview-json:
+    description: Path to the `pulumi preview --json` output.
+    required: true
+  plan-file:
+    description: >-
+      Path to the plan saved by `pulumi preview --save-plan`. A missing file is
+      not an error: the verdict is `true`.
+    required: true
+  working-directory:
+    description: >-
+      Directory both paths are relative to, itself relative to the workspace.
+      A job-level `defaults.run.working-directory` is not applied to this
+      action, so name the directory here.
+    required: false
+    default: '.'
+  write-summary:
+    description: >-
+      `true` appends the verdict's headline to the job summary. `false` leaves
+      the summary alone, for a caller that combines this verdict with another
+      and writes the one headline itself; `summary_file` still holds the text.
+    required: false
+    default: 'true'
+
+outputs:
+  has_changes:
+    description: >-
+      `false` only for a plan that parsed and changes nothing, outputs included;
+      `true` for every other outcome. The step fails, leaving this unset, only
+      if the verdict could not be written.
+    value: ${{ steps.decide.outputs.has_changes }}
+  summary_file:
+    description: >-
+      Path of a file holding the headline and, where the plan was not
+      understood, the reason line naming what was not.
+    value: ${{ steps.decide.outputs.summary_file }}
+
+runs:
+  using: composite
+  steps:
+    - id: decide
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PREVIEW_JSON: ${{ inputs.preview-json }}
+        PLAN_FILE: ${{ inputs.plan-file }}
+        WRITE_SUMMARY: ${{ inputs.write-summary }}
+        SCRIPT: ${{ github.action_path }}/plan-has-changes.py
+      run: |
+        set -eu
+        case "$WRITE_SUMMARY" in
+          true | false) ;;
+          *)
+            echo "::error::write-summary must be 'true' or 'false', got '$WRITE_SUMMARY'"
+            exit 1
+            ;;
+        esac
+        summary=$(mktemp "$RUNNER_TEMP/plan-has-changes.XXXXXX")
+        python3 -I "$SCRIPT" "$PREVIEW_JSON" "$PLAN_FILE" \
+          --github-output "$GITHUB_OUTPUT" --github-summary "$summary"
+        printf 'summary_file=%s\n' "$summary" >> "$GITHUB_OUTPUT"
+        if [ "$WRITE_SUMMARY" = true ]; then
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+        fi

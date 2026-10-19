@@ -2,3 +2,5 @@
 tools/opv-lint-rules.md	ALL	# documents the patterns it would otherwise match
 tools/opv-lint.sh	ALL	# the rule definitions themselves
 tools/opv-lint.test.sh	ALL	# fixture content is deliberately shaped like every anti-pattern
+.github/actions/plan-has-changes/plan-has-changes.py	OPV004	# the secret signature key and the "[secret]" placeholder are Pulumi's public wire format, not credentials; the file must stay byte-identical to the copy it replaced
+.github/actions/plan-has-changes/test_plan_has_changes.py	OPV001,OPV004	# fixture resource names and secret shapes are the subject of the assertions; the file must stay byte-identical to the copy it replaced

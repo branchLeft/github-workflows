@@ -1,0 +1,10 @@
+{
+  "steps": [
+    {
+      "op": "create",
+      "urn": "urn:pulumi:production::example::example:index/thing:Thing::added"
+    }
+  ],
+  "duration": 1,
+  "changeSummary": {"create": 1}
+}

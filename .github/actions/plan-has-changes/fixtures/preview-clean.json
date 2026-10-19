@@ -1,0 +1,24 @@
+{
+  "steps": [
+    {
+      "op": "same",
+      "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+      "oldState": {
+        "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "id": "ID",
+        "outputs": {"k": "v"},
+        "sourcePosition": "project:///a#1"
+      },
+      "newState": {
+        "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "sourcePosition": "project:///a#9"
+      }
+    }
+  ],
+  "duration": 1,
+  "changeSummary": {"same": 1}
+}

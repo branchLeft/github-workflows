@@ -1,0 +1,146 @@
+name: Plan has changes (self-test)
+
+# This repo tests the action with its own working copy (the local path below),
+# not a tagged one, so a pull request that changes the action is checked by the
+# change itself. It runs on every pull request, with no path filter, so a change
+# elsewhere in the repo cannot skip it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/plan-has-changes
+
+jobs:
+  unit-tests:
+    name: Parser unit tests
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the parser unit tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
+
+  action:
+    name: Action wiring
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A clean plan
+        id: clean
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+
+      - name: A clean plan reports false and writes one headline
+        env:
+          HAS_CHANGES: ${{ steps.clean.outputs.has_changes }}
+        run: |
+          test "$HAS_CHANGES" = false
+          test "$(grep -c '^No changes: ' "$GITHUB_STEP_SUMMARY")" -eq 1
+
+      - name: A clean plan with the summary left to the caller
+        id: quiet
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+          write-summary: 'false'
+
+      - name: The caller's summary is untouched and the text is in the file
+        env:
+          HAS_CHANGES: ${{ steps.quiet.outputs.has_changes }}
+          SUMMARY_FILE: ${{ steps.quiet.outputs.summary_file }}
+        run: |
+          test "$HAS_CHANGES" = false
+          grep -q '^No changes: ' "$SUMMARY_FILE"
+          test "$(grep -c '^No changes: ' "$GITHUB_STEP_SUMMARY")" -eq 1
+
+      - name: A plan with a change
+        id: changed
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-changed.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+
+      - name: A plan with a change reports true
+        env:
+          HAS_CHANGES: ${{ steps.changed.outputs.has_changes }}
+        run: test "$HAS_CHANGES" = true
+
+      - name: A plan file that was never saved
+        id: unsaved
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: no-such-plan.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+
+      - name: A missing plan file reports true
+        env:
+          HAS_CHANGES: ${{ steps.unsaved.outputs.has_changes }}
+        run: test "$HAS_CHANGES" = true
+
+      - name: A write-summary value that is neither true nor false
+        id: refused
+        continue-on-error: true
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+          write-summary: 'yes'
+
+      - name: The odd write-summary value is refused, not read as false
+        env:
+          OUTCOME: ${{ steps.refused.outcome }}
+          HAS_CHANGES: ${{ steps.refused.outputs.has_changes }}
+        run: |
+          test "$OUTCOME" = failure
+          test -z "$HAS_CHANGES"
+
+  action-in-a-job-with-a-default-directory:
+    name: Action wiring (job default directory)
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .github/actions/plan-has-changes/fixtures
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The input paths with the default working-directory
+        id: defaulted
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+
+      - name: The job default is not applied, so the files are not found
+        env:
+          HAS_CHANGES: ${{ steps.defaulted.outputs.has_changes }}
+        run: test "$HAS_CHANGES" = true

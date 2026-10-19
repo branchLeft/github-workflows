@@ -202,3 +202,73 @@ No secrets, no write permission, no per-repo allow-list change.
 This is the guard, not a sweep: adopting it in a repo carrying existing
 violations is expected to turn CI red (or advisory, in warn mode) on the
 instances already there, fixed caller by caller rather than in bulk.
+
+## Actions
+
+A reusable workflow is a whole job; a composite action is a step inside the
+caller's own job, which is what a decision needs when it reads files that only
+that job has produced.
+
+### `.github/actions/plan-has-changes`
+
+Decides whether a saved Pulumi plan would change anything, so that an apply job
+can skip, and the approval it would have asked for never be requested, when the
+answer is no. Fails closed: only a plan that parsed and is wholly unchanged
+gives `false`. Rules, limits and rationale:
+[`plan-has-changes.md`](.github/actions/plan-has-changes/plan-has-changes.md).
+The decision lives here once; a caller holds a `uses:` step and none of its
+logic.
+
+**Pin the commit, not the bare tag.** The standards workflow gate (CI-1)
+requires every `uses:` that is not a reusable workflow to name a 40-character
+commit SHA with a version comment, so the caller pins the commit the tag points
+to and says which tag it is. Tags are immutable (see Versioning), so the two
+name the same bytes. Read the commit with
+`git ls-remote https://github.com/branchLeft/github-workflows 'refs/tags/vX.Y.Z^{}'`
+(the `^{}` peels the signed tag to its commit). Dependabot's `github-actions`
+ecosystem moves both the SHA and the comment. Nothing greps the caller for the
+pin: the action runs its script from `github.action_path`, which is the revision
+the caller resolved, so there is no second-pin trap of the kind
+`merged-status.yml` has.
+
+**Caller usage** — a step in the plan job, after the two Pulumi previews:
+
+```yaml
+jobs:
+  plan:
+    outputs:
+      has_changes: ${{ steps.noop.outputs.has_changes }}
+    steps:
+      - name: Decide whether the plan changes anything
+        id: noop
+        if: always()
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          preview-json: preview.json
+          plan-file: preview-plan.json
+          working-directory: infra/hosts
+
+  apply:
+    needs: [plan]
+    if: needs.plan.outputs.has_changes != 'false'
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `preview-json` | required | The `pulumi preview --json` output. |
+| `plan-file` | required | The plan saved by `pulumi preview --save-plan`. A missing file reads as `true`. |
+| `working-directory` | `.` | Directory both paths are relative to, itself relative to the workspace. A job-level `defaults.run.working-directory` is **not** applied to the action, so name the directory here. |
+| `write-summary` | `true` | Append the headline to the job summary. `false` leaves the summary to the caller. Any other value fails the step. |
+
+| Output | Meaning |
+|---|---|
+| `has_changes` | `false` only for a plan that parsed and changes nothing, outputs included; `true` otherwise. Unset only if the verdict could not be written, which the apply job's `!= 'false'` reads as "ask". |
+| `summary_file` | A file holding the headline and, where the plan was not understood, the line naming what was not. For a caller that combines this verdict with another and writes the one headline itself (`write-summary: 'false'`). |
+
+The apply job must skip only on an explicit `'false'`, as above. `!= 'false'`
+is the whole contract: an unset output and every verdict the action could not
+establish must still ask.
+
+Needs `python3` on the runner, which `ubuntu-latest` has. No secrets, no write
+permission, no network. This repo's `plan-has-changes-self.yml` runs the
+script's unit tests and the action itself on every pull request.
