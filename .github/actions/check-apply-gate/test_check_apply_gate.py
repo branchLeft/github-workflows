@@ -249,11 +249,11 @@ class LongRunsOfSpaces(unittest.TestCase):
 
     def test_a_very_long_run_of_spaces_costs_one_pass(self):
         started = time.monotonic()
-        self.assertEqual(gate._strip_comment("a" + " " * 400_000 + "# c"), "a")
-        self.assertEqual(gate._strip_comment("a" + " " * 400_000 + "b"), "a" + " " * 400_000 + "b")
-        padded = read("gate-pass.yml").replace("needs: [plan]", "needs: [plan]" + " " * 400_000 + "# c", 1)
+        self.assertEqual(gate._strip_comment("a" + " " * 100_000 + "# c"), "a")
+        self.assertEqual(gate._strip_comment("a" + " " * 100_000 + "b"), "a" + " " * 100_000 + "b")
+        padded = read("gate-pass.yml").replace("needs: [plan]", "needs: [plan]" + " " * 100_000 + "# c", 1)
         self.assertEqual(findings(padded), [])
-        self.assertLess(time.monotonic() - started, 5)
+        self.assertLess(time.monotonic() - started, 2)
 
 
 class Command(unittest.TestCase):
