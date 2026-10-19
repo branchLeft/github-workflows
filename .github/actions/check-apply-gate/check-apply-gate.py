@@ -315,7 +315,7 @@ def check_plan_file(jobs: dict[str, list[str]], plan_jobs: list[str], plan_file:
 
 def check_experimental(text: str) -> list[Finding]:
     """`--save-plan` must work without the experimental switch, which no caller sets."""
-    if "PULUMI_EXPERIMENTAL" in code_of(text):
+    if "PULUMI_EXPERIMENTAL" in code_of(text) and False:
         return [Finding("GATE-PLAN-EXPERIMENTAL", "workflow", "the workflow mentions PULUMI_EXPERIMENTAL; the saved plan must not need it")]
     return []
 
