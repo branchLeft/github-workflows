@@ -33,10 +33,28 @@ The plan job:
 - has exactly one step with the id given as `verdict-step` (`GATE-VERDICT-STEP`),
   and it runs `if: always()` (`GATE-VERDICT-ALWAYS`), so a verdict is written
   whatever an earlier step did;
-- if the verdict step is not the action step, it takes its value from the
-  action's `has_changes` output (`GATE-VERDICT-SOURCE`);
+- if the verdict step is not the action step, a non-comment `env:` line of it
+  binds the action's `has_changes` output to a variable, and a non-comment line
+  reads that variable as `$NAME` or `${NAME}` (`GATE-VERDICT-SOURCE`). That
+  proves the output is bound and read, not what the step does with it: that is
+  the caller's own test;
 - if `summary-step` is given, the verdict step comes before the step of that
   name, so the verdict is the first line of the summary (`GATE-ORDER`).
+
+The saved plan, named by `plan-file`, can hold resource inputs and ciphertext, so
+for every listed plan job:
+
+- exactly one step has the name given as `save-step` (default `Save the update
+  plan for the no-change check`), it sets `continue-on-error: true`, and it runs
+  `--save-plan <plan-file>` with its stdout sent to `/dev/null`
+  (`GATE-PLAN-SAVE`);
+- the step that uses the plan-has-changes action is given `plan-file: <plan-file>`
+  (`GATE-PLAN-INPUT`);
+- no other step names the plan file, saves a plan, uploads an artifact, or globs
+  over the working directory's JSON files (`GATE-PLAN-READ`), and no job that is
+  not a listed plan job names the plan file or saves a plan. Comment lines are
+  not code and are not read. The globs it knows are `*.json` and `preview*`; a
+  spelling it does not know passes, so this is a floor, not a proof.
 
 A workflow this script cannot read (no `jobs:`, a job listed twice, a malformed
 pair, a missing file) fails with `GATE-UNREADABLE`. Nothing it does not
@@ -48,10 +66,9 @@ These are about one repo's own jobs, so each repo keeps its own test for them:
 which jobs are gated applies at all and that a new one gets this check; the
 other operands of an apply `if:` (the push and main operands, the template
 guard); an apply job's other `needs`; the plan job's own `if:`, environment,
-permissions and credentials; the step that saves the plan and that nothing but
-it and the action reads the plan file; and how a caller combines the verdict
-with another check, which this script only requires to start from the action's
-output.
+permissions and credentials; the exact command a repo's save step runs beyond
+its `--save-plan` and `/dev/null`; and what a caller does with the verdict when
+it combines it with another check.
 
 ## Limits
 
@@ -60,7 +77,12 @@ keys at two spaces, job fields at four, steps at six. It reads scalar, flow-list
 and block-list `needs`, and plain, quoted, folded and literal `if:` values. It is
 not a YAML parser: anchors, merge keys and flow-style jobs are not read, and a
 job written that way fails as unreadable or as the finding it hides, never as a
-pass.
+pass. A comment is cut at the first `#` that follows a space or tab, found with a
+plain scan, so a very long line costs one pass.
+
+**Run it on `pull_request` and make it a required check.** The plan jobs run only
+on a push to main, so a check wired only to push finds a broken gate after it has
+merged.
 
 ## Tests
 

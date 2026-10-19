@@ -301,15 +301,31 @@ action's verdict, from a step that runs `if: always()` and before the step that
 writes the rest of the job summary. It is a separate action, not a mode of
 `plan-has-changes`, because it runs in a different job: a credential-free CI job
 that has checked the repo out, never the plan job with production credentials in
-its environment. One home for the check means a repo calls it and writes no test
-of this contract of its own. It reads only the workflow file it is given; a repo
-that does not call it is not checked. Codes, rules and what stays each repo's
-own: [`check-apply-gate.md`](.github/actions/check-apply-gate/check-apply-gate.md).
+its environment. It also holds the rule for the saved plan, which can carry
+resource inputs and ciphertext: only the step that saves it and the action may
+name it, and nothing uploads, prints or globs it. One home for the checks means a
+repo calls it and writes no test of these contracts of its own. It reads only the
+workflow file it is given; a repo that does not call it is not checked. Codes,
+rules and what stays each repo's own:
+[`check-apply-gate.md`](.github/actions/check-apply-gate/check-apply-gate.md).
 
-**Caller usage** — a step in a credential-free job, after the checkout, pinned as
-above:
+**Run it on `pull_request` and make it a required status check.** The plan jobs
+run only on a push to main, so a check wired only to push finds a broken gate
+after it has merged.
+
+**Caller usage** — a step in a credential-free job that runs on `pull_request` and
+on push to main, after the checkout, pinned as above:
 
 ```yaml
+  apply-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          persist-credentials: false
+
       - name: Check the apply gate
         uses: branchLeft/github-workflows/.github/actions/check-apply-gate@FULL_COMMIT_SHA # vX.Y.Z
         with:
@@ -318,6 +334,7 @@ above:
             plan:apply
           verdict-step: noop
           summary-step: Write the plan to the job summary
+          plan-file: preview-plan.json
 ```
 
 | Input | Default | Meaning |
@@ -326,6 +343,8 @@ above:
 | `pairs` | required | Whitespace-separated `PLAN_JOB:APPLY_JOB`, job ids as they are keys under `jobs:`. One workflow with several plan and apply jobs lists them all. |
 | `verdict-step` | `noop` | Id of the plan-job step whose `has_changes` the job publishes: the plan-has-changes step, or a step that combines its output with another check. |
 | `summary-step` | empty | Name of the step that writes the rest of the job summary. When given, the verdict step must come before it. |
+| `plan-file` | required | The path `--save-plan` writes, as the workflow spells it. Only the save step and the plan-has-changes step may name it, and the latter must be given this same path. |
+| `save-step` | `Save the update plan for the no-change check` | Name of the plan job's step that saves the plan: `continue-on-error: true`, `--save-plan <plan-file>`, stdout to `/dev/null`. |
 
 It fails the step, with one annotation per finding, and has no outputs.
 

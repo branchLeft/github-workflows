@@ -30,6 +30,16 @@ inputs:
       given, the verdict step must come before it. Empty to skip this check.
     required: false
     default: ''
+  plan-file:
+    description: >-
+      The path `--save-plan` writes, as the workflow spells it. Only the save
+      step and the plan-has-changes step may name it, and the action step must be
+      given this same path.
+    required: true
+  save-step:
+    description: Name of the plan job's step that saves the plan.
+    required: false
+    default: Save the update plan for the no-change check
 
 runs:
   using: composite
@@ -42,8 +52,11 @@ runs:
         PAIRS: ${{ inputs.pairs }}
         VERDICT_STEP: ${{ inputs.verdict-step }}
         SUMMARY_STEP: ${{ inputs.summary-step }}
+        PLAN_FILE: ${{ inputs.plan-file }}
+        SAVE_STEP: ${{ inputs.save-step }}
         SCRIPT: ${{ github.action_path }}/check-apply-gate.py
       run: |
         set -eu
         python3 -I "$SCRIPT" --workflow "$WORKFLOW" --pairs "$PAIRS" \
-          --verdict-step "$VERDICT_STEP" --summary-step "$SUMMARY_STEP"
+          --verdict-step "$VERDICT_STEP" --summary-step "$SUMMARY_STEP" \
+          --plan-file "$PLAN_FILE" --save-step "$SAVE_STEP"

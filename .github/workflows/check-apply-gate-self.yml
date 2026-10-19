@@ -46,6 +46,7 @@ jobs:
         with:
           workflow: .github/actions/check-apply-gate/fixtures/gate-pass.yml
           pairs: plan:apply
+          plan-file: preview-plan.json
           summary-step: Write the plan to the job summary
 
       - name: A caller that combines the verdict passes with its own verdict step
@@ -53,6 +54,7 @@ jobs:
         with:
           workflow: .github/actions/check-apply-gate/fixtures/gate-pass-combined.yml
           pairs: plan:deploy
+          plan-file: preview-plan.json
 
       - name: A caller whose apply job can start without the verdict
         id: broken
@@ -61,6 +63,7 @@ jobs:
         with:
           workflow: .github/actions/check-apply-gate/fixtures/gate-fail-or.yml
           pairs: plan:apply
+          plan-file: preview-plan.json
 
       - name: A caller that asks for a verdict step it does not have
         id: wrong_step
@@ -69,7 +72,26 @@ jobs:
         with:
           workflow: .github/actions/check-apply-gate/fixtures/gate-pass.yml
           pairs: plan:apply
+          plan-file: preview-plan.json
           verdict-step: no-such-step
+
+      - name: A caller whose plan job prints the saved plan
+        id: plan_read
+        continue-on-error: true
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-fail-plan-read.yml
+          pairs: plan:apply
+          plan-file: preview-plan.json
+
+      - name: A caller checked against a plan file it does not save
+        id: other_plan
+        continue-on-error: true
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-pass.yml
+          pairs: plan:apply
+          plan-file: other-plan.json
 
       - name: A workflow file that is not there
         id: missing
@@ -78,13 +100,18 @@ jobs:
         with:
           workflow: .github/actions/check-apply-gate/fixtures/no-such-file.yml
           pairs: plan:apply
+          plan-file: preview-plan.json
 
       - name: Every broken caller fails the step, and none passes
         env:
           BROKEN: ${{ steps.broken.outcome }}
           WRONG_STEP: ${{ steps.wrong_step.outcome }}
+          PLAN_READ: ${{ steps.plan_read.outcome }}
+          OTHER_PLAN: ${{ steps.other_plan.outcome }}
           MISSING: ${{ steps.missing.outcome }}
         run: |
           test "$BROKEN" = failure
           test "$WRONG_STEP" = failure
+          test "$PLAN_READ" = failure
+          test "$OTHER_PLAN" = failure
           test "$MISSING" = failure

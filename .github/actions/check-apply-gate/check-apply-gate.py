@@ -11,6 +11,7 @@ from typing import NamedTuple
 
 ACTION_PREFIX = "branchLeft/github-workflows/.github/actions/plan-has-changes@"
 STATUS_FUNCTIONS = ("always", "failure", "cancelled")
+DEFAULT_SAVE_STEP = "Save the update plan for the no-change check"
 JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*(?:#.*)?$")
 FIELD = re.compile(r"^    ([A-Za-z0-9_-]+):[ \t]*(.*)$")
 STEP_FIELD = re.compile(r"^        ([A-Za-z0-9_-]+):[ \t]*(.*)$")
@@ -27,7 +28,14 @@ class Unreadable(Exception):
 
 
 def _strip_comment(value: str) -> str:
-    return re.sub(r"[ \t]+#.*$", "", value).strip()
+    """The value up to a `#` that follows a space or tab, trimmed. Scanned with
+    `str.find`, so a long run of spaces costs one pass."""
+    at = value.find("#")
+    while at != -1:
+        if at > 0 and value[at - 1] in " \t":
+            return value[:at].strip()
+        at = value.find("#", at + 1)
+    return value.strip()
 
 
 def _unquote(value: str) -> str:
@@ -225,6 +233,78 @@ def check_if(plan: str, apply: str, job: list[str]) -> list[Finding]:
     return findings
 
 
+def code_of(text: str) -> str:
+    """The text without its comment-only lines, which are not code."""
+    return "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#"))
+
+
+def reads_action_output(step: Step, action_id: str) -> bool:
+    """Whether a non-comment `env:` line binds the action's `has_changes` output to
+    a variable that a non-comment line then reads as `$NAME` or `${NAME}`."""
+    code = code_of(step.text)
+    source = r"\$\{\{\s*steps\." + re.escape(action_id) + r"\.outputs\.has_changes\s*\}\}"
+    for bound in re.finditer(r"^[ \t]+([A-Za-z_][A-Za-z0-9_]*):[ \t]*" + source + r"[ \t]*$", code, re.M):
+        if re.search(r"\$\{?" + bound.group(1) + r"\b", code):
+            return True
+    return False
+
+
+GLOBS = re.compile(r"\*\.json|preview[-.]?\*")
+
+
+def _step_problem(step: Step, plan_file: str) -> str | None:
+    """Why a step other than the save step and the action may expose the saved plan."""
+    code = code_of(step.text)
+    for needle, why in ((plan_file, "names the plan file"), ("--save-plan", "saves a plan"), ("upload-artifact", "uploads")):
+        if needle in code:
+            return why
+    if GLOBS.search(code):
+        return "globs over the working directory's JSON files"
+    return None
+
+
+def check_plan_file(jobs: dict[str, list[str]], plan_jobs: list[str], plan_file: str, save_name: str) -> list[Finding]:
+    """The saved plan can hold resource inputs and ciphertext: only the save step and
+    the action may name it, the save step discards its stdout and may fail without
+    failing the job, and nothing uploads, prints or globs it."""
+    findings = []
+    for name, lines in jobs.items():
+        if name in plan_jobs:
+            continue
+        code = code_of("\n".join(lines))
+        if plan_file in code or "--save-plan" in code:
+            findings.append(Finding("GATE-PLAN-READ", name, f"a job that is not a plan job names the plan file `{plan_file}` or saves a plan"))
+    for name in plan_jobs:
+        findings += _check_plan_job(name, steps_of(jobs[name]), plan_file, save_name)
+    return findings
+
+
+def _check_plan_job(name: str, steps: list[Step], plan_file: str, save_name: str) -> list[Finding]:
+    saves = [s for s in steps if s.fields.get("name") == save_name]
+    if len(saves) != 1:
+        return [Finding("GATE-PLAN-SAVE", name, f"expected exactly one step named `{save_name}`, found {len(saves)}")]
+    save = saves[0]
+    code = code_of(save.text)
+    findings = []
+    if save.fields.get("continue-on-error") != "true":
+        findings.append(Finding("GATE-PLAN-SAVE", name, "the save step must set `continue-on-error: true`; a missing plan reads as changes"))
+    if not re.search(r"--save-plan[ \t]+" + re.escape(plan_file) + r"(?![A-Za-z0-9_.-])", code) or not re.search(r">[ \t]*/dev/null", code):
+        findings.append(Finding("GATE-PLAN-SAVE", name, f"the save step must run `--save-plan {plan_file}` with its stdout sent to /dev/null"))
+    for step in steps:
+        label = step.fields.get("name", "an unnamed step")
+        if step is save:
+            continue
+        if step.fields.get("uses", "").startswith(ACTION_PREFIX):
+            given = re.search(r"^[ \t]+plan-file:[ \t]*(\S+)", code_of(step.text), re.M)
+            if not given or _unquote(given.group(1)) != plan_file:
+                findings.append(Finding("GATE-PLAN-INPUT", name, f"step `{label}` must pass `plan-file: {plan_file}`"))
+            continue
+        problem = _step_problem(step, plan_file)
+        if problem:
+            findings.append(Finding("GATE-PLAN-READ", name, f"step `{label}` {problem}; only the save step and the action may touch the saved plan"))
+    return findings
+
+
 def check_pair(jobs: dict[str, list[str]], plan: str, apply: str, verdict: str, summary: str | None) -> list[Finding]:
     missing = [Finding("GATE-NO-JOB", name, "no such job in the workflow") for name in (plan, apply) if name not in jobs]
     if missing:
@@ -253,9 +333,13 @@ def check_pair(jobs: dict[str, list[str]], plan: str, apply: str, verdict: str, 
         findings.append(Finding("GATE-VERDICT-ALWAYS", plan, f"step `{verdict}` must run `if: always()` so a verdict is always written"))
     if len(actions) == 1 and step is not actions[0]:
         action_id = actions[0].fields.get("id", "")
-        if not action_id or f"steps.{action_id}.outputs.has_changes" not in step.text:
+        if not action_id or not reads_action_output(step, action_id):
             findings.append(
-                Finding("GATE-VERDICT-SOURCE", plan, f"step `{verdict}` must take its verdict from the action's `has_changes` output")
+                Finding(
+                    "GATE-VERDICT-SOURCE",
+                    plan,
+                    f"step `{verdict}` must bind the action's `has_changes` output to a variable in `env:` and read it",
+                )
             )
     if summary is not None:
         names = [s.fields.get("name", "") for s in steps]
@@ -284,14 +368,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--pairs", required=True, help="whitespace-separated PLAN_JOB:APPLY_JOB")
     parser.add_argument("--verdict-step", required=True)
     parser.add_argument("--summary-step", default=None)
+    parser.add_argument("--plan-file", required=True, help="the path --save-plan writes, as the workflow spells it")
+    parser.add_argument("--save-step", default=DEFAULT_SAVE_STEP, help="name of the step that saves the plan")
     args = parser.parse_args(argv[1:])
     try:
         with open(args.workflow, encoding="utf-8") as handle:
             text = handle.read()
         jobs = job_blocks(text)
         found: list[Finding] = []
-        for plan, apply in parse_pairs(args.pairs):
+        pairs = parse_pairs(args.pairs)
+        for plan, apply in pairs:
             found += check_pair(jobs, plan, apply, args.verdict_step, args.summary_step or None)
+        plan_jobs = sorted({plan for plan, _ in pairs if plan in jobs})
+        found += check_plan_file(jobs, plan_jobs, args.plan_file, args.save_step)
     except (OSError, UnicodeDecodeError, Unreadable) as error:
         print(f"::error file={args.workflow}::GATE-UNREADABLE {error}")
         return 1

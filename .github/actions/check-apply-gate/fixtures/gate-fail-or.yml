@@ -12,6 +12,10 @@ jobs:
     outputs:
       has_changes: ${{ steps.noop.outputs.has_changes }}
     steps:
+      - name: Save the update plan for the no-change check
+        continue-on-error: true
+        run: pulumi preview --stack production --save-plan preview-plan.json > /dev/null
+
       - name: Decide whether the plan changes anything
         id: noop
         if: always()

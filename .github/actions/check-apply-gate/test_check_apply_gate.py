@@ -11,11 +11,13 @@ import importlib.util
 import io
 import pathlib
 import tempfile
+import time
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
 SUMMARY = "Write the plan to the job summary"
+PLAN_FILE = "preview-plan.json"
 
 
 def _load_module():
@@ -149,6 +151,111 @@ class BrokenCallers(unittest.TestCase):
         self.assertEqual(findings(text), [])
 
 
+def plan_findings(text: str, plan_jobs=("plan",), plan_file=PLAN_FILE):
+    return gate.check_plan_file(gate.job_blocks(text), list(plan_jobs), plan_file, gate.DEFAULT_SAVE_STEP)
+
+
+SAVE_STEP = "      - name: Save the update plan for the no-change check\n"
+SAVE_RUN = "        run: pulumi preview --stack production --save-plan preview-plan.json > /dev/null\n"
+SUMMARY_STEP = "      - name: Write the plan to the job summary\n"
+
+
+def before_summary(step: str) -> tuple[str, str]:
+    """The text and replacement that add a whole step to the plan job, ahead of the summary step."""
+    return SUMMARY_STEP, step + SUMMARY_STEP
+
+
+# (what is broken, the text it replaces, its replacement, the code that must be named)
+PLAN_BROKEN = (
+    ("the save step may fail the job", "        continue-on-error: true\n" + SAVE_RUN, SAVE_RUN, "GATE-PLAN-SAVE"),
+    ("the save step lets stdout through", " > /dev/null\n", "\n", "GATE-PLAN-SAVE"),
+    ("the save step writes another file", "--save-plan preview-plan.json", "--save-plan other.json", "GATE-PLAN-SAVE"),
+    ("the save step is not the named step", SAVE_STEP, "      - name: Keep the plan\n", "GATE-PLAN-SAVE"),
+    (
+        "a step prints the saved plan",
+        *before_summary("      - name: Show it\n        run: cat preview-plan.json\n"),
+        "GATE-PLAN-READ",
+    ),
+    (
+        "a step uploads",
+        *before_summary("      - name: Keep it\n        uses: actions/upload-artifact@abc # v4\n"),
+        "GATE-PLAN-READ",
+    ),
+    (
+        "a step globs over the JSON files",
+        *before_summary("      - name: Show them\n        run: cat *.json\n"),
+        "GATE-PLAN-READ",
+    ),
+    (
+        "a second step saves a plan",
+        *before_summary("      - name: Save again\n        run: pulumi preview --save-plan again.json\n"),
+        "GATE-PLAN-READ",
+    ),
+    ("the action reads another file", "plan-file: preview-plan.json", "plan-file: other.json", "GATE-PLAN-INPUT"),
+    ("the action is given no plan file", "          plan-file: preview-plan.json\n", "", "GATE-PLAN-INPUT"),
+    ("a job that is not a plan job names it", "        run: echo apply\n", "        run: cat preview-plan.json\n", "GATE-PLAN-READ"),
+)
+
+
+class PlanFile(unittest.TestCase):
+    def test_a_plan_job_that_keeps_the_plan_to_itself_passes(self):
+        self.assertEqual(plan_findings(read("gate-pass.yml")), [])
+        self.assertEqual(plan_findings(read("gate-pass-combined.yml")), [])
+
+    def test_each_way_to_expose_the_plan_is_named(self):
+        text = read("gate-pass.yml")
+        for what, old, new, code in PLAN_BROKEN:
+            with self.subTest(what=what):
+                self.assertIn(old, text, "the case no longer changes the fixture")
+                self.assertIn(code, codes(plan_findings(text.replace(old, new, 1))))
+
+    def test_a_comment_that_mentions_the_plan_is_not_a_read(self):
+        text = read("gate-pass.yml").replace(
+            SUMMARY_STEP, "      - name: Note\n        run: |\n          # preview-plan.json is saved above\n          echo noted\n" + SUMMARY_STEP, 1
+        )
+        self.assertEqual(plan_findings(text), [])
+
+    def test_the_fixture_that_prints_the_plan_fails(self):
+        self.assertEqual(codes(plan_findings(read("gate-fail-plan-read.yml"))), {"GATE-PLAN-READ"})
+
+
+class VerdictSource(unittest.TestCase):
+    ENV = "          PLAN_HAS_CHANGES: ${{ steps.plan_verdict.outputs.has_changes }}\n"
+
+    def broken(self, old, new):
+        text = read("gate-pass-combined.yml")
+        self.assertIn(old, text)
+        return codes(findings(text.replace(old, new, 1), apply="deploy"))
+
+    def test_a_comment_that_mentions_the_output_is_not_a_source(self):
+        self.assertEqual(self.broken(self.ENV, "          # " + self.ENV.strip() + "\n"), {"GATE-VERDICT-SOURCE"})
+
+    def test_an_env_binding_that_is_never_read_is_not_a_source(self):
+        self.assertEqual(self.broken('"$PLAN_HAS_CHANGES"', '"$OTHER"'), {"GATE-VERDICT-SOURCE"})
+
+    def test_a_variable_that_is_not_bound_from_the_output_is_not_a_source(self):
+        self.assertEqual(self.broken(self.ENV, ""), {"GATE-VERDICT-SOURCE"})
+
+    def test_the_variable_may_be_read_with_braces(self):
+        text = read("gate-pass-combined.yml").replace('"$PLAN_HAS_CHANGES"', '"${PLAN_HAS_CHANGES}"')
+        self.assertEqual(findings(text, apply="deploy"), [])
+
+
+class LongRunsOfSpaces(unittest.TestCase):
+    def test_a_comment_is_stripped_and_a_hash_without_a_space_is_not_a_comment(self):
+        for value, want in (("a # b", "a"), ("a\t# b", "a"), ("a#b", "a#b"), ("a#b # c", "a#b"), ("  a  ", "a"), ("# c", "# c"), ("", "")):
+            with self.subTest(value=value):
+                self.assertEqual(gate._strip_comment(value), want)
+
+    def test_a_very_long_run_of_spaces_costs_one_pass(self):
+        started = time.monotonic()
+        self.assertEqual(gate._strip_comment("a" + " " * 400_000 + "# c"), "a")
+        self.assertEqual(gate._strip_comment("a" + " " * 400_000 + "b"), "a" + " " * 400_000 + "b")
+        padded = read("gate-pass.yml").replace("needs: [plan]", "needs: [plan]" + " " * 400_000 + "# c", 1)
+        self.assertEqual(findings(padded), [])
+        self.assertLess(time.monotonic() - started, 5)
+
+
 class Command(unittest.TestCase):
     def run_main(self, text, *args):
         with tempfile.NamedTemporaryFile("w", suffix=".yml", delete=False, encoding="utf-8") as handle:
@@ -157,7 +264,9 @@ class Command(unittest.TestCase):
         self.addCleanup(path.unlink)
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            status = gate.main(["check-apply-gate.py", "--workflow", str(path), "--verdict-step", "noop", *args])
+            status = gate.main(
+                ["check-apply-gate.py", "--workflow", str(path), "--verdict-step", "noop", "--plan-file", PLAN_FILE, *args]
+            )
         return status, out.getvalue()
 
     def test_a_passing_workflow_exits_zero(self):
@@ -188,7 +297,17 @@ class Command(unittest.TestCase):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             status = gate.main(
-                ["check-apply-gate.py", "--workflow", "/nonexistent/x.yml", "--pairs", "plan:apply", "--verdict-step", "noop"]
+                [
+                    "check-apply-gate.py",
+                    "--workflow",
+                    "/nonexistent/x.yml",
+                    "--pairs",
+                    "plan:apply",
+                    "--verdict-step",
+                    "noop",
+                    "--plan-file",
+                    PLAN_FILE,
+                ]
             )
         self.assertEqual(status, 1)
         self.assertIn("GATE-UNREADABLE", out.getvalue())
