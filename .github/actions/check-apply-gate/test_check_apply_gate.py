@@ -292,6 +292,21 @@ class Experimental(unittest.TestCase):
         self.assertEqual(codes(gate.check_experimental(text)), {"GATE-PLAN-EXPERIMENTAL"})
 
 
+class ShowSecrets(unittest.TestCase):
+    def test_a_workflow_that_never_uses_it_passes(self):
+        for name in ("gate-pass.yml", "gate-pass-combined.yml"):
+            self.assertEqual(gate.check_show_secrets(read(name)), [])
+
+    def test_a_comment_is_not_a_use(self):
+        self.assertEqual(gate.check_show_secrets(read("gate-pass.yml") + "# never --show-secrets\n"), [])
+
+    def test_the_flag_on_the_save_command_is_named(self):
+        old = "pulumi preview --stack production --save-plan"
+        text = read("gate-pass.yml").replace(old, "pulumi preview --show-secrets --stack production --save-plan", 1)
+        self.assertIn("--show-secrets", text)
+        self.assertEqual(codes(gate.check_show_secrets(text)), {"GATE-PLAN-SHOW-SECRETS"})
+
+
 class VerdictSource(unittest.TestCase):
     ENV = "          PLAN_HAS_CHANGES: ${{ steps.plan_verdict.outputs.has_changes }}\n"
 

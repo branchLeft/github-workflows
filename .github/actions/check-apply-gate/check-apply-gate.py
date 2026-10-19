@@ -313,6 +313,13 @@ def check_plan_file(jobs: dict[str, list[str]], plan_jobs: list[str], plan_file:
     return findings
 
 
+def check_show_secrets(text: str) -> list[Finding]:
+    """`--show-secrets` writes plaintext secrets into the saved plan; no caller uses it."""
+    if "--show-secrets" in code_of(text):
+        return [Finding("GATE-PLAN-SHOW-SECRETS", "workflow", "the workflow uses --show-secrets, which puts plaintext secrets in the saved plan")]
+    return []
+
+
 def check_experimental(text: str) -> list[Finding]:
     """`--save-plan` must work without the experimental switch, which no caller sets."""
     if "PULUMI_EXPERIMENTAL" in code_of(text):
@@ -430,6 +437,7 @@ def main(argv: list[str]) -> int:
         plan_jobs = sorted({plan for plan, _ in pairs if plan in jobs})
         found += check_plan_file(jobs, plan_jobs, args.plan_file, args.save_step)
         found += check_experimental(text)
+        found += check_show_secrets(text)
     except (OSError, UnicodeDecodeError, Unreadable) as error:
         print(f"::error file={args.workflow}::GATE-UNREADABLE {error}")
         return 1

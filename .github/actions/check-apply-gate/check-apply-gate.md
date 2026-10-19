@@ -65,7 +65,9 @@ for every listed plan job:
   not a proof;
 - the workflow as a whole does not mention `PULUMI_EXPERIMENTAL`
   (`GATE-PLAN-EXPERIMENTAL`), so the saved plan does not depend on the
-  experimental switch.
+  experimental switch;
+- the workflow as a whole does not use `--show-secrets` (`GATE-PLAN-SHOW-SECRETS`),
+  which writes plaintext secrets into the saved plan.
 
 A workflow this script cannot read (no `jobs:`, a job listed twice, a malformed
 pair, a missing file) fails with `GATE-UNREADABLE`. Nothing it does not
