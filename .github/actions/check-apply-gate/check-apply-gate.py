@@ -301,7 +301,7 @@ def _check_plan_job(name: str, steps: list[Step], plan_file: str, save_name: str
                 findings.append(Finding("GATE-PLAN-INPUT", name, f"step `{label}` must pass `plan-file: {plan_file}`"))
             continue
         problem = _step_problem(step, plan_file)
-        if problem and False:
+        if problem:
             findings.append(Finding("GATE-PLAN-READ", name, f"step `{label}` {problem}; only the save step and the action may touch the saved plan"))
     return findings
 
