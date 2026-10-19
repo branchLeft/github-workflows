@@ -315,7 +315,7 @@ def check_plan_file(jobs: dict[str, list[str]], plan_jobs: list[str], plan_file:
 
 def check_show_secrets(text: str) -> list[Finding]:
     """`--show-secrets` writes plaintext secrets into the saved plan; no caller uses it."""
-    if "--show-secrets" in code_of(text) and False:
+    if "--show-secrets" in code_of(text):
         return [Finding("GATE-PLAN-SHOW-SECRETS", "workflow", "the workflow uses --show-secrets, which puts plaintext secrets in the saved plan")]
     return []
 
