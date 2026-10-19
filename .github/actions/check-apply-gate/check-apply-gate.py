@@ -264,7 +264,7 @@ def reads_action_output(step: Step, action_id: str) -> bool:
     `$NAME` or `${NAME}`."""
     code = code_of(step.text)
     source = r"\$\{\{\s*steps\." + re.escape(action_id) + r"\.outputs\.has_changes\s*\}\}"
-    bindings = code
+    bindings = code_of("\n".join(env_lines(step)))
     for bound in re.finditer(r"^[ \t]+([A-Za-z_][A-Za-z0-9_]*):[ \t]*" + source + r"[ \t]*$", bindings, re.M):
         if re.search(r"\$\{?" + bound.group(1) + r"\b", code):
             return True
