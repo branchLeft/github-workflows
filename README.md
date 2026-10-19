@@ -257,7 +257,7 @@ jobs:
 |---|---|---|
 | `preview-json` | required | The `pulumi preview --json` output. |
 | `plan-file` | required | The plan saved by `pulumi preview --save-plan`. A missing file reads as `true`. |
-| `working-directory` | `.` | Directory both paths are relative to, itself relative to the workspace. A job-level `defaults.run.working-directory` is **not** applied to the action, so name the directory here. |
+| `working-directory` | `.` | Directory both paths are relative to, itself relative to the workspace root. The action does not read your job's `defaults.run.working-directory`: omit this input and the paths are read from the workspace root, so name the directory here. |
 | `write-summary` | `true` | Append the headline to the job summary. `false` leaves the summary to the caller. Any other value fails the step. |
 
 | Output | Meaning |
@@ -267,8 +267,70 @@ jobs:
 
 The apply job must skip only on an explicit `'false'`, as above. `!= 'false'`
 is the whole contract: an unset output and every verdict the action could not
-establish must still ask.
+establish must still ask. Check that in your own CI with `check-apply-gate`,
+below, rather than with a test of your own.
 
-Needs `python3` on the runner, which `ubuntu-latest` has. No secrets, no write
-permission, no network. This repo's `plan-has-changes-self.yml` runs the
-script's unit tests and the action itself on every pull request.
+**What it needs, and what it gets.** It needs `python3` on the runner, which
+`ubuntu-latest` has. The script reads two JSON files, makes no network call and
+needs no secret. But a composite step inherits the calling job's `env:`, and a
+plan job's `env:` usually holds the production plan credentials (the state
+passphrase, the cloud token, the storage keys). So code from this repo runs with
+whatever the plan job has in its environment. Callers can keep credentials off
+this step by scoping them with `env:` to the steps that need them (the Pulumi
+login and previews), not to the job.
+
+**Reviewing a Dependabot bump of the pin.** The pull request shows a SHA and a
+comment changing, not the code that will run with those credentials. Review it
+by the diff of this action's directory across the tag range, not by the CI
+result:
+
+```bash
+git diff vOLD vNEW -- .github/actions/plan-has-changes .github/actions/check-apply-gate
+```
+
+(or the same range at
+`https://github.com/branchLeft/github-workflows/compare/vOLD...vNEW`). Read
+`action.yml` and the script in full; a green check only shows the tests passed.
+
+### `.github/actions/check-apply-gate`
+
+Checks, in the calling repo's own CI, that a workflow keeps the contract above:
+each listed apply job needs its plan job and skips only on an explicit
+`has_changes != 'false'` (no `||`, no `always()`), and the plan job publishes the
+action's verdict, from a step that runs `if: always()` and before the step that
+writes the rest of the job summary. It is a separate action, not a mode of
+`plan-has-changes`, because it runs in a different job: a credential-free CI job
+that has checked the repo out, never the plan job with production credentials in
+its environment. One home for the check means a repo calls it and writes no test
+of this contract of its own. It reads only the workflow file it is given; a repo
+that does not call it is not checked. Codes, rules and what stays each repo's
+own: [`check-apply-gate.md`](.github/actions/check-apply-gate/check-apply-gate.md).
+
+**Caller usage** — a step in a credential-free job, after the checkout, pinned as
+above:
+
+```yaml
+      - name: Check the apply gate
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          workflow: .github/workflows/infra-ci.yml
+          pairs: |
+            plan:apply
+          verdict-step: noop
+          summary-step: Write the plan to the job summary
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `workflow` | required | The workflow file, relative to the workspace root. |
+| `pairs` | required | Whitespace-separated `PLAN_JOB:APPLY_JOB`, job ids as they are keys under `jobs:`. One workflow with several plan and apply jobs lists them all. |
+| `verdict-step` | `noop` | Id of the plan-job step whose `has_changes` the job publishes: the plan-has-changes step, or a step that combines its output with another check. |
+| `summary-step` | empty | Name of the step that writes the rest of the job summary. When given, the verdict step must come before it. |
+
+It fails the step, with one annotation per finding, and has no outputs.
+
+This repo's `plan-has-changes-self.yml` and `check-apply-gate-self.yml` run both
+actions' unit tests and the actions themselves on every pull request. The
+plan-has-changes run checks the job summary through the runner's own per-step
+summary files, a directory layout that is the runner's and not a documented
+interface: the check fails, rather than passing, if that layout goes.

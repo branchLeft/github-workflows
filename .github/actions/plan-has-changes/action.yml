@@ -18,9 +18,9 @@ inputs:
     required: true
   working-directory:
     description: >-
-      Directory both paths are relative to, itself relative to the workspace.
-      A job-level `defaults.run.working-directory` is not applied to this
-      action, so name the directory here.
+      Directory both paths are relative to, itself relative to the workspace
+      root. The action does not read the job's `defaults.run.working-directory`:
+      omit this input and the paths are read from the workspace root.
     required: false
     default: '.'
   write-summary:

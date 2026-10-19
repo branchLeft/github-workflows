@@ -226,6 +226,8 @@ script keeps `from __future__ import annotations`, so it imports on Python 3.9;
 a test pins that import. This repo's `plan-has-changes-self.yml` runs it on
 every pull request, and runs the action itself over the files in `fixtures/`.
 
-Each calling repo tests its own wiring, which this repo cannot see: that the
-apply job's `if:` skips only on an explicit `has_changes == 'false'`, and that
-the plan job publishes the action's `has_changes` output.
+The caller's wiring is checked by the `check-apply-gate` action beside this one,
+which a calling repo runs in its own CI on its own workflow file: that the apply
+job's `if:` skips only on an explicit `has_changes != 'false'`, and that the plan
+job publishes the action's `has_changes` output. A calling repo keeps no test of
+that contract of its own.

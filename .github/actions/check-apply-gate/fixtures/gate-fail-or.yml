@@ -1,0 +1,33 @@
+name: Fixture, a caller whose apply job can start without the verdict
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      has_changes: ${{ steps.noop.outputs.has_changes }}
+    steps:
+      - name: Decide whether the plan changes anything
+        id: noop
+        if: always()
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@0123456789abcdef0123456789abcdef01234567 # v1.0.10
+        with:
+          preview-json: preview.json
+          plan-file: preview-plan.json
+
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [plan]
+    if: >-
+      github.ref == 'refs/heads/main' ||
+      needs.plan.outputs.has_changes != 'false'
+    steps:
+      - name: Apply
+        run: echo apply

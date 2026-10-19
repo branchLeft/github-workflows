@@ -1,0 +1,49 @@
+name: Check apply gate
+description: >-
+  Check that a workflow in the calling repo gates each listed apply job on an
+  explicit `has_changes != 'false'` from its plan job, and that the plan job
+  publishes the plan-has-changes action's verdict. Reads the caller's workflow
+  file; call it from a CI job that has checked the repo out.
+
+# The rules and their reasons are in check-apply-gate.md beside this file. It is
+# a check, not a gate on the caller: it cannot see a workflow it is not given.
+
+inputs:
+  workflow:
+    description: Path of the workflow file, relative to the workspace root.
+    required: true
+  pairs:
+    description: >-
+      Whitespace-separated `PLAN_JOB:APPLY_JOB` pairs, job ids as they are keys
+      under `jobs:`.
+    required: true
+  verdict-step:
+    description: >-
+      Id of the plan-job step whose `has_changes` the job publishes: the
+      plan-has-changes step itself, or a step that combines its output with
+      another check. The same id in every listed plan job.
+    required: false
+    default: noop
+  summary-step:
+    description: >-
+      Name of the plan job's step that writes the rest of the job summary. When
+      given, the verdict step must come before it. Empty to skip this check.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        WORKFLOW: ${{ inputs.workflow }}
+        PAIRS: ${{ inputs.pairs }}
+        VERDICT_STEP: ${{ inputs.verdict-step }}
+        SUMMARY_STEP: ${{ inputs.summary-step }}
+        SCRIPT: ${{ github.action_path }}/check-apply-gate.py
+      run: |
+        set -eu
+        python3 -I "$SCRIPT" --workflow "$WORKFLOW" --pairs "$PAIRS" \
+          --verdict-step "$VERDICT_STEP" --summary-step "$SUMMARY_STEP"

@@ -1,0 +1,43 @@
+name: Fixture, a caller that combines the plan verdict with another check
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      has_changes: ${{ steps.noop.outputs.has_changes }}
+    steps:
+      - name: Decide whether the plan changes anything
+        id: plan_verdict
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@0123456789abcdef0123456789abcdef01234567 # v1.0.10
+        with:
+          preview-json: preview.json
+          plan-file: preview-plan.json
+          write-summary: 'false'
+
+      - name: Check the pinned image
+        run: echo image
+
+      - name: Decide whether the deploy is needed
+        id: noop
+        if: always()
+        env:
+          PLAN_HAS_CHANGES: ${{ steps.plan_verdict.outputs.has_changes }}
+        run: |
+          if [ "$PLAN_HAS_CHANGES" = false ]; then has_changes=false; else has_changes=true; fi
+          echo "has_changes=$has_changes" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [typecheck, plan]
+    if: "github.event_name == 'push' && needs.plan.outputs.has_changes != 'false'"
+    steps:
+      - name: Deploy
+        run: echo deploy

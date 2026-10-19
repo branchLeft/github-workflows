@@ -15,6 +15,7 @@ permissions:
 
 env:
   ACTION_DIR: .github/actions/plan-has-changes
+  FIXTURES: .github/actions/plan-has-changes/fixtures
 
 jobs:
   unit-tests:
@@ -50,16 +51,18 @@ jobs:
           plan-file: plan-clean.json
           working-directory: .github/actions/plan-has-changes/fixtures
 
-      # Each step has a job-summary file of its own, so a later step cannot read
-      # what the action appended to the summary. The headline is checked in the
-      # file the action reports, which is the file it appends from.
-      - name: A clean plan reports false and a headline
+      # Each step has a job-summary file of its own, which the runner keeps for
+      # the life of the job. The helper reads them there and fails if the runner
+      # no longer keeps them, so the summary checks below cannot pass by seeing
+      # nothing. The directory layout is the runner's, not a documented interface.
+      - name: A clean plan reports false and a headline, and appends it once
         env:
           HAS_CHANGES: ${{ steps.clean.outputs.has_changes }}
           SUMMARY_FILE: ${{ steps.clean.outputs.summary_file }}
         run: |
           test "$HAS_CHANGES" = false
           grep -q '^No changes: ' "$SUMMARY_FILE"
+          test "$(bash "$FIXTURES/count-summaries-with.sh" 'No changes: ')" -eq 1
 
       - name: A clean plan with the summary left to the caller
         id: quiet
@@ -70,13 +73,14 @@ jobs:
           working-directory: .github/actions/plan-has-changes/fixtures
           write-summary: 'false'
 
-      - name: The verdict and the headline text are still reported
+      - name: The verdict and the text are reported, and the summary is not appended to
         env:
           HAS_CHANGES: ${{ steps.quiet.outputs.has_changes }}
           SUMMARY_FILE: ${{ steps.quiet.outputs.summary_file }}
         run: |
           test "$HAS_CHANGES" = false
           grep -q '^No changes: ' "$SUMMARY_FILE"
+          test "$(bash "$FIXTURES/count-summaries-with.sh" 'No changes: ')" -eq 1
 
       - name: A plan with a change
         id: changed
@@ -86,10 +90,12 @@ jobs:
           plan-file: plan-clean.json
           working-directory: .github/actions/plan-has-changes/fixtures
 
-      - name: A plan with a change reports true
+      - name: A plan with a change reports true and appends its own headline
         env:
           HAS_CHANGES: ${{ steps.changed.outputs.has_changes }}
-        run: test "$HAS_CHANGES" = true
+        run: |
+          test "$HAS_CHANGES" = true
+          test "$(bash "$FIXTURES/count-summaries-with.sh" '1 change: approval required')" -eq 1
 
       - name: A plan file that was never saved
         id: unsaved
@@ -143,7 +149,11 @@ jobs:
           preview-json: preview-clean.json
           plan-file: plan-clean.json
 
-      - name: The job default is not applied, so the files are not found
+      # What this proves: omit the input and the paths are read from the
+      # workspace root, so a caller whose files sit in its job's default directory
+      # must name that directory. It does not tell whether the job default reaches
+      # the action's steps; the action's own `working-directory` wins either way.
+      - name: Omitting the input reads from the workspace root, not the job default
         env:
           HAS_CHANGES: ${{ steps.defaulted.outputs.has_changes }}
         run: test "$HAS_CHANGES" = true

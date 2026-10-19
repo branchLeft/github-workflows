@@ -1,0 +1,90 @@
+name: Check apply gate (self-test)
+
+# Tested with this repo's own working copy (the local path below), not a tagged
+# one. It runs on every pull request, with no path filter. The action reads a
+# caller's workflow file, so the callers here are the files under fixtures/.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/check-apply-gate
+
+jobs:
+  unit-tests:
+    name: Checker unit tests
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the checker unit tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
+
+  action:
+    name: Checker action wiring
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A caller that keeps the contract passes
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-pass.yml
+          pairs: plan:apply
+          summary-step: Write the plan to the job summary
+
+      - name: A caller that combines the verdict passes with its own verdict step
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-pass-combined.yml
+          pairs: plan:deploy
+
+      - name: A caller whose apply job can start without the verdict
+        id: broken
+        continue-on-error: true
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-fail-or.yml
+          pairs: plan:apply
+
+      - name: A caller that asks for a verdict step it does not have
+        id: wrong_step
+        continue-on-error: true
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-pass.yml
+          pairs: plan:apply
+          verdict-step: no-such-step
+
+      - name: A workflow file that is not there
+        id: missing
+        continue-on-error: true
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/no-such-file.yml
+          pairs: plan:apply
+
+      - name: Every broken caller fails the step, and none passes
+        env:
+          BROKEN: ${{ steps.broken.outcome }}
+          WRONG_STEP: ${{ steps.wrong_step.outcome }}
+          MISSING: ${{ steps.missing.outcome }}
+        run: |
+          test "$BROKEN" = failure
+          test "$WRONG_STEP" = failure
+          test "$MISSING" = failure
