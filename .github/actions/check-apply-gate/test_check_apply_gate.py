@@ -68,6 +68,7 @@ class PassingCallers(unittest.TestCase):
     def test_two_pairs_in_one_workflow_are_each_checked(self):
         text = read("gate-pass.yml")
         second = text.split("jobs:\n", 1)[1].replace("plan:", "plan2:").replace("apply:", "apply2:")
+        second = second.replace("apply-gate:", "apply-gate2:")
         second = second.replace("needs: [plan]", "needs: [plan2]").replace("needs.plan.outputs", "needs.plan2.outputs")
         second = second.replace("id: noop", "id: noop2").replace("steps.noop.", "steps.noop2.")
         jobs = gate.job_blocks(text + second)

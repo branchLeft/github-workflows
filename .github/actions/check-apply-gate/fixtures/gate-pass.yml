@@ -43,3 +43,23 @@ jobs:
     steps:
       - name: Apply
         run: echo apply
+
+  apply-gate:
+    name: Check the apply gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the apply gate
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0123456789abcdef0123456789abcdef01234567 # v1.0.10
+        with:
+          workflow: .github/workflows/infra-ci.yml
+          pairs: |
+            plan:apply
+          verdict-step: noop
+          summary-step: Write the plan to the job summary
+          plan-file: preview-plan.json
