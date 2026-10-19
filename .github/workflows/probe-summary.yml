@@ -1,0 +1,29 @@
+name: Probe summary
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Write a marker to this step's summary
+        run: echo "probe-marker-one" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The runner's file-command directory exists
+        run: test -d "$RUNNER_TEMP/_runner_file_commands"
+
+      - name: An earlier step's summary is still readable
+        run: grep -rq probe-marker-one "$RUNNER_TEMP/_runner_file_commands"
+
+      - name: A step-level GITHUB_STEP_SUMMARY override takes effect
+        env:
+          GITHUB_STEP_SUMMARY: /tmp/override-summary-file
+        run: test "$GITHUB_STEP_SUMMARY" = /tmp/override-summary-file
