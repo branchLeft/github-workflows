@@ -241,7 +241,6 @@ def code_of(text: str) -> str:
 def reads_action_output(step: Step, action_id: str) -> bool:
     """Whether a non-comment `env:` line binds the action's `has_changes` output to
     a variable that a non-comment line then reads as `$NAME` or `${NAME}`."""
-    return True
     code = code_of(step.text)
     source = r"\$\{\{\s*steps\." + re.escape(action_id) + r"\.outputs\.has_changes\s*\}\}"
     for bound in re.finditer(r"^[ \t]+([A-Za-z_][A-Za-z0-9_]*):[ \t]*" + source + r"[ \t]*$", code, re.M):
