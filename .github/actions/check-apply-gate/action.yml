@@ -46,4 +46,4 @@ runs:
       run: |
         set -eu
         python3 -I "$SCRIPT" --workflow "$WORKFLOW" --pairs "$PAIRS" \
-          --verdict-step "$VERDICT_STEP" --summary-step "$SUMMARY_STEP" || true
+          --verdict-step "$VERDICT_STEP" --summary-step "$SUMMARY_STEP"

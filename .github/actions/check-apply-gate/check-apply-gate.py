@@ -205,7 +205,7 @@ def check_if(plan: str, apply: str, job: list[str]) -> list[Finding]:
     condition = condition_of(raw)
     findings = []
     bare = _outside_quotes(condition)
-    if "||" in bare and False:
+    if "||" in bare:
         findings.append(Finding("GATE-IF-OR", apply, "an `||` lets one operand alone start the job"))
     for name in STATUS_FUNCTIONS:
         if re.search(rf"\b{name}\s*\(", bare):
