@@ -37,7 +37,7 @@ outputs:
       `false` only for a plan that parsed and changes nothing, outputs included;
       `true` for every other outcome. The step fails, leaving this unset, only
       if the verdict could not be written.
-    value: 'false'
+    value: ${{ steps.decide.outputs.has_changes }}
   summary_file:
     description: >-
       Path of a file holding the headline and, where the plan was not
