@@ -1,0 +1,66 @@
+name: Probe summary
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Probe
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A clean plan
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+
+      - name: A plain step writes a marker
+        run: echo "probe-marker-two" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Some file is named step_summary_ something
+        if: always()
+        run: test -n "$(find "$RUNNER_TEMP/_runner_file_commands" -name 'step_summary_*')"
+
+      - name: Some file is named with summary
+        if: always()
+        run: test -n "$(find "$RUNNER_TEMP/_runner_file_commands" -name '*ummary*')"
+
+      - name: The plain marker is in a file named step_summary_
+        if: always()
+        run: test -n "$(find "$RUNNER_TEMP/_runner_file_commands" -name 'step_summary_*' | xargs grep -l probe-marker-two)"
+
+      - name: The plain marker is found by recursive grep
+        if: always()
+        run: grep -rq probe-marker-two "$RUNNER_TEMP/_runner_file_commands"
+
+      - name: The action's headline is found by recursive grep
+        if: always()
+        run: grep -rq '^No changes' "$RUNNER_TEMP/_runner_file_commands"
+
+      - name: The action's headline is in a file named step_summary_
+        if: always()
+        run: test -n "$(find "$RUNNER_TEMP/_runner_file_commands" -name 'step_summary_*' | xargs grep -l '^No changes')"
+
+      - name: The helper succeeds
+        if: always()
+        run: bash .github/actions/plan-has-changes/fixtures/count-summaries-with.sh 'No changes'
+
+      - name: The helper counts exactly one
+        if: always()
+        run: test "$(bash .github/actions/plan-has-changes/fixtures/count-summaries-with.sh 'No changes')" -eq 1
+
+      - name: The helper counts zero
+        if: always()
+        run: test "$(bash .github/actions/plan-has-changes/fixtures/count-summaries-with.sh 'No changes')" -eq 0
