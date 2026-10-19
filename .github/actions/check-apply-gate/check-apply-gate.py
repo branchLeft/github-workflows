@@ -7,9 +7,11 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from pathlib import PurePosixPath
 from typing import NamedTuple
 
 ACTION_PREFIX = "branchLeft/github-workflows/.github/actions/plan-has-changes@"
+CHECK_PREFIX = "branchLeft/github-workflows/.github/actions/check-apply-gate@"
 STATUS_FUNCTIONS = ("always", "failure", "cancelled")
 DEFAULT_SAVE_STEP = "Save the update plan for the no-change check"
 JOB_KEY = re.compile(r"^  ([A-Za-z0-9_-]+):[ \t]*(?:#.*)?$")
@@ -145,6 +147,7 @@ def outputs_of(job: list[str]) -> dict[str, str]:
 class Step(NamedTuple):
     fields: dict[str, str]
     text: str
+    raw: str
 
 
 def steps_of(job: list[str]) -> list[Step]:
@@ -153,22 +156,39 @@ def steps_of(job: list[str]) -> list[Step]:
     if start is None:
         return []
     raw: list[list[str]] = []
+    originals: list[list[str]] = []
     for line in job[start + 1 :]:
         if line.strip() and not line.startswith("      ") and not line.lstrip().startswith("#"):
             break
         if line.startswith("      - "):
             raw.append(["        " + line[len("      - ") :]])
+            originals.append([line])
         elif raw:
             raw[-1].append(line)
+            originals[-1].append(line)
     steps = []
-    for lines in raw:
+    for lines, original in zip(raw, originals):
         fields: dict[str, str] = {}
         for i, line in enumerate(lines):
             match = STEP_FIELD.match(line)
             if match and match.group(1) not in fields:
                 fields[match.group(1)] = _scalar_or_block(lines, i, match.group(2))
-        steps.append(Step(fields, "\n".join(lines)))
+        steps.append(Step(fields, "\n".join(lines), "\n".join(original)))
     return steps
+
+
+def env_lines(step: Step) -> list[str]:
+    """The lines under the step's own `env:` key, which sits at eight spaces."""
+    lines = step.text.splitlines()
+    for i, line in enumerate(lines):
+        if re.fullmatch(r"        env:[ \t]*(?:#.*)?", line):
+            body = []
+            for follow in lines[i + 1 :]:
+                if follow.strip() and _indent(follow) <= 8:
+                    break
+                body.append(follow)
+            return body
+    return []
 
 
 def condition_of(value: str) -> str:
@@ -239,11 +259,13 @@ def code_of(text: str) -> str:
 
 
 def reads_action_output(step: Step, action_id: str) -> bool:
-    """Whether a non-comment `env:` line binds the action's `has_changes` output to
-    a variable that a non-comment line then reads as `$NAME` or `${NAME}`."""
+    """Whether a non-comment line under the step's own `env:` binds the action's
+    `has_changes` output to a variable that a non-comment line then reads as
+    `$NAME` or `${NAME}`."""
     code = code_of(step.text)
     source = r"\$\{\{\s*steps\." + re.escape(action_id) + r"\.outputs\.has_changes\s*\}\}"
-    for bound in re.finditer(r"^[ \t]+([A-Za-z_][A-Za-z0-9_]*):[ \t]*" + source + r"[ \t]*$", code, re.M):
+    bindings = code_of("\n".join(env_lines(step)))
+    for bound in re.finditer(r"^[ \t]+([A-Za-z_][A-Za-z0-9_]*):[ \t]*" + source + r"[ \t]*$", bindings, re.M):
         if re.search(r"\$\{?" + bound.group(1) + r"\b", code):
             return True
     return False
@@ -252,10 +274,16 @@ def reads_action_output(step: Step, action_id: str) -> bool:
 GLOBS = re.compile(r"\*\.json|preview[-.]?\*")
 
 
+def _stem(plan_file: str) -> str:
+    """The plan file's name without its directory and extension, so that
+    `preview-plan`, `preview-plan.js` and `preview-plan.json.bak` all contain it."""
+    return PurePosixPath(plan_file).stem
+
+
 def _step_problem(step: Step, plan_file: str) -> str | None:
     """Why a step other than the save step and the action may expose the saved plan."""
     code = code_of(step.text)
-    for needle, why in ((plan_file, "names the plan file"), ("--save-plan", "saves a plan"), ("upload-artifact", "uploads")):
+    for needle, why in ((_stem(plan_file), "names the plan file"), ("--save-plan", "saves a plan"), ("upload-artifact", "uploads")):
         if needle in code:
             return why
     if GLOBS.search(code):
@@ -268,15 +296,28 @@ def check_plan_file(jobs: dict[str, list[str]], plan_jobs: list[str], plan_file:
     the action may name it, the save step discards its stdout and may fail without
     failing the job, and nothing uploads, prints or globs it."""
     findings = []
+    stem = _stem(plan_file)
     for name, lines in jobs.items():
         if name in plan_jobs:
             continue
-        code = code_of("\n".join(lines))
-        if plan_file in code or "--save-plan" in code:
+        text = "\n".join(lines)
+        for step in steps_of(lines):
+            # The job that runs this check has to name the plan file to pass it on.
+            if step.fields.get("uses", "").startswith(CHECK_PREFIX):
+                text = text.replace(step.raw, "", 1)
+        code = code_of(text)
+        if stem in code or "--save-plan" in code:
             findings.append(Finding("GATE-PLAN-READ", name, f"a job that is not a plan job names the plan file `{plan_file}` or saves a plan"))
     for name in plan_jobs:
         findings += _check_plan_job(name, steps_of(jobs[name]), plan_file, save_name)
     return findings
+
+
+def check_experimental(text: str) -> list[Finding]:
+    """`--save-plan` must work without the experimental switch, which no caller sets."""
+    if "PULUMI_EXPERIMENTAL" in code_of(text):
+        return [Finding("GATE-PLAN-EXPERIMENTAL", "workflow", "the workflow mentions PULUMI_EXPERIMENTAL; the saved plan must not need it")]
+    return []
 
 
 def _check_plan_job(name: str, steps: list[Step], plan_file: str, save_name: str) -> list[Finding]:
@@ -288,8 +329,15 @@ def _check_plan_job(name: str, steps: list[Step], plan_file: str, save_name: str
     findings = []
     if save.fields.get("continue-on-error") != "true":
         findings.append(Finding("GATE-PLAN-SAVE", name, "the save step must set `continue-on-error: true`; a missing plan reads as changes"))
-    if not re.search(r"--save-plan[ \t]+" + re.escape(plan_file) + r"(?![A-Za-z0-9_.-])", code) or not re.search(r">[ \t]*/dev/null", code):
-        findings.append(Finding("GATE-PLAN-SAVE", name, f"the save step must run `--save-plan {plan_file}` with its stdout sent to /dev/null"))
+    command = r"--save-plan[ \t]+" + re.escape(plan_file) + r"[ \t]*>[ \t]*/dev/null[ \t]*$"
+    if not re.search(command, code, re.M) or code.count("--save-plan") != 1 or code.count(_stem(plan_file)) != 1:
+        findings.append(
+            Finding(
+                "GATE-PLAN-SAVE",
+                name,
+                f"the save step must run `--save-plan {plan_file} > /dev/null` once, with nothing after it on that command and nothing else in the step naming the file",
+            )
+        )
     for step in steps:
         label = step.fields.get("name", "an unnamed step")
         if step is save:
@@ -381,6 +429,7 @@ def main(argv: list[str]) -> int:
             found += check_pair(jobs, plan, apply, args.verdict_step, args.summary_step or None)
         plan_jobs = sorted({plan for plan, _ in pairs if plan in jobs})
         found += check_plan_file(jobs, plan_jobs, args.plan_file, args.save_step)
+        found += check_experimental(text)
     except (OSError, UnicodeDecodeError, Unreadable) as error:
         print(f"::error file={args.workflow}::GATE-UNREADABLE {error}")
         return 1

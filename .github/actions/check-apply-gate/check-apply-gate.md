@@ -33,11 +33,12 @@ The plan job:
 - has exactly one step with the id given as `verdict-step` (`GATE-VERDICT-STEP`),
   and it runs `if: always()` (`GATE-VERDICT-ALWAYS`), so a verdict is written
   whatever an earlier step did;
-- if the verdict step is not the action step, a non-comment `env:` line of it
-  binds the action's `has_changes` output to a variable, and a non-comment line
-  reads that variable as `$NAME` or `${NAME}` (`GATE-VERDICT-SOURCE`). That
-  proves the output is bound and read, not what the step does with it: that is
-  the caller's own test;
+- if the verdict step is not the action step, a non-comment line under that
+  step's own `env:` binds the action's `has_changes` output to a variable, and a
+  non-comment line reads that variable as `$NAME` or `${NAME}`
+  (`GATE-VERDICT-SOURCE`). A binding under `with:` or anywhere else does not
+  count. That proves the output is bound and read, not what the step does with
+  it: that is the caller's own test;
 - if `summary-step` is given, the verdict step comes before the step of that
   name, so the verdict is the first line of the summary (`GATE-ORDER`).
 
@@ -46,15 +47,25 @@ for every listed plan job:
 
 - exactly one step has the name given as `save-step` (default `Save the update
   plan for the no-change check`), it sets `continue-on-error: true`, and it runs
-  `--save-plan <plan-file>` with its stdout sent to `/dev/null`
-  (`GATE-PLAN-SAVE`);
+  `--save-plan <plan-file> > /dev/null` once: the redirect comes straight after
+  the file and nothing follows it on that command, so `2> /dev/null` and
+  `> /dev/null; echo done` both fail, and nothing else in the step names the
+  file (`GATE-PLAN-SAVE`);
 - the step that uses the plan-has-changes action is given `plan-file: <plan-file>`
   (`GATE-PLAN-INPUT`);
 - no other step names the plan file, saves a plan, uploads an artifact, or globs
   over the working directory's JSON files (`GATE-PLAN-READ`), and no job that is
-  not a listed plan job names the plan file or saves a plan. Comment lines are
-  not code and are not read. The globs it knows are `*.json` and `preview*`; a
-  spelling it does not know passes, so this is a floor, not a proof.
+  not a listed plan job names the plan file or saves a plan. The plan file is
+  matched by its stem, so `preview-plan`, `preview-plan.js` and `preview-plan*`
+  are caught as well as `preview-plan.json`. The one exemption is a step that
+  `uses` this check (`check-apply-gate@`) in a job that is not a plan job, because
+  it has to pass the plan file's name on; any other step in that job is read as
+  before. Comment lines are not code and are not read. The globs it knows are
+  `*.json` and `preview*`; a spelling it does not know passes, so this is a floor,
+  not a proof;
+- the workflow as a whole does not mention `PULUMI_EXPERIMENTAL`
+  (`GATE-PLAN-EXPERIMENTAL`), so the saved plan does not depend on the
+  experimental switch.
 
 A workflow this script cannot read (no `jobs:`, a job listed twice, a malformed
 pair, a missing file) fails with `GATE-UNREADABLE`. Nothing it does not
@@ -67,8 +78,9 @@ which jobs are gated applies at all and that a new one gets this check; the
 other operands of an apply `if:` (the push and main operands, the template
 guard); an apply job's other `needs`; the plan job's own `if:`, environment,
 permissions and credentials; the exact command a repo's save step runs beyond
-its `--save-plan` and `/dev/null`; and what a caller does with the verdict when
-it combines it with another check.
+its `--save-plan` and `/dev/null`, and the command that produces `preview.json`;
+and what a caller does with the verdict when it combines it with another check.
+Nothing the check holds is kept in a caller's test as well.
 
 ## Limits
 

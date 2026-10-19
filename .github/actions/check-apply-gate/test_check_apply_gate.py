@@ -195,6 +195,54 @@ PLAN_BROKEN = (
     ("the action reads another file", "plan-file: preview-plan.json", "plan-file: other.json", "GATE-PLAN-INPUT"),
     ("the action is given no plan file", "          plan-file: preview-plan.json\n", "", "GATE-PLAN-INPUT"),
     ("a job that is not a plan job names it", "        run: echo apply\n", "        run: cat preview-plan.json\n", "GATE-PLAN-READ"),
+    (
+        "a step names the plan file without its extension",
+        *before_summary("      - name: Show it\n        run: cat preview-plan\n"),
+        "GATE-PLAN-READ",
+    ),
+    (
+        "a step names the plan file with another extension",
+        *before_summary("      - name: Show it\n        run: cat preview-plan.js\n"),
+        "GATE-PLAN-READ",
+    ),
+    (
+        "a step globs on the plan file's stem",
+        *before_summary("      - name: Show it\n        run: cat preview-plan*\n"),
+        "GATE-PLAN-READ",
+    ),
+    ("the save step sends only stderr to /dev/null", " > /dev/null\n", " 2> /dev/null\n", "GATE-PLAN-SAVE"),
+    ("a later command sends to /dev/null instead", "preview-plan.json > /dev/null\n", "preview-plan.json; echo done > /dev/null\n", "GATE-PLAN-SAVE"),
+    ("something follows the redirect", "> /dev/null\n", "> /dev/null; cat preview-plan.json\n", "GATE-PLAN-SAVE"),
+    (
+        "the save step prints the file on a later line",
+        SAVE_RUN,
+        "        run: |\n          pulumi preview --stack production --save-plan preview-plan.json > /dev/null\n          cat preview-plan.json\n",
+        "GATE-PLAN-SAVE",
+    ),
+    (
+        "the save step saves a second plan",
+        SAVE_RUN,
+        "        run: |\n          pulumi preview --save-plan again.json\n          pulumi preview --stack production --save-plan preview-plan.json > /dev/null\n",
+        "GATE-PLAN-SAVE",
+    ),
+    (
+        "the check job has a step that prints the plan",
+        "      - name: Check the apply gate\n",
+        "      - name: Show it\n        run: cat preview-plan.json\n      - name: Check the apply gate\n",
+        "GATE-PLAN-READ",
+    ),
+    (
+        "the check job runs another repo's check",
+        "uses: branchLeft/github-workflows/.github/actions/check-apply-gate@",
+        "uses: someone/else/.github/actions/check-apply-gate@",
+        "GATE-PLAN-READ",
+    ),
+    (
+        "the check job sets the plan file in its own env",
+        "    timeout-minutes: 5\n",
+        "    timeout-minutes: 5\n    env:\n      PLAN: preview-plan.json\n",
+        "GATE-PLAN-READ",
+    ),
 )
 
 
@@ -219,6 +267,30 @@ class PlanFile(unittest.TestCase):
     def test_the_fixture_that_prints_the_plan_fails(self):
         self.assertEqual(codes(plan_findings(read("gate-fail-plan-read.yml"))), {"GATE-PLAN-READ"})
 
+    def test_the_job_that_runs_the_check_may_name_the_plan_file(self):
+        for name in ("gate-pass.yml", "gate-pass-combined.yml"):
+            with self.subTest(fixture=name):
+                text = read(name)
+                self.assertIn("check-apply-gate@", text)
+                self.assertIn("plan-file: preview-plan.json", text.split("check-apply-gate@", 1)[1])
+                self.assertEqual(plan_findings(text), [])
+
+
+class Experimental(unittest.TestCase):
+    def test_a_workflow_that_never_sets_it_passes(self):
+        for name in ("gate-pass.yml", "gate-pass-combined.yml"):
+            self.assertEqual(gate.check_experimental(read(name)), [])
+
+    def test_a_comment_is_not_a_setting(self):
+        self.assertEqual(gate.check_experimental(read("gate-pass.yml") + "# PULUMI_EXPERIMENTAL is not set\n"), [])
+
+    def test_any_mention_in_the_workflow_is_named(self):
+        text = read("gate-pass.yml").replace(
+            "    timeout-minutes: 10\n", "    timeout-minutes: 10\n    env:\n      PULUMI_EXPERIMENTAL: 'true'\n", 1
+        )
+        self.assertIn("PULUMI_EXPERIMENTAL", text)
+        self.assertEqual(codes(gate.check_experimental(text)), {"GATE-PLAN-EXPERIMENTAL"})
+
 
 class VerdictSource(unittest.TestCase):
     ENV = "          PLAN_HAS_CHANGES: ${{ steps.plan_verdict.outputs.has_changes }}\n"
@@ -236,6 +308,14 @@ class VerdictSource(unittest.TestCase):
 
     def test_a_variable_that_is_not_bound_from_the_output_is_not_a_source(self):
         self.assertEqual(self.broken(self.ENV, ""), {"GATE-VERDICT-SOURCE"})
+
+    def test_a_binding_outside_env_is_not_a_source(self):
+        # The same line under `with:` or in another step's env is not this step's env.
+        self.assertEqual(self.broken("        env:\n" + self.ENV, "        with:\n" + self.ENV), {"GATE-VERDICT-SOURCE"})
+        self.assertEqual(
+            self.broken("        env:\n" + self.ENV, "        env:\n          OTHER: x\n        with:\n" + self.ENV),
+            {"GATE-VERDICT-SOURCE"},
+        )
 
     def test_the_variable_may_be_read_with_braces(self):
         text = read("gate-pass-combined.yml").replace('"$PLAN_HAS_CHANGES"', '"${PLAN_HAS_CHANGES}"')
