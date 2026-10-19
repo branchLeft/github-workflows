@@ -303,7 +303,7 @@ def check_plan_file(jobs: dict[str, list[str]], plan_jobs: list[str], plan_file:
         text = "\n".join(lines)
         for step in steps_of(lines):
             # The job that runs this check has to name the plan file to pass it on.
-            if step.fields.get("uses", "").startswith(CHECK_PREFIX) and False:
+            if step.fields.get("uses", "").startswith(CHECK_PREFIX):
                 text = text.replace(step.raw, "", 1)
         code = code_of(text)
         if stem in code or "--save-plan" in code:
