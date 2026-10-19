@@ -277,7 +277,7 @@ GLOBS = re.compile(r"\*\.json|preview[-.]?\*")
 def _stem(plan_file: str) -> str:
     """The plan file's name without its directory and extension, so that
     `preview-plan`, `preview-plan.js` and `preview-plan.json.bak` all contain it."""
-    return PurePosixPath(plan_file).name
+    return PurePosixPath(plan_file).stem
 
 
 def _step_problem(step: Step, plan_file: str) -> str | None:
