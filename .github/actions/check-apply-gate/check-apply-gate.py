@@ -330,7 +330,7 @@ def _check_plan_job(name: str, steps: list[Step], plan_file: str, save_name: str
     if save.fields.get("continue-on-error") != "true":
         findings.append(Finding("GATE-PLAN-SAVE", name, "the save step must set `continue-on-error: true`; a missing plan reads as changes"))
     command = r"--save-plan[ \t]+" + re.escape(plan_file) + r"[ \t]*>[ \t]*/dev/null[ \t]*$"
-    if not (re.search(r"--save-plan[ \t]+" + re.escape(plan_file), code) and re.search(r">[ \t]*/dev/null", code)):
+    if not re.search(command, code, re.M) or code.count("--save-plan") != 1 or code.count(_stem(plan_file)) != 1:
         findings.append(
             Finding(
                 "GATE-PLAN-SAVE",
