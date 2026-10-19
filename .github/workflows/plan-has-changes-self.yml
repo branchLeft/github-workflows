@@ -50,12 +50,16 @@ jobs:
           plan-file: plan-clean.json
           working-directory: .github/actions/plan-has-changes/fixtures
 
-      - name: A clean plan reports false and writes one headline
+      # Each step has a job-summary file of its own, so a later step cannot read
+      # what the action appended to the summary. The headline is checked in the
+      # file the action reports, which is the file it appends from.
+      - name: A clean plan reports false and a headline
         env:
           HAS_CHANGES: ${{ steps.clean.outputs.has_changes }}
+          SUMMARY_FILE: ${{ steps.clean.outputs.summary_file }}
         run: |
           test "$HAS_CHANGES" = false
-          test "$(grep -c '^No changes: ' "$GITHUB_STEP_SUMMARY")" -eq 1
+          grep -q '^No changes: ' "$SUMMARY_FILE"
 
       - name: A clean plan with the summary left to the caller
         id: quiet
@@ -66,14 +70,13 @@ jobs:
           working-directory: .github/actions/plan-has-changes/fixtures
           write-summary: 'false'
 
-      - name: The caller's summary is untouched and the text is in the file
+      - name: The verdict and the headline text are still reported
         env:
           HAS_CHANGES: ${{ steps.quiet.outputs.has_changes }}
           SUMMARY_FILE: ${{ steps.quiet.outputs.summary_file }}
         run: |
           test "$HAS_CHANGES" = false
           grep -q '^No changes: ' "$SUMMARY_FILE"
-          test "$(grep -c '^No changes: ' "$GITHUB_STEP_SUMMARY")" -eq 1
 
       - name: A plan with a change
         id: changed
