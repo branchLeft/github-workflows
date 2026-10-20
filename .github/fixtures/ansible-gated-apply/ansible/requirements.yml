@@ -2,4 +2,5 @@
 # Intentionally empty (ANS-4). The collections the role uses arrive with the
 # `ansible` package, which requirements.txt pins by version and hash. The
 # workflow's discover job fails if this file lists anything else.
-collections: []
+collections:
+  - name: ansible.posix
