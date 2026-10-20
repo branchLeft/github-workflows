@@ -390,11 +390,15 @@ README changes, so does this list.
   it. So the role directory and each direct entry that is a link are refused when
   the link cannot be resolved, when it resolves outside the Ansible directory,
   when it resolves to a file named `galaxy.yml` or `galaxy.yaml`, or when it or its
-  parent directory holds either file. Links deeper in a role are left alone,
+  parent directory holds either file. Every role directory is also judged by its
+  physical path, whether or not it is itself a link, because Molecule runs there:
+  one reached through a linked parent directory that leaves the Ansible directory
+  is refused. Links deeper in a role are left alone,
   because prerun does not read them and `shared-infra` has legitimate ones there.
-  One input is not covered: a role directory that sits directly under the Ansible
-  directory, where prerun also reads a `galaxy.yml` two levels above it, outside
-  the tree the discover job searches. The `requirements.yml` of the Ansible
+  One input is not covered: a role directory whose physical path is directly
+  under the Ansible directory (a link inside the tree can put one there), where
+  prerun also reads a `galaxy.yml` two levels above it, outside the tree the
+  discover job searches. The `requirements.yml` of the Ansible
   directory is held to the same shape, and ansible-lint runs `--offline`. Vendoring
   the packages is not built. A Galaxy route in ansible-compat or Molecule that a
   later release adds is not covered until this list is updated. The lock must pin the tools the

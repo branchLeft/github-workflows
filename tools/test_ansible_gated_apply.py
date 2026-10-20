@@ -1143,6 +1143,33 @@ class ShardDiscoveryTests(unittest.TestCase):
         self.assertIn("roles/x is a link that leaves the Ansible directory", result.log)
         self.assertNotIn("matrix", result.outputs)
 
+    def discover_with_linked_parent(self, destination: str) -> Result:
+        """Run the step on a project whose `roles` directory is itself a link to `destination` under the sandbox."""
+        sandbox = Sandbox(self)
+        ansible = sandbox.dir / "ansible"
+        ansible.mkdir()
+        ansible.joinpath("requirements.yml").write_text(EMPTY_COLLECTIONS)
+        scenario_dir = sandbox.dir / destination / "x" / "molecule" / "default"
+        scenario_dir.mkdir(parents=True)
+        scenario_dir.joinpath("molecule.yml").write_text(GOOD_SCENARIO)
+        sandbox.dir.joinpath("ext", "galaxy.yml").parent.mkdir(exist_ok=True)
+        sandbox.dir.joinpath("ext", "galaxy.yml").write_text("---\nnamespace: branchleft\nname: probe\nversion: 1.0.0\ndependencies:\n  community.general: '*'\n")
+        ansible.joinpath("roles").symlink_to(sandbox.dir / destination)
+        return sandbox.run(find_step("discover", "shards"), shards_env())
+
+    def test_a_role_directory_reached_through_a_linked_parent_out_of_the_ansible_directory_fails(self) -> None:
+        """Molecule runs in the physical directory, so the role directory is judged by where it is, not by whether it is a link."""
+        result = self.discover_with_linked_parent("ext/roles")
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("roles/x is a role directory whose physical path leaves the Ansible directory", result.log)
+        self.assertNotIn("matrix", result.outputs)
+
+    def test_a_role_directory_reached_through_a_linked_parent_inside_the_ansible_directory_passes(self) -> None:
+        """The control: a linked parent is refused for where it leads, not for being a link."""
+        result = self.discover_with_linked_parent("ansible/real_roles")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(json.loads(result.outputs["matrix"]), {"include": [{"name": "roles/x", "path": "roles/x"}]})
+
     def test_a_link_in_the_role_directory_that_cannot_be_resolved_fails(self) -> None:
         """A dangling link has no resolved path to judge, and macOS realpath fails on it, so it is refused rather than guessed at."""
         result = self.discover_with_links({"roles/alpha/notes.yml": "nowhere.yml"}, {})
