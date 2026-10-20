@@ -1,23 +1,6 @@
-"""Run named steps of one job of a workflow file, exactly as their `run:` text is written.
+"""Run named steps of one job of a workflow file, as their `run:` text is written.
 
-The self-test of ansible-gated-apply.yml uses it so that the job proving the lint
-tool rejects bad input runs the reusable workflow's own install and lint steps, and
-not a second copy of their commands. The workflow file is the one home.
-
-    python3 tools/run_workflow_steps.py WORKFLOW JOB \
-        --input working-directory=DIR --input ansible-directory=DIR \
-        --step "Step name" [--step "Another step"] \
-        [--step-input "Step name" ansible-directory=OTHER]
-
-Only the expression `${{ inputs.NAME }}` is understood, and it is replaced by the
-value given with --input (or by the step's own --step-input). Any other expression,
-a step with `uses:` or `if:`, a missing step or a missing input stops the run with
-exit status 99 before any step runs. Otherwise the steps run in order under
-`bash -e`, each with the job's default working directory, and the run stops at the
-first step that fails with that step's own exit status.
-
-A step may append to GITHUB_PATH and GITHUB_ENV as it does on a runner; the lines
-reach the steps after it. RUNNER_TEMP is taken from the environment or made.
+Usage, rules and exit statuses: the README, section "ansible-gated-apply.yml".
 """
 
 from __future__ import annotations

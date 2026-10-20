@@ -393,6 +393,16 @@ README changes, so does this list.
 - **A schedule is not wired.** The nightly drift run of ANS-17 is a check-mode run
   that applies nothing; it is a later addition to this workflow.
 
+`tools/run_workflow_steps.py WORKFLOW JOB --input NAME=VALUE --step "Step name"`
+runs the named steps of one job exactly as their `run:` text is written, in order,
+under `bash -e`, in the job's default working directory. `--step-input STEP
+NAME=VALUE` replaces one input for one step. It understands only the expression
+`${{ inputs.NAME }}`. Any other expression, a step with `uses`, `if`, `shell` or a
+`working-directory` of its own, a missing step or input, or an expression in run
+text, stops it with exit status 99 before any step runs. Otherwise it stops at the
+first failing step and returns that step's status. A step's lines for `GITHUB_PATH`
+and `GITHUB_ENV` reach the steps after it.
+
 The self-test is `.github/workflows/ansible-gated-apply-self.yml`. It runs the
 workflow over the fixture, and its job `lint-expected-fail` runs the workflow's
 own install and ansible-lint steps (taken from the workflow file by

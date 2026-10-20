@@ -1138,6 +1138,19 @@ class InstallStepTests(unittest.TestCase):
                 argv = (sandbox.stubs / "pip.argv").read_text().split()
                 self.assertEqual(argv, ["install", "--require-virtualenv", "--require-hashes", "-r", "ansible/requirements.txt"])
 
+    def test_the_workflow_never_checks_out_its_own_repository_by_the_job_workflow_sha(self) -> None:
+        # `github.job_workflow_sha` is empty on the runner, so a second checkout that
+        # takes it silently takes main (measured in the docs-lint self run). The lint
+        # commands live in this file instead, and the self-test reads them from here.
+        text = WORKFLOW.read_text()
+        self.assertNotIn("job_workflow_sha", text)
+        self.assertNotIn("job_workflow_ref", text)
+        for job_name, job in JOBS.items():
+            for step in job["steps"]:
+                if str(step.get("uses", "")).startswith("actions/checkout@"):
+                    self.assertNotIn("repository", step.get("with", {}), f"{job_name}: {step.get('name')}")
+                    self.assertNotIn("ref", step.get("with", {}), f"{job_name}: {step.get('name')}")
+
     def test_nothing_fetches_a_collection_from_galaxy_or_sets_a_collections_path(self) -> None:
         text = WORKFLOW.read_text()
         for forbidden in ("ansible-galaxy", "collection install", "ANSIBLE_COLLECTIONS_PATH"):
