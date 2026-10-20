@@ -373,13 +373,21 @@ README changes, so does this list.
   `requirements.txt` is a `uv pip compile --universal --generate-hashes` lock, and
   `pip install --require-hashes` refuses a package whose hash it does not list, so
   a caller whose file is unhashed fails at the install (ANS-4). Nothing is fetched
-  from Galaxy by the workflow's own steps: the collections come with the `ansible`
-  package in the lock. The discover job fails if `requirements.yml` lists anything
-  but `collections: []`, or if a scenario leaves Molecule's dependency step enabled
-  or its `prerun` on, and ansible-lint runs `--offline`. Both scenario settings are
-  needed: Molecule's `prerun` is on by default and installs every requirements file
-  under the role directory, and the dependencies of a `galaxy.yml` there, whatever
-  `dependency.enabled` says. Vendoring the packages is not built. The lock must pin the tools the
+  from Galaxy: the collections come with the `ansible` package in the lock.
+  Molecule has two ways to reach Galaxy, and the discover job closes both. A
+  scenario must set `dependency.enabled: false`. And Molecule's `prerun`, which is
+  on by default and which the workflow leaves on because it is what makes a role
+  resolve by its full name (with `prerun: false` the converge fails with "role not
+  found"), installs from Galaxy every requirements file at six paths under the role
+  directory (`requirements.yml`, `roles/`, `collections/`, `tests/`,
+  `tests/integration/` and `tests/unit/` `requirements.yml`) and the dependencies
+  of a `galaxy.yml`. So each of those requirements files that exists must hold only
+  `collections: []`, and no `galaxy.yml` or `galaxy.yaml` may exist anywhere under
+  the Ansible directory (wider than the places prerun looks, so that no copy of
+  ansible-compat's search rules is needed). The `requirements.yml` of the Ansible
+  directory is held to the same shape, and ansible-lint runs `--offline`. Vendoring
+  the packages is not built. A Galaxy route in ansible-compat or Molecule that a
+  later release adds is not covered until this list is updated. The lock must pin the tools the
   workflow runs: `ansible`, `ansible-lint`, `molecule` with its Docker plugin,
   `yamllint`, `mypy` and `ruff`.
 - **The `requirements.yml` rule is also in `shared-infra`**, in

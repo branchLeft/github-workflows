@@ -30,9 +30,9 @@ Docker driver needs `community.docker`, which the full package carries, so the
 fixture needs no `requirements.yml` entry and no Galaxy download. That is what
 lets `ansible/requirements.yml` hold only `collections: []`, the one form the
 workflow's discover job accepts. The role uses `ansible.builtin` modules only, and
-its scenario already sets `dependency.enabled: false`, and sets `prerun: false`
-because Molecule's prerun would otherwise install role-level requirements files on
-its own.
+its scenario already sets `dependency.enabled: false`. The role directory holds no
+requirements file and no `galaxy.yml`, which is what the discover job requires
+because Molecule's prerun would install them from Galaxy.
 
 ## `lint-fail/`
 

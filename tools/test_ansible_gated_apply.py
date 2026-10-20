@@ -960,14 +960,20 @@ def shards_env(**changes: str) -> dict[str, str]:
     return values
 
 
-GOOD_SCENARIO = "prerun: false\ndependency:\n  name: galaxy\n  enabled: false\ndriver:\n  name: docker\n"
+GOOD_SCENARIO = "dependency:\n  name: galaxy\n  enabled: false\ndriver:\n  name: docker\n"
 EMPTY_COLLECTIONS = "---\ncollections: []\n"
 
 
 class ShardDiscoveryTests(unittest.TestCase):
     """The discover step's rule on requirements.yml and on each shard's Molecule dependency step."""
 
-    def discover(self, scenario: str | None = GOOD_SCENARIO, requirements: str | None = EMPTY_COLLECTIONS) -> Result:
+    def discover(
+        self,
+        scenario: str | None = GOOD_SCENARIO,
+        requirements: str | None = EMPTY_COLLECTIONS,
+        extra: dict[str, str] | None = None,
+    ) -> Result:
+        """Run the step on a project with one role, `alpha`. `extra` maps a path under the Ansible directory to its text."""
         sandbox = Sandbox(self)
         ansible = sandbox.dir / "ansible"
         scenario_dir = ansible / "roles" / "alpha" / "molecule" / "default"
@@ -976,6 +982,10 @@ class ShardDiscoveryTests(unittest.TestCase):
             scenario_dir.joinpath("molecule.yml").write_text(scenario)
         if requirements is not None:
             ansible.joinpath("requirements.yml").write_text(requirements)
+        for relative, text in (extra or {}).items():
+            target = ansible / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
         return sandbox.run(find_step("discover", "shards"), shards_env())
 
     def test_a_scenario_that_disables_the_dependency_step_and_an_empty_collection_list_pass(self) -> None:
@@ -1014,13 +1024,82 @@ class ShardDiscoveryTests(unittest.TestCase):
         (sandbox.dir / "ansible" / "requirements.yml").symlink_to(sandbox.dir / "nowhere.yml")
         self.assertNotEqual(sandbox.run(find_step("discover", "shards"), shards_env()).code, 0)
 
+    def test_a_requirements_file_in_the_role_directory_that_lists_anything_fails(self) -> None:
+        """Molecule's prerun installs these from Galaxy; it searches the six paths of ansible-compat's REQUIREMENT_LOCATIONS."""
+        paths = [
+            "requirements.yml",
+            "roles/requirements.yml",
+            "collections/requirements.yml",
+            "tests/requirements.yml",
+            "tests/integration/requirements.yml",
+            "tests/unit/requirements.yml",
+        ]
+        listed = {
+            "a collection": "---\ncollections:\n  - name: ansible.posix\n",
+            "a role": "---\ncollections: []\nroles:\n  - name: geerlingguy.docker\n",
+            "a bare list": "---\n- name: ansible.posix\n",
+            "a file that is not YAML": "collections: [\n",
+        }
+        for path in paths:
+            for label, text in listed.items():
+                with self.subTest(path=path, case=label):
+                    result = self.discover(extra={f"roles/alpha/{path}": text})
+                    self.assertNotEqual(result.code, 0)
+                    self.assertIn(f"roles/alpha/{path} must hold only 'collections: []'", result.log)
+                    self.assertNotIn("matrix", result.outputs)
+
+    def test_an_empty_collections_list_in_the_role_directory_passes(self) -> None:
+        """Prerun installs nothing from an empty list (run for real with Molecule)."""
+        for path in ("requirements.yml", "roles/requirements.yml", "tests/integration/requirements.yml"):
+            with self.subTest(path=path):
+                result = self.discover(extra={f"roles/alpha/{path}": EMPTY_COLLECTIONS})
+                self.assertEqual(result.code, 0, result.log)
+
+    def test_a_role_requirements_path_that_is_a_dangling_link_fails(self) -> None:
+        sandbox = Sandbox(self)
+        role = sandbox.dir / "ansible" / "roles" / "alpha"
+        role.joinpath("molecule", "default").mkdir(parents=True)
+        role.joinpath("molecule", "default", "molecule.yml").write_text(GOOD_SCENARIO)
+        (role / "requirements.yml").symlink_to(sandbox.dir / "nowhere.yml")
+        result = sandbox.run(find_step("discover", "shards"), shards_env())
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("roles/alpha/requirements.yml must hold only", result.log)
+
+    def test_a_galaxy_file_anywhere_under_the_ansible_directory_fails(self) -> None:
+        """Prerun installs a galaxy.yml's dependencies from Galaxy, in the role directory, one level below it, or two levels above it."""
+        galaxy = "---\nnamespace: branchleft\nname: probe\nversion: 1.0.0\ndependencies:\n  branchleft.other: '*'\n"
+        places = [
+            "galaxy.yml",
+            "roles/alpha/galaxy.yml",
+            "roles/alpha/branchleft/galaxy.yml",
+            "roles/alpha/deeper/still/galaxy.yml",
+            "galaxy.yaml",
+            "roles/alpha/galaxy.yaml",
+        ]
+        for place in places:
+            with self.subTest(place=place):
+                result = self.discover(extra={place: galaxy})
+                self.assertNotEqual(result.code, 0)
+                self.assertIn(f"{place} must not exist", result.log)
+                self.assertNotIn("matrix", result.outputs)
+
+    def test_a_galaxy_file_that_is_a_dangling_link_fails(self) -> None:
+        sandbox = Sandbox(self)
+        role = sandbox.dir / "ansible" / "roles" / "alpha"
+        role.joinpath("molecule", "default").mkdir(parents=True)
+        role.joinpath("molecule", "default", "molecule.yml").write_text(GOOD_SCENARIO)
+        (sandbox.dir / "ansible" / "galaxy.yml").symlink_to(sandbox.dir / "nowhere.yml")
+        result = sandbox.run(find_step("discover", "shards"), shards_env())
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("galaxy.yml must not exist", result.log)
+
     def test_a_scenario_that_does_not_disable_the_dependency_step_fails(self) -> None:
         cases = {
-            "enabled": "prerun: false\ndependency:\n  name: galaxy\n  enabled: true\n",
-            "no dependency key": "prerun: false\ndriver:\n  name: docker\n",
-            "dependency without enabled": "prerun: false\ndependency:\n  name: galaxy\n",
-            "enabled as the string false": "prerun: false\ndependency:\n  enabled: 'false'\n",
-            "dependency not a mapping": "prerun: false\ndependency: galaxy\n",
+            "enabled": "dependency:\n  name: galaxy\n  enabled: true\n",
+            "no dependency key": "driver:\n  name: docker\n",
+            "dependency without enabled": "dependency:\n  name: galaxy\n",
+            "enabled as the string false": "dependency:\n  enabled: 'false'\n",
+            "dependency not a mapping": "dependency: galaxy\n",
             "a list at the top": "- dependency:\n    enabled: false\n",
             "a file that is not YAML": "dependency: [\n",
             "an empty file": "",
@@ -1030,25 +1109,6 @@ class ShardDiscoveryTests(unittest.TestCase):
                 result = self.discover(scenario=text)
                 self.assertNotEqual(result.code, 0, label)
                 self.assertIn("dependency.enabled to false", result.log)
-                self.assertNotIn("matrix", result.outputs)
-
-    def test_a_scenario_that_leaves_molecules_prerun_on_fails(self) -> None:
-        """Prerun installs role-level requirements files and galaxy.yml dependencies, even with the dependency step off."""
-        dependency = "dependency:\n  name: galaxy\n  enabled: false\n"
-        cases = {
-            "prerun true": "prerun: true\n" + dependency,
-            "no prerun key (Molecule's default is on)": dependency + "driver:\n  name: docker\n",
-            "prerun as the string false": "prerun: 'false'\n" + dependency,
-            "prerun as a number": "prerun: 0\n" + dependency,
-            "prerun null": "prerun:\n" + dependency,
-            "prerun under another key": "provisioner:\n  prerun: false\n" + dependency,
-        }
-        for label, text in cases.items():
-            with self.subTest(case=label):
-                result = self.discover(scenario=text)
-                self.assertNotEqual(result.code, 0, label)
-                self.assertIn("must set prerun to false", result.log)
-                self.assertNotIn("dependency.enabled to false", result.log)
                 self.assertNotIn("matrix", result.outputs)
 
     def test_a_role_with_no_scenario_still_fails(self) -> None:

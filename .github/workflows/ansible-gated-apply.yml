@@ -166,14 +166,22 @@ jobs:
       # empty list fails, because an empty matrix would skip the shard job and
       # the gate would have nothing to be red about.
       #
-      # Nothing is fetched from Galaxy by the job's own steps (ANS-4). A
-      # requirements.yml that is there must hold exactly `collections: []`, and
-      # each scenario must set dependency.enabled to false and prerun to false.
-      # Both are needed: Molecule's prerun (on by default) installs every
-      # requirements file under the role directory and the dependencies of any
-      # galaxy.yml there, and dependency.enabled: false does not stop it. yq reads
-      # the file and jq judges it; a file yq cannot parse, or a missing yq, fails
-      # the step. The other home of the requirements.yml rule is shared-infra's
+      # Nothing is fetched from Galaxy (ANS-4). Molecule has two ways to reach it,
+      # and this step closes both.
+      #  - The dependency step: each scenario must set dependency.enabled to
+      #    false.
+      #  - Molecule's prerun, which is on by default and which this workflow
+      #    leaves on, because it is what makes a role resolve by its full name.
+      #    It installs from Galaxy every requirements file at the six paths
+      #    ansible-compat searches under the role directory (listed below), and
+      #    the dependencies of a galaxy.yml. So each of those files that exists
+      #    must hold exactly `collections: []`, and no galaxy.yml or galaxy.yaml
+      #    may exist anywhere under the Ansible directory. That is wider than the
+      #    places prerun looks, on purpose: it needs no copy of ansible-compat's
+      #    search rules.
+      # The requirements.yml of the Ansible directory itself is held to the same
+      # shape. yq reads each file and jq judges it; a file yq cannot parse, or a
+      # missing yq, fails the step. The other home of that rule is shared-infra's
       # ansible/checks/check_pins.py; the README ("Named limits") says how the two
       # differ.
       - name: List the Molecule shards from the repository tree
@@ -209,14 +217,23 @@ jobs:
               exit 1
             fi
             if ! yq -o=json . "$dir/molecule/default/molecule.yml" | jq -e '.dependency.enabled == false' > /dev/null; then
-              echo "::error::$dir/molecule/default/molecule.yml must set dependency.enabled to false, so Molecule never reaches Galaxy (ANS-4)."
+              echo "::error::$dir/molecule/default/molecule.yml must set dependency.enabled to false, so Molecule's dependency step never reaches Galaxy (ANS-4)."
               exit 1
             fi
-            if ! yq -o=json . "$dir/molecule/default/molecule.yml" | jq -e '.prerun == false' > /dev/null; then
-              echo "::error::$dir/molecule/default/molecule.yml must set prerun to false, so Molecule's prerun never installs a role-level requirements file or galaxy.yml dependencies from Galaxy (ANS-4)."
-              exit 1
-            fi
+            for file in requirements.yml roles/requirements.yml collections/requirements.yml tests/requirements.yml tests/integration/requirements.yml tests/unit/requirements.yml; do
+              if [ -e "$dir/$file" ] || [ -L "$dir/$file" ]; then
+                if ! yq -o=json . "$dir/$file" | jq -e '. == {"collections": []}' > /dev/null; then
+                  echo "::error::$dir/$file must hold only 'collections: []': Molecule's prerun installs what it lists from Galaxy (ANS-4)."
+                  exit 1
+                fi
+              fi
+            done
           done
+          galaxy_file=$(find . \( -name galaxy.yml -o -name galaxy.yaml \) -print | sed -n 1p)
+          if [ -n "$galaxy_file" ]; then
+            echo "::error::$galaxy_file must not exist: Molecule's prerun installs the dependencies of a galaxy.yml from Galaxy (ANS-4)."
+            exit 1
+          fi
           if [ -e requirements.yml ] || [ -L requirements.yml ]; then
             if ! yq -o=json . requirements.yml | jq -e '. == {"collections": []}' > /dev/null; then
               echo "::error::requirements.yml must hold only 'collections: []'. The lock is requirements.txt, and nothing is fetched from Galaxy (ANS-4)."
