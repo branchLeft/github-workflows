@@ -45,6 +45,11 @@
         "description": "The commit to ask about, 40 lowercase hex digits.",
         "required": true
       },
+      "total-timeout": {
+        "default": "",
+        "description": "Empty (the default) puts no bound on the hosts together. A whole number of minutes is the time all the host calls share: each call is stopped at the smaller of host-timeout and what is left, and a host reached after the time is spent is not asked and is judged as no-answer. The caller's job bound must sit above it.",
+        "required": false
+      },
       "working-directory": {
         "default": ".",
         "description": "The directory, relative to the workspace root, that dry-run-stub is relative to.",
@@ -78,11 +83,13 @@
             "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
             "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
             "HOSTS": "${{ inputs.hosts }}",
-            "SHA": "${{ inputs.sha }}"
+            "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+            "SHA": "${{ inputs.sha }}",
+            "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}"
           },
           "id": "validate",
           "name": "Validate the host list and the inputs",
-          "run-sha256": "7d473d143f9558ca6cf8af8cb1c4d01fceef521e48d1f204f3399e357c032957",
+          "run-sha256": "ea6291e51db2d2697e8d1f3a4d5da843c2d9de61ba02fba1d720f78477c31a04",
           "shell": "bash"
         },
         {
@@ -94,11 +101,12 @@
             "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
             "SHA": "${{ inputs.sha }}",
             "SSH_KEY": "${{ inputs.check-key }}",
+            "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
             "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
           },
           "id": "check",
           "name": "Check every host in check mode",
-          "run-sha256": "92b62edd4ea3d1f11211ab7e6b56819e28912573cc8064af0f8a1d769545464f",
+          "run-sha256": "e0bf92e6d9a5a2c67d07734a8212e4d4a7d098fb334bea57eba7d5bb41a1ece8",
           "shell": "bash"
         },
         {
@@ -111,7 +119,7 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "f04971b26859c1f48fb58f80170aa57bddd459a2ea705654e2fd13466f344b4b",
+          "run-sha256": "77cca2659cf525bf6353051997731ac67a6b9957ebaec89b82d52de0ec79cf4f",
           "shell": "bash"
         }
       ],
@@ -215,7 +223,7 @@
           "cancel-in-progress": false,
           "group": "ansible-drift-alert-${{ github.repository }}-${{ inputs.host-label }}"
         },
-        "if": "always() && needs.drift.result == 'failure' && needs.drift.outputs.guard_refused != 'true'",
+        "if": "always() && (needs.drift.result == 'failure' || needs.drift.result == 'cancelled') && needs.drift.outputs.guard_refused != 'true'",
         "name": "Open or update the drift issue",
         "needs": [
           "drift"
@@ -255,16 +263,18 @@
         "steps": [
           {
             "env": {
+              "CHECK_TIMEOUT": "${{ inputs.check-timeout-minutes }}",
               "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
               "EVENT_NAME": "${{ github.event_name }}",
               "HOST_LABEL": "${{ inputs.host-label }}",
+              "HOST_TIMEOUT": "${{ inputs.host-timeout-minutes }}",
               "IS_FORK": "${{ github.event.repository.fork }}",
               "REF": "${{ github.ref }}",
               "SHA": "${{ github.sha }}"
             },
             "id": "guard",
             "name": "Refuse outside a schedule or a manual run on the default branch",
-            "run-sha256": "31f1cb8c0fe8a0023ae84cf7e77b75a36bdc1a63252c46bb8ad4a612d34d82e6"
+            "run-sha256": "1e0f1130730ed619d56e653b95af4da42c4fe97edf43f855efb7d13e43eea5ba"
           },
           {
             "env": {
@@ -304,7 +314,8 @@
               "host-timeout": "${{ inputs.host-timeout-minutes }}",
               "hosts": "${{ secrets.ssh_hosts }}",
               "known-hosts": "${{ secrets.ssh_known_hosts }}",
-              "sha": "${{ github.sha }}"
+              "sha": "${{ github.sha }}",
+              "total-timeout": "${{ steps.guard.outputs.budget }}"
             }
           }
         ],
@@ -317,7 +328,7 @@
         "inputs": {
           "check-timeout-minutes": {
             "default": 90,
-            "description": "The drift job is stopped after this many minutes.",
+            "description": "The drift job is stopped after this many minutes, from 10 to 350. The host calls share this time less five minutes, so a hung host is judged as no-answer before the job is stopped.",
             "required": false,
             "type": "number"
           },
@@ -406,7 +417,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "772d484d944bde13db01310a9d36ad0e3565ad2ad0deeb6e4960559726190cee"
+            "run-sha256": "1da517649aa1bd1eb24dd931ee29cb6167dbd66de682435db89f314084d05735"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -812,6 +823,24 @@
           "environment": "ansible-self-test",
           "working-directory": ".github/fixtures/ansible-gated-apply"
         }
+      },
+      "sabotage": {
+        "name": "Sabotage proof",
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "name": "Break each control and require its test to go red",
+            "run-sha256": "69e3bd0aea2dc9810d2def00560b89fe83db40a6182a71f88bbaa93ce568b27c"
+          }
+        ],
+        "timeout-minutes": 20
       },
       "unit-tests": {
         "name": "Workflow step tests",

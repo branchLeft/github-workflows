@@ -5,7 +5,8 @@ Each step's `run:` text runs under bash with `ssh`, `gh` and `timeout` stubbed o
 PATH. ANSIBLE_GATED_APPLY_WORKFLOW, ANSIBLE_DRIFT_CHECK_WORKFLOW and
 SSH_CHECK_HOSTS_ACTION name a broken copy for a sabotage run. After a change to
 any of the three files, regenerate the snapshot with
-`python3 tools/test_ansible_gated_apply.py --write-snapshot`.
+`python3 tools/test_ansible_gated_apply.py --write-snapshot`. tools/sabotage.py
+breaks each control and requires its test here to go red.
 """
 
 from __future__ import annotations
@@ -92,8 +93,12 @@ def drift_step_named(job: str, fragment: str) -> dict[str, Any]:
     raise KeyError(f"drift/{job}/{fragment}")
 
 
+# The stand-in for ssh reads its standard input to the end, as the real ssh does
+# when it is given none: a call inside a `while read` loop that does not take its
+# input from /dev/null swallows the rest of the host list.
 SSH_STUB = """#!/usr/bin/env bash
 set -eu
+cat > /dev/null
 dest="${@: -2:1}"
 sha="${@: -1}"
 echo "$*" >> "$STUB_DIR/ssh.log"
@@ -110,8 +115,27 @@ exit "$(cat "$base.rc")"
 """
 
 TIMEOUT_STUB = """#!/usr/bin/env bash
+echo "$1" >> "$STUB_DIR/timeout.log"
 shift
 exec "$@"
+"""
+
+# Answers `date +%s` from a list of times, one per call, so a test controls the clock.
+DATE_STUB = """#!/usr/bin/env bash
+first=$(head -n 1 "$STUB_DIR/date.times")
+tail -n +2 "$STUB_DIR/date.times" > "$STUB_DIR/date.rest"
+mv "$STUB_DIR/date.rest" "$STUB_DIR/date.times"
+printf '%s\\n' "$first"
+"""
+
+# Records the mode of each file it is asked to remove, then removes it.
+RM_STUB = """#!/usr/bin/env bash
+for arg in "$@"; do
+  if [ -e "$arg" ]; then
+    echo "$(ls -ld "$arg" | cut -c1-10) $arg" >> "$STUB_DIR/rm.log"
+  fi
+done
+exec /bin/rm "$@"
 """
 
 GH_STUB = """#!/usr/bin/env bash
@@ -184,6 +208,22 @@ class Sandbox:
         path = self.stubs / f"{dest}.count"
         return int(path.read_text()) if path.exists() else 0
 
+    def timeouts(self) -> list[str]:
+        """The limit given to each call of `timeout`, in order."""
+        path = self.stubs / "timeout.log"
+        return path.read_text().splitlines() if path.exists() else []
+
+    def stub(self, name: str, text: str) -> None:
+        """Put another stand-in command on PATH for this sandbox only."""
+        target = self.bin / name
+        target.write_text(text)
+        target.chmod(0o755)
+
+    def clock(self, *times: int) -> None:
+        """Make `date +%s` answer these times, one per call."""
+        self.stub("date", DATE_STUB)
+        self.stubs.joinpath("date.times").write_text("".join(f"{t}\n" for t in times))
+
     def run(self, step: dict[str, Any], values: dict[str, str], extra: dict[str, str] | None = None) -> Result:
         declared = set(step.get("env", {}))
         given = set(values)
@@ -207,6 +247,10 @@ class Sandbox:
             capture_output=True,
             text=True,
             cwd=self.dir,
+            stdin=subprocess.DEVNULL,
+            # The runner's default mask, so a file a step means to make private is
+            # seen as private only if the step made it so.
+            preexec_fn=lambda: os.umask(0o022),
             check=False,
         )
         outputs: dict[str, str] = {}
@@ -238,6 +282,8 @@ def composite_validate_env(**changes: str) -> dict[str, str]:
         "DRY_RUN": "false",
         "DRY_RUN_STUB": "",
         "FAIL_ON_CHANGES": "false",
+        "HOST_TIMEOUT_MINUTES": "65",
+        "TOTAL_TIMEOUT_MINUTES": "",
     }
     values.update(changes)
     return values
@@ -417,6 +463,13 @@ class StructureTests(unittest.TestCase):
             },
         )
         self.assertNotIn("fail-on-changes", step["with"])
+        self.assertNotIn("total-timeout", step["with"])
+
+    def test_the_drift_job_is_bounded_by_the_caller_input_and_gives_the_hosts_less_than_that(self) -> None:
+        self.assertEqual(DRIFT_JOBS["drift"]["timeout-minutes"], "${{ inputs.check-timeout-minutes }}")
+        guard = drift_step("drift", "guard")
+        self.assertEqual(guard["env"]["CHECK_TIMEOUT"], "${{ inputs.check-timeout-minutes }}")
+        self.assertEqual(drift_step_named("drift", "Check every host")["with"]["total-timeout"], "${{ steps.guard.outputs.budget }}")
 
     def test_the_plan_job_outputs_come_from_the_steps_that_make_them(self) -> None:
         self.assertEqual(
@@ -553,6 +606,8 @@ class StructureTests(unittest.TestCase):
                 "DRY_RUN": "${{ inputs.dry-run }}",
                 "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
                 "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
+                "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+                "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
             },
             "check": {
                 "HOSTS": "${{ inputs.hosts }}",
@@ -561,6 +616,7 @@ class StructureTests(unittest.TestCase):
                 "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
                 "WORKING_DIRECTORY": "${{ inputs.working-directory }}",
                 "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+                "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
                 "SSH_KEY": "${{ inputs.check-key }}",
                 "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
             },
@@ -585,6 +641,8 @@ class StructureTests(unittest.TestCase):
                 "IS_FORK": "${{ github.event.repository.fork }}",
                 "SHA": "${{ github.sha }}",
                 "HOST_LABEL": "${{ inputs.host-label }}",
+                "HOST_TIMEOUT": "${{ inputs.host-timeout-minutes }}",
+                "CHECK_TIMEOUT": "${{ inputs.check-timeout-minutes }}",
             }),
             ("drift", "Resolve the commit", {
                 "GH_TOKEN": "${{ github.token }}",
@@ -651,9 +709,10 @@ class StructureTests(unittest.TestCase):
         inputs = ACTION_DOC["inputs"]
         self.assertEqual(
             set(inputs),
-            {"hosts", "known-hosts", "check-key", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "environment", "fail-on-changes"},
+            {"hosts", "known-hosts", "check-key", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes"},
         )
         self.assertEqual(inputs["fail-on-changes"]["default"], "false")
+        self.assertEqual(inputs["total-timeout"]["default"], "")
         self.assertEqual(inputs["dry-run"]["default"], "false")
         self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "outcome", "detail"})
 
@@ -679,6 +738,7 @@ class StructureTests(unittest.TestCase):
                 "check-key": "${{ secrets.ssh_check_key }}",
                 "sha": "${{ github.sha }}",
                 "host-timeout": "${{ inputs.host-timeout-minutes }}",
+                "total-timeout": "${{ steps.guard.outputs.budget }}",
                 "fail-on-changes": "true",
             },
         )
@@ -707,11 +767,18 @@ class StructureTests(unittest.TestCase):
         written = re.findall(r"(?m)^\s*([a-z-]+):\s*write\s*$", DRIFT_WORKFLOW.read_text())
         self.assertEqual(written, ["issues"])
 
-    def test_the_alert_runs_after_a_failed_check_that_passed_the_guard_and_serialises_per_host_set(self) -> None:
+    def test_the_alert_runs_after_a_failed_or_timed_out_check_that_passed_the_guard_and_serialises_per_host_set(self) -> None:
         job = DRIFT_JOBS["alert"]
         self.assertEqual(job["needs"], ["drift"])
         condition = " ".join(str(job["if"]).split())
-        for required in ("always()", "needs.drift.result == 'failure'", "needs.drift.outputs.guard_refused != 'true'"):
+        # A job that hits timeout-minutes reports `cancelled` to the job that needs it
+        # (measured: https://github.com/branchLeft/github-workflows/actions/runs/39514617371),
+        # so the condition has to name both results or a timeout ends silently.
+        for required in (
+            "always()",
+            "(needs.drift.result == 'failure' || needs.drift.result == 'cancelled')",
+            "needs.drift.outputs.guard_refused != 'true'",
+        ):
             self.assertIn(required, condition)
         self.assertFalse(job["concurrency"]["cancel-in-progress"])
         self.assertIn("inputs.host-label", job["concurrency"]["group"])
@@ -829,6 +896,16 @@ class ValidateHostsTests(unittest.TestCase):
         self.assertNotEqual(self.validate(FAIL_ON_CHANGES="1").code, 0)
         self.assertNotEqual(self.validate(FAIL_ON_CHANGES="").code, 0)
 
+    def test_the_timeouts_are_whole_numbers_of_minutes_and_the_total_may_be_empty(self) -> None:
+        for name in ("HOST_TIMEOUT_MINUTES", "TOTAL_TIMEOUT_MINUTES"):
+            for value in ("0", "-1", "1.5", "abc", "05", "10000", "1\n2", " 5"):
+                with self.subTest(name=name, value=repr(value)):
+                    self.assertNotEqual(self.validate(**{name: value}).code, 0)
+            self.assertEqual(self.validate(**{name: "9999"}).code, 0)
+            self.assertEqual(self.validate(**{name: "1"}).code, 0)
+        self.assertNotEqual(self.validate(HOST_TIMEOUT_MINUTES="").code, 0)
+        self.assertEqual(self.validate(TOTAL_TIMEOUT_MINUTES="").code, 0)
+
     def test_the_digest_the_action_publishes_is_the_one_the_apply_guard_recomputes(self) -> None:
         for hosts in ([HOST_ONE], [HOST_ONE, HOST_TWO], [HOST_TWO, HOST_ONE, "ci@third"]):
             with self.subTest(hosts=hosts):
@@ -848,6 +925,7 @@ def check_env(**changes: str) -> dict[str, str]:
         "DRY_RUN_STUB": "",
         "WORKING_DIRECTORY": ".",
         "HOST_TIMEOUT_MINUTES": "65",
+        "TOTAL_TIMEOUT_MINUTES": "",
         "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
         "KNOWN_HOSTS": "host-one ssh-ed25519 PUBLIC",
     }
@@ -1034,6 +1112,98 @@ class PlanTests(unittest.TestCase):
             self.assertNotEqual(result.code, 0, name)
             self.assertEqual(sandbox.ssh_log(), [])
 
+    def test_every_host_is_asked_when_the_call_reads_its_standard_input(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        for dest in hosts:
+            sandbox.host(dest, 0, CLEAN)
+        checked = sandbox.run(action_step("check"), check_env(HOSTS="".join(f"{h}\n" for h in hosts)))
+        self.assertEqual(checked.code, 0, checked.log)
+        self.assertEqual([call.split(" ")[-2] for call in sandbox.ssh_log()], hosts)
+        result = sandbox.run(action_step("report"), report_env())
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "false")
+        self.assertIn("host 3", result.summary)
+        self.assertIn("Asked 3 host(s)", checked.log)
+
+    def test_every_host_is_asked_when_the_dry_run_stand_in_reads_its_standard_input(self) -> None:
+        hosts = ["ci@first-stub-host", "ci@second-stub-host", "ci@third-stub-host"]
+        sandbox = Sandbox(self)
+        stand_in = sandbox.dir / "workspace" / "stub" / "host.sh"
+        stand_in.parent.mkdir(parents=True)
+        stand_in.write_text(
+            "#!/usr/bin/env bash\ncat > /dev/null\n"
+            f"printf 'pull-trigger verdict=unchanged exit=0 reason=ok mode=check commit=%s playbook=ansible/playbooks/host.yml changed=0\\n' \"$2\"\n"
+        )
+        stand_in.chmod(0o755)
+        values = check_env(DRY_RUN="true", DRY_RUN_STUB="stub/host.sh", HOSTS="".join(f"{h}\n" for h in hosts), SSH_KEY="", KNOWN_HOSTS="")
+        checked = sandbox.run(action_step("check"), values, {"GITHUB_WORKSPACE": str(sandbox.dir / "workspace")})
+        self.assertEqual(checked.code, 0, checked.log)
+        result = sandbox.run(action_step("report"), report_env(DRY_RUN="true", SSH_KEY=""))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertIn("host 3", result.summary)
+        self.assertEqual(result.outputs["has_changes"], "false")
+
+    def test_without_a_total_time_each_call_gets_the_host_limit_in_seconds(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        sandbox.host(HOST_TWO, 0, CLEAN)
+        self.assertEqual(sandbox.run(action_step("check"), check_env(HOST_TIMEOUT_MINUTES="65")).code, 0)
+        self.assertEqual(sandbox.timeouts(), ["3900s", "3900s"])
+
+    def test_with_a_total_time_each_call_is_cut_to_what_is_left_and_a_host_reached_after_it_is_not_asked(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        for dest in hosts:
+            sandbox.host(dest, 0, CLEAN)
+        # The clock: the start, then one reading per host. Two minutes in all.
+        sandbox.clock(1000, 1000, 1060, 1130)
+        values = check_env(HOSTS="".join(f"{h}\n" for h in hosts), TOTAL_TIMEOUT_MINUTES="2")
+        checked = sandbox.run(action_step("check"), values)
+        self.assertEqual(checked.code, 0, checked.log)
+        self.assertEqual(sandbox.timeouts(), ["120s", "60s"])
+        self.assertEqual([call.split(" ")[-2] for call in sandbox.ssh_log()], hosts[:2])
+        self.assertEqual(sandbox.calls("deploy@host-three"), 0)
+        result = sandbox.run(action_step("report"), report_env(FAIL_ON_CHANGES="true"))
+        self.assertNotEqual(result.code, 0)
+        self.assertEqual(result.outputs["outcome"], "no-answer")
+        self.assertEqual(result.outputs["detail"], "no usable answer (1)")
+        self.assertIn("| host 3 | no-answer | not asked: the time given to the check was spent before this host |", result.summary)
+
+    def test_a_total_time_longer_than_the_host_limit_leaves_the_host_limit_alone(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        sandbox.host(HOST_TWO, 0, CLEAN)
+        sandbox.clock(1000, 1000, 1010)
+        values = check_env(HOST_TIMEOUT_MINUTES="1", TOTAL_TIMEOUT_MINUTES="85")
+        self.assertEqual(sandbox.run(action_step("check"), values).code, 0)
+        self.assertEqual(sandbox.timeouts(), ["60s", "60s"])
+
+    def test_key_material_is_copied_private_and_removed_on_every_way_out(self) -> None:
+        would_change = (11, WOULD_CHANGE, "+greeting = NEW\n")
+        cases = {
+            "every host clean, green": ({HOST_ONE: (0, CLEAN, ""), HOST_TWO: (0, CLEAN, "")}, "false", True),
+            "a host would change in a plan, green": ({HOST_ONE: (0, CLEAN, ""), HOST_TWO: would_change}, "false", True),
+            "a host would change in a drift check, red": ({HOST_ONE: (0, CLEAN, ""), HOST_TWO: would_change}, "true", False),
+            "a host failed, red": ({HOST_ONE: (0, CLEAN, ""), HOST_TWO: (255, "", "")}, "false", False),
+            "a diff is withheld, red": ({HOST_ONE: (11, WOULD_CHANGE, "+api_token = 0123456789abcdef\n"), HOST_TWO: (0, CLEAN, "")}, "false", False),
+        }
+        for name, (answers, fail_on_changes, green) in cases.items():
+            with self.subTest(case=name):
+                sandbox = Sandbox(self)
+                sandbox.stub("rm", RM_STUB)
+                for dest, (code, out, err) in answers.items():
+                    sandbox.host(dest, code, out, err)
+                self.assertEqual(sandbox.run(action_step("check"), check_env()).code, 0)
+                before = (sandbox.stubs / "rm.log").read_text().splitlines()
+                result = sandbox.run(action_step("report"), report_env(FAIL_ON_CHANGES=fail_on_changes))
+                self.assertEqual(result.code == 0, green, result.log)
+                self.assertFalse((sandbox.temp / "ansible-plan" / "keylines").exists(), name)
+                removed = [line for line in (sandbox.stubs / "rm.log").read_text().splitlines() if line not in before]
+                self.assertEqual(len(removed), 1, removed)
+                self.assertTrue(removed[0].startswith("-rw-------"), removed)
+                self.assertTrue(removed[0].endswith("/keylines"), removed)
+
 
 def apply_guard_env(**changes: str) -> dict[str, str]:
     values = {
@@ -1138,6 +1308,18 @@ class ApplyTests(unittest.TestCase):
         self.assertNotIn("playbook output", result.log + result.summary)
         self.assertNotIn(HOST_ONE, result.log + result.summary)
         self.assertFalse((sandbox.temp / "ansible-apply" / "id").exists())
+
+    def test_every_planned_host_is_applied_and_checked_again_when_the_call_reads_its_standard_input(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        for dest in hosts:
+            sandbox.host(dest, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, HOSTS="".join(f"{h}\n" for h in hosts))
+        self.assertEqual(result.code, 0, result.log)
+        for dest in hosts:
+            self.assertEqual(sandbox.calls(dest), 2, dest)
+        self.assertIn("Applied commit", result.log)
+        self.assertIn("on 3 host(s)", result.log)
 
     def test_a_host_that_needs_a_second_change_fails_the_job(self) -> None:
         sandbox = Sandbox(self)
@@ -1423,6 +1605,8 @@ def drift_guard_env(**changes: str) -> dict[str, str]:
         "IS_FORK": "false",
         "SHA": SHA,
         "HOST_LABEL": "edge-1",
+        "HOST_TIMEOUT": "65",
+        "CHECK_TIMEOUT": "90",
     }
     values.update(changes)
     return values
@@ -1438,7 +1622,7 @@ class DriftGuardTests(unittest.TestCase):
                 with self.subTest(event=event, branch=branch):
                     result = self.guard(EVENT_NAME=event, DEFAULT_BRANCH=branch, REF=f"refs/heads/{branch}")
                     self.assertEqual(result.code, 0, result.log)
-                    self.assertEqual(result.outputs, {"refused": "false"})
+                    self.assertEqual(result.outputs, {"refused": "false", "budget": "85"})
 
     def test_every_other_event_branch_fork_commit_or_label_is_refused_and_flagged_as_a_refusal(self) -> None:
         cases = {
@@ -1460,12 +1644,26 @@ class DriftGuardTests(unittest.TestCase):
             "label with a second line": {"HOST_LABEL": "edge-1\nx"},
             "label of 33 characters": {"HOST_LABEL": "a" * 33},
             "label starting with a dash": {"HOST_LABEL": "-edge"},
+            "host timeout of zero": {"HOST_TIMEOUT": "0"},
+            "host timeout that is not a number": {"HOST_TIMEOUT": "65.5"},
+            "empty host timeout": {"HOST_TIMEOUT": ""},
+            "check timeout that is not a number": {"CHECK_TIMEOUT": "ninety"},
+            "check timeout below ten minutes": {"CHECK_TIMEOUT": "9"},
+            "check timeout above 350 minutes": {"CHECK_TIMEOUT": "351"},
+            "check timeout with a second line": {"CHECK_TIMEOUT": "90\n90"},
         }
         for name, changes in cases.items():
             with self.subTest(case=name):
                 result = self.guard(**changes)
                 self.assertNotEqual(result.code, 0)
                 self.assertEqual(result.outputs, {"refused": "true"})
+
+    def test_the_hosts_get_five_minutes_less_than_the_job_bound(self) -> None:
+        for check, budget in (("10", "5"), ("90", "85"), ("350", "345")):
+            with self.subTest(check=check):
+                result = self.guard(CHECK_TIMEOUT=check)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs["budget"], budget)
 
     def test_a_label_of_thirty_two_characters_passes(self) -> None:
         self.assertEqual(self.guard(HOST_LABEL="a" + "b" * 31).code, 0)

@@ -453,6 +453,7 @@ jobs:
           known-hosts: ${{ secrets.ssh_known_hosts }}
           check-key: ${{ secrets.ssh_check_key }}
           sha: ${{ steps.guard.outputs.sha }}
+          # standards-allow-next-line CI-2 dry-run is the name of an action input in a with: map, not a run: body (the matcher reads the key as run:)
           dry-run: ${{ inputs.dry-run }}
           dry-run-stub: ${{ inputs.dry-run-stub }}
           working-directory: ${{ inputs.working-directory }}
@@ -561,12 +562,14 @@ jobs:
           # Run one request and require the answer to be one of the accepted
           # kinds. Arguments: host number, destination, label, then the accepted
           # answers as "exit:verdict" words. The playbook output is dropped: it
-          # is on the host, and the job log is public.
+          # is on the host, and the job log is public. The call takes its input
+          # from /dev/null: the host loop below reads the host list from its own
+          # standard input, and ssh would swallow the hosts after the first.
           ask() {
             local num="$1" dest="$2" label="$3"
             shift 3
             local rc=0 out line accepted ok=1
-            out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" 2> /dev/null) || rc=$?
+            out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" < /dev/null 2> /dev/null) || rc=$?
             line=$(printf '%s\n' "$out" | tr -d '\r' | head -n 1)
             if [ "$rc" = 255 ]; then
               fail "Host $num, $label: the SSH connection failed (exit 255)."

@@ -28,7 +28,10 @@ on:
         required: false
         default: 65
       check-timeout-minutes:
-        description: The drift job is stopped after this many minutes.
+        description: >-
+          The drift job is stopped after this many minutes, from 10 to 350. The
+          host calls share this time less five minutes, so a hung host is judged
+          as no-answer before the job is stopped.
         type: number
         required: false
         default: 90
@@ -75,6 +78,8 @@ jobs:
           IS_FORK: ${{ github.event.repository.fork }}
           SHA: ${{ github.sha }}
           HOST_LABEL: ${{ inputs.host-label }}
+          HOST_TIMEOUT: ${{ inputs.host-timeout-minutes }}
+          CHECK_TIMEOUT: ${{ inputs.check-timeout-minutes }}
         run: |
           set -euo pipefail
           fail() {
@@ -94,8 +99,16 @@ jobs:
           [[ "$SHA" =~ $sha_re ]] || fail "The commit is not 40 lowercase hex digits."
           [[ "$HOST_LABEL" =~ $label_re ]] \
             || fail "The host-label input must be letters, digits, dot, underscore and dash, at most 32 characters."
+          # The hosts are asked one after another, so their calls share the time
+          # of the job less five minutes, and the job bound stays above them.
+          minutes_re='^[1-9][0-9]{0,3}$'
+          [[ "$HOST_TIMEOUT" =~ $minutes_re ]] || fail "The host-timeout-minutes input must be a whole number of minutes, at least 1."
+          [[ "$CHECK_TIMEOUT" =~ $minutes_re ]] || fail "The check-timeout-minutes input must be a whole number of minutes."
+          { [ "$CHECK_TIMEOUT" -ge 10 ] && [ "$CHECK_TIMEOUT" -le 350 ]; } \
+            || fail "The check-timeout-minutes input must be from 10 to 350, so the job bound can sit above the time given to the hosts and GitHub's own limit of 360."
           echo "refused=false" >> "$GITHUB_OUTPUT"
-          echo "Checking the default branch head $SHA."
+          echo "budget=$((CHECK_TIMEOUT - 5))" >> "$GITHUB_OUTPUT"
+          echo "Checking the default branch head $SHA, with $((CHECK_TIMEOUT - 5)) minutes for the hosts together."
 
       # The commit this workflow was called at is read from the run record, which
       # names the commit of every reusable workflow the run called. The runner
@@ -163,17 +176,24 @@ jobs:
           check-key: ${{ secrets.ssh_check_key }}
           sha: ${{ github.sha }}
           host-timeout: ${{ inputs.host-timeout-minutes }}
+          total-timeout: ${{ steps.guard.outputs.budget }}
           fail-on-changes: 'true'
 
   # Opens one issue for the host set, or adds a comment to the one already open.
-  # It runs after a failed check that got past the guard, and never after a
-  # clean run, a cancel or a timeout. An issue is found by its label, which only
-  # a triager can set, and never by a title search. A run of the same set waits
-  # for the one before it, so two cannot both find no issue and open two.
+  # It runs after a check that failed or was cancelled and got past the guard,
+  # and never after a clean run or a refusal. A job that hits its timeout-minutes
+  # reports `cancelled` to a job that needs it (measured, see the README), so a
+  # timeout is covered by the same condition as a failure. An issue is found by
+  # its label, which only a triager can set, and never by a title search. A run
+  # of the same set waits for the one before it, so two cannot both find no
+  # issue and open two.
   alert:
     name: Open or update the drift issue
     needs: [drift]
-    if: always() && needs.drift.result == 'failure' && needs.drift.outputs.guard_refused != 'true'
+    if: >-
+      always()
+      && (needs.drift.result == 'failure' || needs.drift.result == 'cancelled')
+      && needs.drift.outputs.guard_refused != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:

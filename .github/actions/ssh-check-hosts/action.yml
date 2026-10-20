@@ -49,6 +49,15 @@ inputs:
     description: One host call is stopped after this many minutes.
     required: false
     default: '65'
+  total-timeout:
+    description: >-
+      Empty (the default) puts no bound on the hosts together. A whole number of
+      minutes is the time all the host calls share: each call is stopped at the
+      smaller of host-timeout and what is left, and a host reached after the
+      time is spent is not asked and is judged as no-answer. The caller's job
+      bound must sit above it.
+    required: false
+    default: ''
   environment:
     description: >-
       The deployment environment the plan's apply would wait on. It appears in
@@ -96,6 +105,8 @@ runs:
         DRY_RUN: ${{ inputs.dry-run }}
         DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
         FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
+        HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout }}
+        TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
       run: |
         set -euo pipefail
         fail() {
@@ -103,9 +114,14 @@ runs:
           exit 1
         }
         sha_re='^[0-9a-f]{40}$'
+        minutes_re='^[1-9][0-9]{0,3}$'
         [[ "$SHA" =~ $sha_re ]] || fail "The commit is not 40 lowercase hex digits."
         case "$DRY_RUN" in true | false) ;; *) fail "dry-run must be true or false." ;; esac
         case "$FAIL_ON_CHANGES" in true | false) ;; *) fail "fail-on-changes must be true or false." ;; esac
+        [[ "$HOST_TIMEOUT_MINUTES" =~ $minutes_re ]] || fail "host-timeout must be a whole number of minutes, at least 1."
+        if [ -n "$TOTAL_TIMEOUT_MINUTES" ]; then
+          [[ "$TOTAL_TIMEOUT_MINUTES" =~ $minutes_re ]] || fail "total-timeout must be empty or a whole number of minutes, at least 1."
+        fi
         if [ "$DRY_RUN" = true ]; then
           [ -n "$DRY_RUN_STUB" ] || fail "dry-run needs dry-run-stub."
         fi
@@ -139,6 +155,7 @@ runs:
         DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
         WORKING_DIRECTORY: ${{ inputs.working-directory }}
         HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout }}
+        TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
         SSH_KEY: ${{ inputs.check-key }}
         KNOWN_HOSTS: ${{ inputs.known-hosts }}
       run: |
@@ -165,17 +182,36 @@ runs:
             -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
             -o ForwardAgent=no -o ClearAllForwardings=yes)
         fi
+        # Every call takes its input from /dev/null. The loop reads the host list
+        # from its own standard input, and a call that reads standard input
+        # (ssh does) would swallow the hosts after the first.
         i=0
+        started=$(date +%s)
         while IFS= read -r dest; do
           [ -n "$dest" ] || continue
           i=$((i + 1))
           n=$(printf '%02d' "$i")
           printf '%s\n' "$dest" > "$plan_dir/$n.dest"
           rc=0
-          if [ "$DRY_RUN" = true ]; then
-            "$stub" "$dest" "$SHA" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+          # The hosts are asked one after another. With a total time, a call gets
+          # the smaller of its own limit and what is left of the total, so the
+          # last host is judged before the caller's job bound ends the job.
+          limit=$((HOST_TIMEOUT_MINUTES * 60))
+          if [ -n "$TOTAL_TIMEOUT_MINUTES" ]; then
+            left=$((started + TOTAL_TIMEOUT_MINUTES * 60 - $(date +%s)))
+            if [ "$left" -lt "$limit" ]; then
+              limit="$left"
+            fi
+          fi
+          if [ "$limit" -le 0 ]; then
+            : > "$plan_dir/$n.out"
+            : > "$plan_dir/$n.err"
+            : > "$plan_dir/$n.skipped"
+            rc=124
+          elif [ "$DRY_RUN" = true ]; then
+            "$stub" "$dest" "$SHA" < /dev/null > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
           else
-            timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+            timeout "${limit}s" ssh "${ssh_args[@]}" -- "$dest" "$SHA" < /dev/null > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
           fi
           printf '%s\n' "$rc" > "$plan_dir/$n.rc"
         done <<< "$HOSTS"
@@ -216,8 +252,11 @@ runs:
           'jwt|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.'
           'credential-assignment|(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_.-]*"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]"]{4,}'
         )
+        # Key material is copied to this file so a diff that quotes it is caught.
+        # It is created private, and removed on every way out of the step.
         keylines="$plan_dir/keylines"
-        : > "$keylines"
+        trap 'rm -f "$keylines"' EXIT
+        (umask 077 && : > "$keylines")
         if [ -n "$SSH_KEY" ]; then
           printf '%s\n' "$SSH_KEY" | awk 'length($0) >= 16 && $0 !~ /^-----/' > "$keylines"
         fi
@@ -249,7 +288,9 @@ runs:
           line_count=$(wc -l < "$base.out" | tr -d ' ')
           line=$(tr -d '\r' < "$base.out" | head -n 1)
           re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
-          if [ "$rc" = 255 ]; then
+          if [ -e "$base.skipped" ]; then
+            note="not asked: the time given to the check was spent before this host"
+          elif [ "$rc" = 255 ]; then
             note="the SSH connection failed (exit 255)"
             kind="unreachable"
           elif [ "$line_count" != 1 ] || ! [[ "$line" =~ $re ]]; then
