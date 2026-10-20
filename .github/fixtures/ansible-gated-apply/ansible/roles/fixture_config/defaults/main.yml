@@ -1,0 +1,5 @@
+---
+fixture_config_state: present
+fixture_config_config_path: /etc/fixture_config.conf
+fixture_config_notice_path: /etc/fixture_config.notice
+fixture_config_greeting: FIXTURE_GREETING

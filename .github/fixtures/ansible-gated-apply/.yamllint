@@ -1,0 +1,16 @@
+---
+# The YAML floor for everything under ansible/ (ANS-6).
+extends: default
+rules:
+  line-length:
+    max: 160
+  document-start: disable
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: false
+  braces:
+    min-spaces-inside: 0
+    max-spaces-inside: 1
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true

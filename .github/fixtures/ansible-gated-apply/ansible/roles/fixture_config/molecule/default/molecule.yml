@@ -1,0 +1,23 @@
+---
+# The role's container-only test (ANS-15). The reusable workflow sets
+# ROLE_TEST_RUN_ID, so the instance name is unique to one run. When the variable
+# is unset the name falls back to one the Docker daemon rejects, so a run
+# without the workflow fails at create instead of sharing a container name.
+dependency:
+  name: galaxy
+  # The workflow installs the pinned collections before it starts Molecule.
+  enabled: false
+driver:
+  name: docker
+platforms:
+  - name: 'role-test-${ROLE_TEST_RUN_ID:-unset/use-the-workflow}'
+    # Pre-built, so that the reference can carry a digest. The digest is the pin
+    # and the tag beside it is only a label.
+    image: python:3.12-slim@sha256:09f7da3bc104798d0afb40bc08d23ab2da20a76130cec1f2ef170848f5d85217
+    pre_build_image: true
+    labels:
+      branchleft.role-test-run: '${ROLE_TEST_RUN_ID}'
+provisioner:
+  name: ansible
+verifier:
+  name: ansible
