@@ -1,6 +1,5 @@
 ---
-- name: Install the notice file
-  ansible.builtin.copy:
+- ansible.builtin.copy:
     src: notice.txt
     dest: '{{ fixture_config_notice_path }}'
     owner: root
