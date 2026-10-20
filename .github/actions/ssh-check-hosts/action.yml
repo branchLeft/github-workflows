@@ -1,0 +1,415 @@
+name: Check every host in check mode
+description: >-
+  Ask each host, through the restricted SSH route, what an apply of one commit
+  would change, judge the answers, scan the diff for secrets and write the
+  result to the job summary. It holds the check key and never applies.
+
+# One home for the host check. The plan job of ansible-gated-apply.yml and the
+# nightly job of ansible-drift-check.yml both call it, so the host list is
+# validated, the key is used and the answers are judged in one place. The
+# reasons and the failure modes are in the README ("ansible-gated-apply.yml",
+# "ansible-drift-check.yml").
+#
+# A caller reaches it by a path in its own workspace, because a reusable
+# workflow cannot name an action of its own repository: it checks this
+# repository out at the commit it was called at, then runs this file from there.
+
+inputs:
+  hosts:
+    description: >-
+      The hosts to check, one user@host per line. Pass it from a secret so the
+      job log masks the names.
+    required: true
+  known-hosts:
+    description: The known_hosts lines of the hosts. Pass it from a secret. Empty only in a dry run.
+    required: false
+    default: ''
+  check-key:
+    description: >-
+      The private key of the check route, which the host restricts to the forced
+      command in check mode. Pass it from a secret. Empty only in a dry run.
+    required: false
+    default: ''
+  sha:
+    description: The commit to ask about, 40 lowercase hex digits.
+    required: true
+  dry-run:
+    description: 'true replaces the SSH call with dry-run-stub; false (the default) calls the hosts.'
+    required: false
+    default: 'false'
+  dry-run-stub:
+    description: With dry-run, the executable, relative to working-directory, that stands in for a host.
+    required: false
+    default: ''
+  working-directory:
+    description: The directory, relative to the workspace root, that dry-run-stub is relative to.
+    required: false
+    default: '.'
+  host-timeout:
+    description: One host call is stopped after this many minutes.
+    required: false
+    default: '65'
+  environment:
+    description: >-
+      The deployment environment the plan's apply would wait on. It appears in
+      the plan wording only and is not read when fail-on-changes is true.
+    required: false
+    default: ''
+  fail-on-changes:
+    description: >-
+      false (the default) is the plan: a host that would change is a result, the
+      step succeeds and has-changes says so. true is the drift check: any host
+      that would change, or any answer that is not a clean one, fails the step.
+    required: false
+    default: 'false'
+
+outputs:
+  has-changes:
+    description: >-
+      false only when every host answered clean for this commit; true for every
+      other outcome.
+    value: ${{ steps.report.outputs.has_changes }}
+  hosts-digest:
+    description: The SHA-256 of the validated host list, so a later job can prove it uses the same hosts.
+    value: ${{ steps.validate.outputs.hosts_digest }}
+  outcome:
+    description: >-
+      ok, drift, refused, unreachable, no-answer, failed, withheld, or mixed when
+      more than one of those occurred. Empty if the step stopped before it could
+      judge.
+    value: ${{ steps.report.outputs.outcome }}
+  detail:
+    description: >-
+      The outcome in words with counts, and no host name. Empty if the step
+      stopped before it could judge.
+    value: ${{ steps.report.outputs.detail }}
+
+runs:
+  using: composite
+  steps:
+    - name: Validate the host list and the inputs
+      id: validate
+      shell: bash
+      env:
+        HOSTS: ${{ inputs.hosts }}
+        SHA: ${{ inputs.sha }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
+        FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
+      run: |
+        set -euo pipefail
+        fail() {
+          echo "::error::$1"
+          exit 1
+        }
+        sha_re='^[0-9a-f]{40}$'
+        [[ "$SHA" =~ $sha_re ]] || fail "The commit is not 40 lowercase hex digits."
+        case "$DRY_RUN" in true | false) ;; *) fail "dry-run must be true or false." ;; esac
+        case "$FAIL_ON_CHANGES" in true | false) ;; *) fail "fail-on-changes must be true or false." ;; esac
+        if [ "$DRY_RUN" = true ]; then
+          [ -n "$DRY_RUN_STUB" ] || fail "dry-run needs dry-run-stub."
+        fi
+        # One validated destination per line. The apply job rebuilds the list
+        # from the same secret and must find the same digest, so it never
+        # reaches a host that was not planned. The names are not a job output
+        # because an output carrying a secret is dropped.
+        list=""
+        count=0
+        while IFS= read -r dest; do
+          [ -n "$dest" ] || continue
+          printf '%s' "$dest" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$' \
+            || fail "A hosts line is not of the form user@host."
+          case " $list " in *" $dest "*) fail "A host is listed twice." ;; esac
+          list="${list:+$list }$dest"
+          count=$((count + 1))
+        done <<< "$HOSTS"
+        [ "$count" -ge 1 ] || fail "The ssh_hosts secret lists no host, so there is nothing to plan."
+        [ "$count" -le 50 ] || fail "The ssh_hosts secret lists more than 50 hosts."
+        digest=$(printf '%s' "$list" | shasum -a 256 | cut -d ' ' -f 1)
+        echo "hosts_digest=$digest" >> "$GITHUB_OUTPUT"
+        echo "Checking commit $SHA on $count host(s)."
+
+    - name: Check every host in check mode
+      id: check
+      shell: bash
+      env:
+        HOSTS: ${{ inputs.hosts }}
+        SHA: ${{ inputs.sha }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
+        WORKING_DIRECTORY: ${{ inputs.working-directory }}
+        HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout }}
+        SSH_KEY: ${{ inputs.check-key }}
+        KNOWN_HOSTS: ${{ inputs.known-hosts }}
+      run: |
+        set -euo pipefail
+        fail() {
+          echo "::error::$1"
+          exit 1
+        }
+        plan_dir="$RUNNER_TEMP/ansible-plan"
+        mkdir "$plan_dir"
+        ssh_args=()
+        if [ "$DRY_RUN" = true ]; then
+          stub="$GITHUB_WORKSPACE/$WORKING_DIRECTORY/$DRY_RUN_STUB"
+          [ -x "$stub" ] || fail "dry-run-stub is not an executable file."
+        else
+          [ -n "$SSH_KEY" ] || fail "The ssh_check_key secret is empty."
+          [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
+          (umask 077 && printf '%s\n' "$SSH_KEY" > "$plan_dir/id" && printf '%s\n' "$KNOWN_HOSTS" > "$plan_dir/known_hosts")
+          # The remote command is the commit and nothing else. The key's forced
+          # command on the host fixes the mode, so this caller cannot ask for an
+          # apply.
+          ssh_args=(-T -i "$plan_dir/id" -o IdentitiesOnly=yes -o BatchMode=yes
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$plan_dir/known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
+            -o ForwardAgent=no -o ClearAllForwardings=yes)
+        fi
+        i=0
+        while IFS= read -r dest; do
+          [ -n "$dest" ] || continue
+          i=$((i + 1))
+          n=$(printf '%02d' "$i")
+          printf '%s\n' "$dest" > "$plan_dir/$n.dest"
+          rc=0
+          if [ "$DRY_RUN" = true ]; then
+            "$stub" "$dest" "$SHA" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+          else
+            timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+          fi
+          printf '%s\n' "$rc" > "$plan_dir/$n.rc"
+        done <<< "$HOSTS"
+        rm -f "$plan_dir/id" "$plan_dir/known_hosts"
+        echo "Asked $i host(s); the answers are judged in the next step."
+
+    # The output of a host is held in files and never printed to the log. It is
+    # judged first, scanned for a secret, and only then written to the job
+    # summary. A host that failed, a diff that is too large to show whole and a
+    # diff that matches a secret pattern each fail the step, so no approval is
+    # asked for a plan the approver cannot read in full. With fail-on-changes a
+    # host that would change fails the step too, and the outcome names the kind.
+    - name: Judge the answers, scan the diff and write the result
+      id: report
+      shell: bash
+      env:
+        SHA: ${{ inputs.sha }}
+        ENVIRONMENT: ${{ inputs.environment }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
+        SSH_KEY: ${{ inputs.check-key }}
+      run: |
+        set -euo pipefail
+        export LC_ALL=C
+        plan_dir="$RUNNER_TEMP/ansible-plan"
+        echo "has_changes=true" >> "$GITHUB_OUTPUT"
+        per_host_cap=300000
+        total_cap=900000
+
+        # A pattern is "name|extended regular expression". The list is a
+        # backstop: the control is no_log and diff: false on the task (ANS-16).
+        patterns=(
+          'private-key|-----BEGIN [A-Z0-9 ]*PRIVATE KEY'
+          'aws-access-key|(AKIA|ASIA)[0-9A-Z]{16}'
+          'github-token|(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,})'
+          'slack-token|xox[abprs]-[A-Za-z0-9-]{10,}'
+          'payment-key|sk_(live|test)_[0-9A-Za-z]{20,}'
+          'jwt|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.'
+          'credential-assignment|(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_.-]*"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]"]{4,}'
+        )
+        keylines="$plan_dir/keylines"
+        : > "$keylines"
+        if [ -n "$SSH_KEY" ]; then
+          printf '%s\n' "$SSH_KEY" | awk 'length($0) >= 16 && $0 !~ /^-----/' > "$keylines"
+        fi
+
+        summary="$plan_dir/summary.md"
+        details="$plan_dir/details.md"
+        : > "$details"
+        rows="$plan_dir/rows.md"
+        : > "$rows"
+        kinds="$plan_dir/kinds"
+        : > "$kinds"
+        total=0
+        clean=0
+        changed=0
+        failed=0
+        total_bytes=0
+
+        for destfile in "$plan_dir"/*.dest; do
+          base="${destfile%.dest}"
+          n="${base##*/}"
+          total=$((total + 1))
+          dest=$(cat "$destfile")
+          hostpart="${dest#*@}"
+          rc=$(cat "$base.rc")
+          verdict="failed"
+          kind="no-answer"
+          note=""
+
+          line_count=$(wc -l < "$base.out" | tr -d ' ')
+          line=$(tr -d '\r' < "$base.out" | head -n 1)
+          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+          if [ "$rc" = 255 ]; then
+            note="the SSH connection failed (exit 255)"
+            kind="unreachable"
+          elif [ "$line_count" != 1 ] || ! [[ "$line" =~ $re ]]; then
+            note="the host did not answer with one summary line (exit $rc)"
+          else
+            f_verdict="${BASH_REMATCH[1]}"
+            f_exit="${BASH_REMATCH[2]}"
+            f_reason="${BASH_REMATCH[3]}"
+            f_commit="${BASH_REMATCH[4]}"
+            f_changed="${BASH_REMATCH[5]}"
+            if [ "$f_commit" != "$SHA" ] || [ "$f_exit" != "$rc" ]; then
+              note="the summary line names another commit or exit status (exit $rc)"
+            elif [ "$rc" = 0 ] && [ "$f_verdict" = unchanged ] && [ "$f_changed" = 0 ]; then
+              verdict="clean"
+              kind="ok"
+            elif [ "$rc" = 11 ] && [ "$f_verdict" = would-change ]; then
+              verdict="changes"
+              kind="drift"
+            else
+              note="verdict $f_verdict, reason $f_reason, exit $rc"
+              kind="failed"
+              if [ "$rc" = 21 ] && [ "$f_verdict" = busy ]; then
+                kind="refused: busy"
+              elif [ "$rc" = 20 ] && [ "$f_verdict" = refused ]; then
+                case "$f_reason" in
+                  bad-request | not-on-main | rollback | unsigned | bad-signature | signer-not-allowed | playbook-not-allowed)
+                    kind="refused: $f_reason"
+                    ;;
+                  *)
+                    kind="refused: other"
+                    ;;
+                esac
+              fi
+            fi
+          fi
+
+          # The diff: control characters removed, the host name replaced.
+          cleaned="$base.clean"
+          if [ "$rc" = 255 ]; then
+            : > "$cleaned"
+          else
+            tr -d '\000-\010\013\014\016-\037\177' < "$base.err" \
+              | awk -v d="$dest" -v h="$hostpart" -v label="host $((10#$n))" '
+                  function mark(s, needle,    out, i) {
+                    out = ""
+                    while ((i = index(s, needle)) > 0) { out = out substr(s, 1, i - 1) "\001"; s = substr(s, i + length(needle)) }
+                    return out s
+                  }
+                  { s = mark(mark($0, d), h); gsub(/\001/, label, s); print s }' > "$cleaned"
+          fi
+          size=$(wc -c < "$cleaned" | tr -d ' ')
+          total_bytes=$((total_bytes + size))
+
+          hits=""
+          for entry in "${patterns[@]}"; do
+            name="${entry%%|*}"
+            regex="${entry#*|}"
+            if grep -Eiq -e "$regex" "$cleaned"; then
+              hits="${hits:+$hits, }$name"
+            fi
+          done
+          if [ -s "$keylines" ] && grep -Fq -f "$keylines" "$cleaned"; then
+            hits="${hits:+$hits, }ci-key-material"
+          fi
+
+          show=true
+          if [ -n "$hits" ]; then
+            show=false
+            verdict="failed"
+            kind="withheld"
+            note="the diff matched a secret pattern ($hits) and is withheld"
+          elif [ "$size" -gt "$per_host_cap" ] || [ "$total_bytes" -gt "$total_cap" ]; then
+            show=false
+            verdict="failed"
+            kind="withheld"
+            note="the diff is too large to show whole, so it cannot be approved from here"
+          fi
+
+          case "$verdict" in
+            clean) clean=$((clean + 1)) ;;
+            changes) changed=$((changed + 1)) ;;
+            *) failed=$((failed + 1)) ;;
+          esac
+          printf '%s\n' "$kind" >> "$kinds"
+
+          label="host $((10#$n))"
+          result="$verdict"
+          if [ "$FAIL_ON_CHANGES" = true ]; then
+            result="$kind"
+          fi
+          printf '| %s | %s | %s |\n' "$label" "$result" "${note:--}" >> "$rows"
+          if [ "$show" = true ] && [ -s "$cleaned" ]; then
+            fence=$(awk 'BEGIN { m = 2 } { s = $0; while (match(s, /`+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } } END { f = ""; for (k = 0; k <= m; k++) f = f "`"; print f }' "$cleaned")
+            {
+              printf '\n### %s\n\n' "$label"
+              printf '%stext\n' "$fence"
+              cat "$cleaned"
+              printf '%s\n' "$fence"
+            } >> "$details"
+          fi
+        done
+
+        # The outcome names the kind of each answer that was not clean, with a
+        # count and never a host name, for the summary and for an alert.
+        detail=""
+        while read -r count name; do
+          case "$name" in
+            ok) continue ;;
+            drift) part="drift: $count changed" ;;
+            refused:*) part="$name ($count)" ;;
+            unreachable) part="unreachable ($count)" ;;
+            no-answer) part="no usable answer ($count)" ;;
+            withheld) part="diff withheld ($count)" ;;
+            *) part="$name ($count)" ;;
+          esac
+          detail="${detail:+$detail; }$part"
+        done < <(sort "$kinds" | uniq -c)
+        others=$(grep -v '^ok$' "$kinds" | sed 's/^refused: .*/refused/' | sort -u || true)
+        other_count=$(printf '%s' "$others" | grep -c . || true)
+        case "$other_count" in
+          0) outcome="ok" ;;
+          1) outcome="$others" ;;
+          *) outcome="mixed" ;;
+        esac
+
+        if [ "$FAIL_ON_CHANGES" = true ]; then
+          if [ "$outcome" = ok ]; then
+            first="No drift: every host reports no change for commit $SHA."
+          else
+            first="Not clean at commit $SHA: $detail."
+          fi
+        elif [ "$failed" -gt 0 ]; then
+          first="Plan failed: $failed of $total host(s) gave no usable answer, so no approval is requested for commit $SHA."
+        elif [ "$changed" -eq 0 ]; then
+          first="No changes: every host reports none for commit $SHA, so the apply is skipped and no approval is requested."
+        else
+          first="Changes: $changed of $total host(s) would change for commit $SHA, so the apply waits for the approval of environment $ENVIRONMENT."
+        fi
+        if [ "$DRY_RUN" = true ]; then
+          first="DRY RUN, the host call is a stub and nothing is applied. $first"
+        fi
+        {
+          printf '%s\n\n' "$first"
+          printf '| Host | Result | Note |\n| --- | --- | --- |\n'
+          cat "$rows"
+          cat "$details"
+        } > "$summary"
+        cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+        echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
+        echo "detail=${detail:-none}" >> "$GITHUB_OUTPUT"
+
+        if [ "$failed" -gt 0 ]; then
+          echo "::error::$first"
+          exit 1
+        fi
+        if [ "$FAIL_ON_CHANGES" = true ] && [ "$changed" -gt 0 ]; then
+          echo "::error::$first"
+          exit 1
+        fi
+        if [ "$changed" -eq 0 ] && [ "$clean" -eq "$total" ] && [ "$total" -ge 1 ]; then
+          echo "has_changes=false" >> "$GITHUB_OUTPUT"
+        fi
+        echo "$first"

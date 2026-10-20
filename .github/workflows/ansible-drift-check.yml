@@ -1,0 +1,223 @@
+name: Ansible drift check
+
+# The nightly check that the hosts still match the commit they were last given
+# (ANS-17). It asks each host, in check mode, what an apply of the default
+# branch head would change, and goes red when any host would change or cannot
+# say. It applies nothing and cannot: it holds the check key only, has no
+# environment and takes no apply key. Rules, inputs, secrets, the meaning of
+# its issue and the named limits are in the README ("ansible-drift-check.yml").
+#
+# Two jobs. `drift` holds the check key and no write permission. `alert` holds
+# the permission to open an issue and no secret. A caller runs this from a
+# schedule and from a manual run, and grants actions: read for the drift job
+# and issues: write for the alert.
+
+on:
+  workflow_call:
+    inputs:
+      host-label:
+        description: >-
+          A short name for this set of hosts, for the issue title and its label.
+          Letters, digits, dot, underscore and dash, at most 32 characters. Not
+          a host name: the hosts are secrets.
+        type: string
+        required: true
+      host-timeout-minutes:
+        description: One host call is stopped after this many minutes.
+        type: number
+        required: false
+        default: 65
+      check-timeout-minutes:
+        description: The drift job is stopped after this many minutes.
+        type: number
+        required: false
+        default: 90
+    secrets:
+      ssh_hosts:
+        description: >-
+          The hosts to check, one SSH destination per line in the form user@host.
+          A secret, so the job log masks the names. Pass it from a repository secret.
+        required: true
+      ssh_check_key:
+        description: >-
+          The private key of the check route. On the host it is restricted to the
+          forced command in check mode. Pass it from a repository secret.
+        required: true
+      ssh_known_hosts:
+        description: The known_hosts lines of the hosts. Pass it from a repository secret.
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    name: Check every host for drift (check mode)
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.check-timeout-minutes }}
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      guard_refused: ${{ steps.guard.outputs.refused }}
+      outcome: ${{ steps.check.outputs.outcome }}
+      detail: ${{ steps.check.outputs.detail }}
+    steps:
+      # A schedule or a manual run on the default branch of the repository
+      # itself. The payload of a schedule must carry the repository: if it does
+      # not, the default branch and the fork flag are empty and this refuses.
+      - name: Refuse outside a schedule or a manual run on the default branch
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IS_FORK: ${{ github.event.repository.fork }}
+          SHA: ${{ github.sha }}
+          HOST_LABEL: ${{ inputs.host-label }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "refused=true" >> "$GITHUB_OUTPUT"
+            echo "::error::$1"
+            exit 1
+          }
+          case "$EVENT_NAME" in
+            schedule | workflow_dispatch) ;;
+            *) fail "The drift check runs only for a schedule or a manual run, not for $EVENT_NAME." ;;
+          esac
+          [ -n "$DEFAULT_BRANCH" ] || fail "The event does not name the default branch of the repository."
+          [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail "The drift check runs only for the default branch."
+          [ "$IS_FORK" = false ] || fail "The drift check runs only in the repository itself, never in a fork."
+          sha_re='^[0-9a-f]{40}$'
+          label_re='^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'
+          [[ "$SHA" =~ $sha_re ]] || fail "The commit is not 40 lowercase hex digits."
+          [[ "$HOST_LABEL" =~ $label_re ]] \
+            || fail "The host-label input must be letters, digits, dot, underscore and dash, at most 32 characters."
+          echo "refused=false" >> "$GITHUB_OUTPUT"
+          echo "Checking the default branch head $SHA."
+
+      # The commit this workflow was called at is read from the run record, which
+      # names the commit of every reusable workflow the run called. The runner
+      # gives no value for it here (github.job_workflow_sha is empty), and an
+      # empty ref would make the checkout below take the default branch and run
+      # unpinned code with the key. So exactly one full commit id must be found,
+      # and the path must be free of any file of the caller. Needs actions: read.
+      - name: Resolve the commit this workflow was called at
+        id: pin
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          CALLED_WORKFLOW: branchLeft/github-workflows/.github/workflows/ansible-drift-check.yml
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          run_re='^[0-9]+$'
+          sha_re='^[0-9a-f]{40}$'
+          [[ "$RUN_ID" =~ $run_re ]] || fail "The run id is not a number."
+          record=$(gh api "repos/$REPO/actions/runs/$RUN_ID") \
+            || fail "The run record could not be read, so the commit this workflow was called at is unknown. The caller must grant actions: read. Refusing to fall back to the default branch."
+          called=$(printf '%s' "$record" | jq -r --arg prefix "$CALLED_WORKFLOW@" '(.referenced_workflows // [])[] | select(.path | startswith($prefix)) | "\(.sha) \(.path)"' | sort -u)
+          count=$(printf '%s' "$called" | grep -c . || true)
+          [ "$count" -eq 1 ] || fail "The run record names $count commits for $CALLED_WORKFLOW, not exactly one. Refusing to fall back to the default branch."
+          pinned="${called%% *}"
+          [[ "$pinned" =~ $sha_re ]] || fail "The commit the run record names is not 40 lowercase hex digits. Refusing to fall back to the default branch."
+          if [ -e "$GITHUB_WORKSPACE/.gw" ] || [ -L "$GITHUB_WORKSPACE/.gw" ]; then
+            fail "The path .gw already exists in the workspace, so the shared actions cannot be checked out into a clean directory."
+          fi
+          echo "sha=$pinned" >> "$GITHUB_OUTPUT"
+          echo "The shared actions are taken from commit $pinned, the commit of ${called#* }."
+
+      - name: Check out the shared actions at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/github-workflows
+          ref: ${{ steps.pin.outputs.sha }}
+          path: .gw
+          persist-credentials: false
+
+      - name: Verify the checkout is that commit
+        env:
+          PINNED_SHA: ${{ steps.pin.outputs.sha }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          head=$(git -C "$GITHUB_WORKSPACE/.gw" rev-parse HEAD)
+          [ "$head" = "$PINNED_SHA" ] || fail "The shared actions are at $head, not at the commit $PINNED_SHA this workflow was called at."
+          [ -f "$GITHUB_WORKSPACE/.gw/.github/actions/ssh-check-hosts/action.yml" ] || fail "The checkout holds no ssh-check-hosts action."
+          echo "The shared actions are at $head."
+
+      - name: Check every host in check mode, red on any drift
+        id: check
+        uses: ./.gw/.github/actions/ssh-check-hosts
+        with:
+          hosts: ${{ secrets.ssh_hosts }}
+          known-hosts: ${{ secrets.ssh_known_hosts }}
+          check-key: ${{ secrets.ssh_check_key }}
+          sha: ${{ github.sha }}
+          host-timeout: ${{ inputs.host-timeout-minutes }}
+          fail-on-changes: 'true'
+
+  # Opens one issue for the host set, or adds a comment to the one already open.
+  # It runs after a failed check that got past the guard, and never after a
+  # clean run, a cancel or a timeout. An issue is found by its label, which only
+  # a triager can set, and never by a title search. A run of the same set waits
+  # for the one before it, so two cannot both find no issue and open two.
+  alert:
+    name: Open or update the drift issue
+    needs: [drift]
+    if: always() && needs.drift.result == 'failure' && needs.drift.outputs.guard_refused != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      issues: write
+    concurrency:
+      group: ansible-drift-alert-${{ github.repository }}-${{ inputs.host-label }}
+      cancel-in-progress: false
+    steps:
+      - name: Open the issue, or comment on the open one
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          HOST_LABEL: ${{ inputs.host-label }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTCOME: ${{ needs.drift.outputs.outcome }}
+          DETAIL: ${{ needs.drift.outputs.detail }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          label_re='^[A-Za-z0-9][A-Za-z0-9._-]{0,31}$'
+          [[ "$HOST_LABEL" =~ $label_re ]] \
+            || fail "The host-label input must be letters, digits, dot, underscore and dash, at most 32 characters."
+          # The two values come from the check job and are words and counts. They
+          # are cut down to a safe alphabet anyway, so nothing else reaches the issue.
+          outcome=$(printf '%s' "$OUTCOME" | tr -cd 'a-z-' | head -c 40)
+          detail=$(printf '%s' "$DETAIL" | tr -cd 'A-Za-z0-9 :;()._-' | head -c 300)
+          outcome="${outcome:-unknown}"
+          detail="${detail:-the check stopped before it could say; read the run}"
+          title="Host drift: $HOST_LABEL"
+          label="host-drift:$HOST_LABEL"
+          body="$RUNNER_TEMP/drift-issue-body.md"
+          {
+            printf 'The nightly host check was not clean.\n\n'
+            printf -- '- Outcome: %s\n' "$outcome"
+            printf -- '- Detail: %s\n' "$detail"
+            printf -- '- Run: %s\n' "$RUN_URL"
+          } > "$body"
+          gh label create "$label" --force --color B60205 --description "Open while the nightly host check is not clean"
+          number=$(gh issue list --state open --label "$label" --limit 1 --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body-file "$body"
+          else
+            gh issue create --title "$title" --label "$label" --body-file "$body"
+          fi

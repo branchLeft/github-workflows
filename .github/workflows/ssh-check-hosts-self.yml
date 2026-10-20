@@ -1,0 +1,87 @@
+name: SSH check hosts (self-test)
+
+# This repo tests the action with its own working copy (the local path below),
+# not a tagged one, so a pull request that changes the action is checked by the
+# change itself. It runs on every pull request, with no path filter, so a change
+# elsewhere in the repo cannot skip it.
+#
+# It is the one run of the action on a real runner before a merge: the inputs,
+# the outputs and the shell of each step. The host call is the stub in the
+# fixture (a dry run), so no host is reached and no key is read. Each case is a
+# job of its own because the action keeps its files in one directory per job.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: 'Action wiring: ${{ matrix.name }}'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: plan wording, one host would change
+            hosts: "ci@first-stub-host\nci@second-stub-host"
+            fail-on-changes: 'false'
+            step-outcome: success
+            has-changes: 'true'
+            outcome: drift
+          - name: drift check, one host would change
+            hosts: "ci@first-stub-host\nci@second-stub-host"
+            fail-on-changes: 'true'
+            step-outcome: failure
+            has-changes: ''
+            outcome: ''
+          - name: drift check, every host clean
+            hosts: "ci@first-stub-host"
+            fail-on-changes: 'true'
+            step-outcome: success
+            has-changes: 'false'
+            outcome: ok
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the action against the stand-in host
+        id: ssh
+        continue-on-error: true
+        uses: ./.github/actions/ssh-check-hosts
+        with:
+          hosts: ${{ matrix.hosts }}
+          sha: ${{ github.sha }}
+          dry-run: 'true'
+          dry-run-stub: stub/host.sh
+          working-directory: .github/fixtures/ansible-gated-apply
+          environment: ansible-self-test
+          fail-on-changes: ${{ matrix.fail-on-changes }}
+
+      # A step that failed may or may not leave its outputs; the case that fails
+      # prints what it left, and only the cases that succeed assert them.
+      - name: The step ended as the case expects, with the outputs it expects
+        env:
+          STEP_OUTCOME: ${{ steps.ssh.outcome }}
+          HAS_CHANGES: ${{ steps.ssh.outputs.has-changes }}
+          OUTCOME: ${{ steps.ssh.outputs.outcome }}
+          DETAIL: ${{ steps.ssh.outputs.detail }}
+          HOSTS_DIGEST: ${{ steps.ssh.outputs.hosts-digest }}
+          EXPECT_STEP_OUTCOME: ${{ matrix.step-outcome }}
+          EXPECT_HAS_CHANGES: ${{ matrix.has-changes }}
+          EXPECT_OUTCOME: ${{ matrix.outcome }}
+        run: |
+          set -euo pipefail
+          echo "step outcome: $STEP_OUTCOME; has-changes: '$HAS_CHANGES'; outcome: '$OUTCOME'; detail: '$DETAIL'"
+          test "$STEP_OUTCOME" = "$EXPECT_STEP_OUTCOME"
+          if [ "$EXPECT_STEP_OUTCOME" = success ]; then
+            test "$HAS_CHANGES" = "$EXPECT_HAS_CHANGES"
+            test "$OUTCOME" = "$EXPECT_OUTCOME"
+            printf '%s' "$HOSTS_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+          fi
