@@ -11,7 +11,7 @@
     - name: Assert the configuration file carries the default greeting
       ansible.builtin.assert:
         that:
-          - "'greeting = FIXTURE_GREETING' in (fixture_config_verify_config.content | ansible.builtin.b64decode)"
+          - "'greeting = WRONG_GREETING' in (fixture_config_verify_config.content | ansible.builtin.b64decode)"
         success_msg: The configuration file was rendered from the template.
 
     - name: Read the notice file
