@@ -199,7 +199,98 @@ def ssh_call_with_paths_named(line: str) -> list[str]:
     return ["UserKnownHostsFile=KNOWN" if token.startswith("UserKnownHostsFile=") else token for token in tokens]
 
 
+SELF_WORKFLOW = REPO / ".github/workflows/ansible-gated-apply-self.yml"
+APPLY_IF = (
+    "needs.discover.outputs.delivery == 'true' && needs.plan.result == 'success' "
+    "&& needs.plan.outputs.has_changes != 'false' && inputs.dry-run == false "
+    "&& inputs.environment != ''"
+)
+# Every job of each workflow, with its job-level `if` and its ordered steps as
+# (name, `if`) pairs. A job with no steps is a reusable-workflow call.
+GATED_TABLE: dict[str, tuple[str | None, list[tuple[str, str | None]] | None]] = {
+    "discover": (None, [
+        ("Checkout", None),
+        ("Decide whether this run may reach a host", None),
+        ("List the Molecule shards from the repository tree", None),
+    ]),
+    "lint": (None, [
+        ("Checkout", None),
+        ("Create the tool environment", None),
+        ("Install the pinned tools", None),
+        ("Install the pinned collections", None),
+        ("yamllint every YAML file under the Ansible directory", None),
+        ("ansible-lint at the production profile", None),
+        ("Type-check the Python", None),
+        ("Lint the Python", None),
+        ("Check the Python formatting", None),
+    ]),
+    "shard": (None, [
+        ("Checkout", None),
+        ("Refuse a redirected container engine", None),
+        ("Create the tool environment", None),
+        ("Install the pinned tools", None),
+        ("Install the pinned collections", None),
+        ("Molecule default sequence, with the idempotence step", None),
+        ("Molecule check action", None),
+    ]),
+    "plan": ("needs.discover.outputs.delivery == 'true'", [
+        ("Checkout", "inputs.dry-run == true"),
+        ("Refuse outside a push to the default branch, and check the inputs", None),
+        ("Check every host in check mode", None),
+        ("Judge the answers, scan the diff and write the plan", None),
+    ]),
+    "apply": (APPLY_IF, [
+        ("Refuse unless this is the approved, planned push", None),
+        ("Refuse if the default branch has moved since the plan", None),
+        ("Apply on each host, then run it again to prove nothing is left to change", None),
+    ]),
+    "checks": ("always()", [
+        ("Require every job to have ended as expected", None),
+    ]),
+}
+SELF_TABLE: dict[str, tuple[str | None, list[tuple[str, str | None]] | None]] = {
+    "unit-tests": (None, [
+        ("Checkout", None),
+        ("Run the tests of the workflow's steps", None),
+    ]),
+    "gated-apply": (None, None),
+}
+# A bare constant false: `${{ false }}`, or `false` as a whole operand of && or ||.
+# The comparison `inputs.dry-run == false` is not a bare constant and is allowed.
+BARE_FALSE = re.compile(r"\$\{\{\s*false\s*\}\}|(^|[&|(]\s*)false(\s*$|\s*[&|)])")
+
+
+def normalised_if(node: Any) -> str | None:
+    return None if node is None else " ".join(str(node).split())
+
+
 class StructureTests(unittest.TestCase):
+    def test_every_job_and_step_of_both_workflows_is_exactly_the_expected_table(self) -> None:
+        self_doc: dict[Any, Any] = yaml.safe_load(SELF_WORKFLOW.read_text())
+        for label, doc, table in (("gated", DOC, GATED_TABLE), ("self", self_doc, SELF_TABLE)):
+            jobs: dict[str, dict[str, Any]] = doc["jobs"]
+            with self.subTest(workflow=label):
+                self.assertEqual(set(jobs), set(table))
+            for name, (job_if, steps) in table.items():
+                job = jobs.get(name, {})
+                with self.subTest(workflow=label, job=name):
+                    self.assertEqual(normalised_if(job.get("if")), job_if)
+                    self.assertNotIn("continue-on-error", job)
+                    if steps is None:
+                        self.assertIn("uses", job)
+                        self.assertNotIn("steps", job)
+                        continue
+                    actual = [(step.get("name"), normalised_if(step.get("if"))) for step in job.get("steps", [])]
+                    self.assertEqual(actual, steps)
+                    for step in job["steps"]:
+                        self.assertNotIn("continue-on-error", step, step.get("name"))
+            for name, job in jobs.items():
+                texts = [job.get("if")] + [step.get("if") for step in job.get("steps", [])]
+                for text in texts:
+                    if text is not None:
+                        with self.subTest(workflow=label, job=name, condition=str(text)):
+                            self.assertNotRegex(str(text), BARE_FALSE)
+
     def test_the_only_trigger_is_workflow_call(self) -> None:
         self.assertEqual(set(DOC[True]), {"workflow_call"})
 
@@ -800,6 +891,11 @@ class SshOptionTests(unittest.TestCase):
         for call in calls:
             dest = call.split(" ")[-2]
             self.assertIn(dest, (HOST_ONE, HOST_TWO))
+            tokens = call.split(" ")
+            self.assertTrue(tokens[tokens.index("-i") + 1].endswith("/id"), call)
+            known_hosts = [token for token in tokens if token.startswith("UserKnownHostsFile=")]
+            self.assertEqual(len(known_hosts), 1, call)
+            self.assertTrue(known_hosts[0].endswith("/known_hosts"), call)
             self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA))
 
 
