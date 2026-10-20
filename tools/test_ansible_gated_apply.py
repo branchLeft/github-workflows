@@ -1,11 +1,9 @@
-"""Tests of ansible-gated-apply.yml.
+"""Tests of ansible-gated-apply.yml, run against the text of each step.
 
-The workflow keeps its logic in the `run:` text of its steps, so no file of this
-repository is needed at run time. These tests take the text of a step by its id
-and run it under bash with the step's environment supplied by the test and
-`ssh`, `gh` and `timeout` replaced by stubs on PATH, so each test runs the text
-that CI runs. ANSIBLE_GATED_APPLY_WORKFLOW names another copy of the workflow,
-which is how a sabotage run points the tests at a deliberately broken copy.
+Each step's `run:` text runs under bash with `ssh`, `gh` and `timeout` stubbed on
+PATH. ANSIBLE_GATED_APPLY_WORKFLOW names a broken copy for a sabotage run.
+After a workflow change, regenerate the snapshot with
+`python3 tools/test_ansible_gated_apply.py --write-snapshot`.
 """
 
 from __future__ import annotations
@@ -16,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -200,91 +199,61 @@ def ssh_call_with_paths_named(line: str) -> list[str]:
 
 
 SELF_WORKFLOW = REPO / ".github/workflows/ansible-gated-apply-self.yml"
-APPLY_IF = (
-    "needs.discover.outputs.delivery == 'true' && needs.plan.result == 'success' "
-    "&& needs.plan.outputs.has_changes != 'false' && inputs.dry-run == false "
-    "&& inputs.environment != ''"
-)
-# Every job of each workflow, with its job-level `if` and its ordered steps as
-# (name, `if`) pairs. A job with no steps is a reusable-workflow call.
-GATED_TABLE: dict[str, tuple[str | None, list[tuple[str, str | None]] | None]] = {
-    "discover": (None, [
-        ("Checkout", None),
-        ("Decide whether this run may reach a host", None),
-        ("List the Molecule shards from the repository tree", None),
-    ]),
-    "lint": (None, [
-        ("Checkout", None),
-        ("Create the tool environment", None),
-        ("Install the pinned tools", None),
-        ("Install the pinned collections", None),
-        ("yamllint every YAML file under the Ansible directory", None),
-        ("ansible-lint at the production profile", None),
-        ("Type-check the Python", None),
-        ("Lint the Python", None),
-        ("Check the Python formatting", None),
-    ]),
-    "shard": (None, [
-        ("Checkout", None),
-        ("Refuse a redirected container engine", None),
-        ("Create the tool environment", None),
-        ("Install the pinned tools", None),
-        ("Install the pinned collections", None),
-        ("Molecule default sequence, with the idempotence step", None),
-        ("Molecule check action", None),
-    ]),
-    "plan": ("needs.discover.outputs.delivery == 'true'", [
-        ("Checkout", "inputs.dry-run == true"),
-        ("Refuse outside a push to the default branch, and check the inputs", None),
-        ("Check every host in check mode", None),
-        ("Judge the answers, scan the diff and write the plan", None),
-    ]),
-    "apply": (APPLY_IF, [
-        ("Refuse unless this is the approved, planned push", None),
-        ("Refuse if the default branch has moved since the plan", None),
-        ("Apply on each host, then run it again to prove nothing is left to change", None),
-    ]),
-    "checks": ("always()", [
-        ("Require every job to have ended as expected", None),
-    ]),
-}
-SELF_TABLE: dict[str, tuple[str | None, list[tuple[str, str | None]] | None]] = {
-    "unit-tests": (None, [
-        ("Checkout", None),
-        ("Run the tests of the workflow's steps", None),
-    ]),
-    "gated-apply": (None, None),
-}
+SNAPSHOT = REPO / "tools/ansible-gated-apply.structure.json"
 # A bare constant false: `${{ false }}`, or `false` as a whole operand of && or ||.
 # The comparison `inputs.dry-run == false` is not a bare constant and is allowed.
 BARE_FALSE = re.compile(r"\$\{\{\s*false\s*\}\}|(^|[&|(]\s*)false(\s*$|\s*[&|)])")
 
 
-def normalised_if(node: Any) -> str | None:
-    return None if node is None else " ".join(str(node).split())
+def key_name(key: Any) -> str:
+    return "on" if key is True else str(key)
+
+
+def step_structure(step: dict[str, Any]) -> dict[str, Any]:
+    """A step as data, with its `run:` body replaced by the SHA-256 of its text."""
+    entry: dict[str, Any] = {}
+    for key, value in step.items():
+        if key == "run":
+            entry["run-sha256"] = hashlib.sha256(str(value).encode()).hexdigest()
+        else:
+            entry[key_name(key)] = value
+    return entry
+
+
+def structure(doc: dict[Any, Any]) -> dict[str, Any]:
+    """Every key of a workflow at every level, with the text of each `run:` body reduced to its hash."""
+    result: dict[str, Any] = {}
+    for key, value in doc.items():
+        if key != "jobs":
+            result[key_name(key)] = value
+    jobs: dict[str, Any] = {}
+    for name, job in doc["jobs"].items():
+        entry: dict[str, Any] = {key_name(k): v for k, v in job.items() if k != "steps"}
+        if "steps" in job:
+            entry["steps"] = [step_structure(step) for step in job["steps"]]
+        jobs[name] = entry
+    result["jobs"] = jobs
+    return result
+
+
+def snapshot_text() -> str:
+    """The structure of both workflows, as the committed snapshot must hold it."""
+    both = {"gated": structure(DOC), "self": structure(yaml.safe_load(SELF_WORKFLOW.read_text()))}
+    return json.dumps(both, indent=2, sort_keys=True) + "\n"
 
 
 class StructureTests(unittest.TestCase):
-    def test_every_job_and_step_of_both_workflows_is_exactly_the_expected_table(self) -> None:
+    def test_both_workflows_match_the_committed_structure_snapshot(self) -> None:
+        self.assertEqual(
+            SNAPSHOT.read_text(),
+            snapshot_text(),
+            "a workflow changed: regenerate with `python3 tools/test_ansible_gated_apply.py --write-snapshot`",
+        )
+
+    def test_no_job_or_step_condition_is_a_bare_constant_false(self) -> None:
         self_doc: dict[Any, Any] = yaml.safe_load(SELF_WORKFLOW.read_text())
-        for label, doc, table in (("gated", DOC, GATED_TABLE), ("self", self_doc, SELF_TABLE)):
-            jobs: dict[str, dict[str, Any]] = doc["jobs"]
-            with self.subTest(workflow=label):
-                self.assertEqual(set(jobs), set(table))
-            for name, (job_if, steps) in table.items():
-                job = jobs.get(name, {})
-                with self.subTest(workflow=label, job=name):
-                    self.assertEqual(normalised_if(job.get("if")), job_if)
-                    self.assertNotIn("continue-on-error", job)
-                    if steps is None:
-                        self.assertIn("uses", job)
-                        self.assertNotIn("steps", job)
-                        continue
-                    actual = [(step.get("name"), normalised_if(step.get("if"))) for step in job.get("steps", [])]
-                    self.assertEqual(actual, steps)
-                    for step in job["steps"]:
-                        self.assertNotIn("continue-on-error", step, step.get("name"))
-            for name, job in jobs.items():
+        for label, doc in (("gated", DOC), ("self", self_doc)):
+            for name, job in doc["jobs"].items():
                 texts = [job.get("if")] + [step.get("if") for step in job.get("steps", [])]
                 for text in texts:
                     if text is not None:
@@ -433,6 +402,44 @@ class StructureTests(unittest.TestCase):
         )
         for step in steps:
             self.assertNotIn("if", step, step.get("name"))
+
+
+def discover_env(**changes: str) -> dict[str, str]:
+    values = {
+        "EVENT_NAME": "push",
+        "REF": "refs/heads/main",
+        "DEFAULT_BRANCH": "main",
+        "IS_FORK": "false",
+        "ENVIRONMENT": "production",
+        "WORKING_DIRECTORY": ".",
+        "ANSIBLE_DIRECTORY": "ansible",
+    }
+    values.update(changes)
+    return values
+
+
+class DiscoverTests(unittest.TestCase):
+    def decide(self, **changes: str) -> str:
+        result = Sandbox(self).run(find_step("discover", "context"), discover_env(**changes))
+        self.assertEqual(result.code, 0, result.log)
+        return result.outputs.get("delivery", "<missing>")
+
+    def test_a_push_to_the_default_branch_of_the_repository_itself_delivers(self) -> None:
+        self.assertEqual(self.decide(), "true")
+
+    def test_every_other_event_branch_or_fork_does_not_deliver(self) -> None:
+        cases = {
+            "pull request": {"EVENT_NAME": "pull_request", "REF": "refs/pull/40/merge"},
+            "manual run": {"EVENT_NAME": "workflow_dispatch"},
+            "schedule": {"EVENT_NAME": "schedule"},
+            "push to another branch": {"REF": "refs/heads/feature"},
+            "push to a tag": {"REF": "refs/tags/v1.0.0"},
+            "push to a default branch that is not main": {"DEFAULT_BRANCH": "trunk", "REF": "refs/heads/trunk-x"},
+            "push from a fork": {"IS_FORK": "true"},
+        }
+        for label, changes in cases.items():
+            with self.subTest(case=label):
+                self.assertEqual(self.decide(**changes), "false")
 
 
 class PlanGuardTests(unittest.TestCase):
@@ -900,4 +907,7 @@ class SshOptionTests(unittest.TestCase):
 
 
 if __name__ == "__main__":
-    unittest.main()
+    if sys.argv[1:] == ["--write-snapshot"]:
+        SNAPSHOT.write_text(snapshot_text())
+    else:
+        unittest.main()

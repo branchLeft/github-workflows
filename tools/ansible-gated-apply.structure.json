@@ -1,0 +1,473 @@
+{
+  "gated": {
+    "jobs": {
+      "apply": {
+        "concurrency": {
+          "cancel-in-progress": false,
+          "group": "ansible-apply-${{ github.repository }}-${{ inputs.environment }}"
+        },
+        "environment": "${{ inputs.environment }}",
+        "if": "needs.discover.outputs.delivery == 'true' && needs.plan.result == 'success' && needs.plan.outputs.has_changes != 'false' && inputs.dry-run == false && inputs.environment != ''",
+        "name": "Apply the planned commit (after approval)",
+        "needs": [
+          "discover",
+          "plan"
+        ],
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "env": {
+              "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+              "DRY_RUN": "${{ inputs.dry-run }}",
+              "ENVIRONMENT": "${{ inputs.environment }}",
+              "EVENT_NAME": "${{ github.event_name }}",
+              "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
+              "HOSTS": "${{ secrets.ssh_hosts }}",
+              "IS_FORK": "${{ github.event.repository.fork }}",
+              "PLANNED_DIGEST": "${{ needs.plan.outputs.hosts_digest }}",
+              "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
+              "REF": "${{ github.ref }}",
+              "SHA": "${{ github.sha }}"
+            },
+            "id": "guard",
+            "name": "Refuse unless this is the approved, planned push",
+            "run-sha256": "6828e60a086f045b794d48d84e42992946f9d79d3dd962048a216b1c6a73c67b"
+          },
+          {
+            "env": {
+              "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+              "GH_TOKEN": "${{ github.token }}",
+              "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
+              "REPO": "${{ github.repository }}"
+            },
+            "name": "Refuse if the default branch has moved since the plan",
+            "run-sha256": "1ebcc0bab5ec09d8e29ce2da403b80fe090d4522a63fd32c35bc2a7afe5077c1"
+          },
+          {
+            "env": {
+              "HOSTS": "${{ secrets.ssh_hosts }}",
+              "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
+              "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
+              "SHA": "${{ needs.plan.outputs.sha }}",
+              "SSH_KEY": "${{ secrets.ssh_apply_key }}"
+            },
+            "name": "Apply on each host, then run it again to prove nothing is left to change",
+            "run-sha256": "772d484d944bde13db01310a9d36ad0e3565ad2ad0deeb6e4960559726190cee"
+          }
+        ],
+        "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
+      },
+      "checks": {
+        "if": "always()",
+        "name": "Ansible checks passed",
+        "needs": [
+          "discover",
+          "lint",
+          "shard",
+          "plan",
+          "apply"
+        ],
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "env": {
+              "APPLY": "${{ needs.apply.result }}",
+              "DELIVERY": "${{ needs.discover.outputs.delivery }}",
+              "DISCOVER": "${{ needs.discover.result }}",
+              "DRY_RUN": "${{ inputs.dry-run }}",
+              "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
+              "LINT": "${{ needs.lint.result }}",
+              "PLAN": "${{ needs.plan.result }}",
+              "SHARD": "${{ needs.shard.result }}"
+            },
+            "name": "Require every job to have ended as expected",
+            "run-sha256": "a4c47ad519d0778184cbcc167ed1277a1421ce2b19d9e6bd3f49aa4a5f04543c"
+          }
+        ],
+        "timeout-minutes": 5
+      },
+      "discover": {
+        "name": "Discover the Ansible checks",
+        "outputs": {
+          "delivery": "${{ steps.context.outputs.delivery }}",
+          "matrix": "${{ steps.shards.outputs.matrix }}"
+        },
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "env": {
+              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}",
+              "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+              "ENVIRONMENT": "${{ inputs.environment }}",
+              "EVENT_NAME": "${{ github.event_name }}",
+              "IS_FORK": "${{ github.event.repository.fork }}",
+              "REF": "${{ github.ref }}",
+              "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
+            },
+            "id": "context",
+            "name": "Decide whether this run may reach a host",
+            "run-sha256": "4dcefd4c3b12dc07da08d9e38a6356e227b56b9c332259a46a886c7ad0dfd92e"
+          },
+          {
+            "env": {
+              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}",
+              "ROLE_DIRECTORIES": "${{ inputs.role-directories }}",
+              "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
+            },
+            "id": "shards",
+            "name": "List the Molecule shards from the repository tree",
+            "run-sha256": "6d0e857e58d332069b9863e071c6480430ccf853a3675a79057f9ce0391da09c"
+          }
+        ],
+        "timeout-minutes": 10
+      },
+      "lint": {
+        "defaults": {
+          "run": {
+            "working-directory": "${{ inputs.working-directory }}"
+          }
+        },
+        "name": "Lint the Ansible inputs",
+        "needs": [
+          "discover"
+        ],
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "name": "Create the tool environment",
+            "run-sha256": "b99419f07472d76ea05d6222e6081c1076d1fd24038d8eee1d6b842592567f54"
+          },
+          {
+            "env": {
+              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
+            },
+            "name": "Install the pinned tools",
+            "run-sha256": "6d322ba995d4443390041b332a04b657b892757cae29c58ef2dfe7f4bd99bab2"
+          },
+          {
+            "env": {
+              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
+            },
+            "name": "Install the pinned collections",
+            "run-sha256": "c8c2b8fb255b6f5edd72d91988de98ebd5a7de9d6f9cb1e5f95e9ab16bbf71aa"
+          },
+          {
+            "env": {
+              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
+            },
+            "name": "yamllint every YAML file under the Ansible directory",
+            "run-sha256": "3384495e3c55171109451c0a7a53fbd5c90041b5ec5b090d50e5dc71167bef28"
+          },
+          {
+            "env": {
+              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
+            },
+            "name": "ansible-lint at the production profile",
+            "run-sha256": "c4a99238b7cbc10ca97949968dc6c5fe7cccf75edebe9a858a79b35347876588"
+          },
+          {
+            "env": {
+              "PYTHON_PATHS": "${{ inputs.python-paths }}"
+            },
+            "name": "Type-check the Python",
+            "run-sha256": "ca85d8b54244d4325e1cc3b86c680d53f59df53b0205d1e1702fe615134b5856",
+            "working-directory": "${{ inputs.working-directory }}/${{ inputs.ansible-directory }}"
+          },
+          {
+            "env": {
+              "PYTHON_PATHS": "${{ inputs.python-paths }}"
+            },
+            "name": "Lint the Python",
+            "run-sha256": "48c2eac742731442ab15b6f21a8a12b2ea32822200eee9492716b0ae030e75f2",
+            "working-directory": "${{ inputs.working-directory }}/${{ inputs.ansible-directory }}"
+          },
+          {
+            "env": {
+              "PYTHON_PATHS": "${{ inputs.python-paths }}"
+            },
+            "name": "Check the Python formatting",
+            "run-sha256": "ff9f80d7c2e12cfa2d9d9f047e72c9edf84a00e7829fe68a0c7e09461c6c2ad3",
+            "working-directory": "${{ inputs.working-directory }}/${{ inputs.ansible-directory }}"
+          }
+        ],
+        "timeout-minutes": 20
+      },
+      "plan": {
+        "if": "needs.discover.outputs.delivery == 'true'",
+        "name": "Plan the apply (check mode on each host)",
+        "needs": [
+          "discover",
+          "lint",
+          "shard"
+        ],
+        "outputs": {
+          "has_changes": "${{ steps.report.outputs.has_changes }}",
+          "hosts_digest": "${{ steps.guard.outputs.hosts_digest }}",
+          "sha": "${{ steps.guard.outputs.sha }}"
+        },
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "if": "inputs.dry-run == true",
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "env": {
+              "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+              "DRY_RUN": "${{ inputs.dry-run }}",
+              "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
+              "ENVIRONMENT": "${{ inputs.environment }}",
+              "EVENT_NAME": "${{ github.event_name }}",
+              "HOSTS": "${{ secrets.ssh_hosts }}",
+              "IS_FORK": "${{ github.event.repository.fork }}",
+              "REF": "${{ github.ref }}",
+              "SHA": "${{ github.sha }}"
+            },
+            "id": "guard",
+            "name": "Refuse outside a push to the default branch, and check the inputs",
+            "run-sha256": "4530fe6e951d1ea2ebc39d4715cc0faef69c031f61ab94288a3da12c15a75735"
+          },
+          {
+            "env": {
+              "DRY_RUN": "${{ inputs.dry-run }}",
+              "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
+              "HOSTS": "${{ secrets.ssh_hosts }}",
+              "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
+              "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
+              "SHA": "${{ steps.guard.outputs.sha }}",
+              "SSH_KEY": "${{ secrets.ssh_check_key }}",
+              "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
+            },
+            "id": "check",
+            "name": "Check every host in check mode",
+            "run-sha256": "92b62edd4ea3d1f11211ab7e6b56819e28912573cc8064af0f8a1d769545464f"
+          },
+          {
+            "env": {
+              "DRY_RUN": "${{ inputs.dry-run }}",
+              "ENVIRONMENT": "${{ inputs.environment }}",
+              "SHA": "${{ steps.guard.outputs.sha }}",
+              "SSH_KEY": "${{ secrets.ssh_check_key }}"
+            },
+            "id": "report",
+            "name": "Judge the answers, scan the diff and write the plan",
+            "run-sha256": "56a474a3a3cd8ebcb5c6b0fced7bde28be05180e568cd28a29c2c244d7fb5249"
+          }
+        ],
+        "timeout-minutes": "${{ inputs.plan-timeout-minutes }}"
+      },
+      "shard": {
+        "defaults": {
+          "run": {
+            "working-directory": "${{ inputs.working-directory }}"
+          }
+        },
+        "env": {
+          "ROLE_TEST_RUN_ID": "${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}"
+        },
+        "name": "Molecule: ${{ matrix.name }}",
+        "needs": [
+          "discover"
+        ],
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "name": "Refuse a redirected container engine",
+            "run-sha256": "5a6cc4d8ba59981614e7e5a1e323ff6d9183ef60d5d695605255dcc2d55f469f"
+          },
+          {
+            "name": "Create the tool environment",
+            "run-sha256": "b99419f07472d76ea05d6222e6081c1076d1fd24038d8eee1d6b842592567f54"
+          },
+          {
+            "env": {
+              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
+            },
+            "name": "Install the pinned tools",
+            "run-sha256": "6d322ba995d4443390041b332a04b657b892757cae29c58ef2dfe7f4bd99bab2"
+          },
+          {
+            "env": {
+              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
+            },
+            "name": "Install the pinned collections",
+            "run-sha256": "c8c2b8fb255b6f5edd72d91988de98ebd5a7de9d6f9cb1e5f95e9ab16bbf71aa"
+          },
+          {
+            "name": "Molecule default sequence, with the idempotence step",
+            "run-sha256": "7db7a1a5e79e823c6604313d82788d4f6563e9478ae4b561d5ff2ea94bd84e4f",
+            "working-directory": "${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}"
+          },
+          {
+            "name": "Molecule check action",
+            "run-sha256": "a6e9d4bbfecf96132b547b672871e8baed05b38f81d86222255c26ea2cd96b10",
+            "working-directory": "${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}"
+          }
+        ],
+        "strategy": {
+          "fail-fast": false,
+          "matrix": "${{ fromJSON(needs.discover.outputs.matrix) }}"
+        },
+        "timeout-minutes": 30
+      }
+    },
+    "name": "Ansible gated apply",
+    "on": {
+      "workflow_call": {
+        "inputs": {
+          "ansible-directory": {
+            "default": "ansible",
+            "description": "The Ansible directory, relative to working-directory. It holds requirements.txt, requirements.yml and pyproject.toml.",
+            "required": false,
+            "type": "string"
+          },
+          "apply-timeout-minutes": {
+            "default": 180,
+            "description": "The apply job is stopped after this many minutes, not counting the wait for approval.",
+            "required": false,
+            "type": "number"
+          },
+          "dry-run": {
+            "default": false,
+            "description": "Replace the SSH call with dry-run-stub and never run the apply job. For the self-test of this workflow; a dry run can only skip an apply, never perform one.",
+            "required": false,
+            "type": "boolean"
+          },
+          "dry-run-stub": {
+            "default": "",
+            "description": "With dry-run, the executable, relative to working-directory, that stands in for the host. It receives the destination and the commit.",
+            "required": false,
+            "type": "string"
+          },
+          "environment": {
+            "description": "Name of the GitHub deployment environment that holds the required reviewers and the apply key. The apply job runs in it, so the approval click is GitHub's, not this workflow's.",
+            "required": true,
+            "type": "string"
+          },
+          "host-timeout-minutes": {
+            "default": 65,
+            "description": "One host call is stopped after this many minutes.",
+            "required": false,
+            "type": "number"
+          },
+          "plan-timeout-minutes": {
+            "default": 90,
+            "description": "The plan job is stopped after this many minutes.",
+            "required": false,
+            "type": "number"
+          },
+          "python-paths": {
+            "default": ".",
+            "description": "Paths, space separated and relative to ansible-directory, that mypy and ruff check.",
+            "required": false,
+            "type": "string"
+          },
+          "role-directories": {
+            "default": "roles/*",
+            "description": "Globs, one per line, relative to ansible-directory, of the directories that each hold a Molecule scenario at molecule/default.",
+            "required": false,
+            "type": "string"
+          },
+          "working-directory": {
+            "default": ".",
+            "description": "The directory, relative to the repository root, that holds the Ansible directory, .ansible-lint and .yamllint.",
+            "required": false,
+            "type": "string"
+          }
+        },
+        "secrets": {
+          "ssh_apply_key": {
+            "description": "The private key of the apply job. Do not pass it. Store it as a secret of the deployment environment, which the apply job reads because it runs in that environment.",
+            "required": false
+          },
+          "ssh_check_key": {
+            "description": "The private key of the plan job. On the host it is restricted to the forced command in check mode. Pass it from a repository secret.",
+            "required": false
+          },
+          "ssh_hosts": {
+            "description": "The hosts to plan and apply, one SSH destination per line in the form user@host. Each is reached only through the forced command. A secret, so the job log masks the names. Pass it from a repository secret.",
+            "required": false
+          },
+          "ssh_known_hosts": {
+            "description": "The known_hosts lines of the hosts. Pass it from a repository secret.",
+            "required": false
+          }
+        }
+      }
+    },
+    "permissions": {
+      "contents": "read"
+    }
+  },
+  "self": {
+    "jobs": {
+      "gated-apply": {
+        "secrets": {
+          "ssh_hosts": "ci@first-stub-host\nci@second-stub-host\n"
+        },
+        "uses": "./.github/workflows/ansible-gated-apply.yml",
+        "with": {
+          "dry-run": true,
+          "dry-run-stub": "stub/host.sh",
+          "environment": "ansible-self-test",
+          "working-directory": ".github/fixtures/ansible-gated-apply"
+        }
+      },
+      "unit-tests": {
+        "name": "Workflow step tests",
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "name": "Run the tests of the workflow's steps",
+            "run-sha256": "adcb33f6d78ee31ebb9c140491129a4b3b73aaf9efad2e7227202f6b9571eac6"
+          }
+        ],
+        "timeout-minutes": 10
+      }
+    },
+    "name": "Ansible gated apply (self-test)",
+    "on": {
+      "pull_request": null,
+      "push": {
+        "branches": [
+          "main"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "read"
+    }
+  }
+}
