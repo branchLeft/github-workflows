@@ -179,6 +179,16 @@ jobs:
       #    may exist anywhere under the Ansible directory. That is wider than the
       #    places prerun looks, on purpose: it needs no copy of ansible-compat's
       #    search rules.
+      # The search by name does not see through a link, and prerun resolves every
+      # direct entry of the role directory, and the role directory itself. So
+      # that directory and each direct entry of it that is a link is judged by
+      # where it resolves, and refused when it cannot be resolved, when it leaves
+      # the Ansible directory, when it is a file named galaxy.yml or galaxy.yaml,
+      # or when it or its parent directory holds either file. A link deeper down
+      # is not read by prerun and is left alone, because shared-infra has
+      # legitimate ones there. Not covered: a role directory that sits directly
+      # under the Ansible directory, where prerun also reads a galaxy.yml two
+      # levels above it, outside the tree this step can see.
       # The requirements.yml of the Ansible directory itself is held to the same
       # shape. yq reads each file and jq judges it; a file yq cannot parse, or a
       # missing yq, fails the step. The other home of that rule is shared-infra's
@@ -211,7 +221,34 @@ jobs:
             echo "::error::No directory matched role-directories, so nothing would be tested."
             exit 1
           fi
+          root=$(pwd -P)
+          refuse_link() {
+            local path=$1 resolved
+            [ -L "$path" ] || return 0
+            if ! resolved=$(realpath "$path" 2> /dev/null) || [ ! -e "$path" ]; then
+              echo "::error::$path is a link that cannot be resolved, so what Molecule's prerun would read through it cannot be judged (ANS-4)."
+              exit 1
+            fi
+            case "$resolved" in
+              "$root" | "$root"/*) ;;
+              *)
+                echo "::error::$path is a link that leaves the Ansible directory: Molecule's prerun resolves it and reads what it reaches (ANS-4)."
+                exit 1
+                ;;
+            esac
+            case "${resolved##*/}" in
+              galaxy.yml | galaxy.yaml)
+                echo "::error::$path is a link to a file named galaxy.yml or galaxy.yaml: Molecule's prerun installs its dependencies from Galaxy (ANS-4)."
+                exit 1
+                ;;
+            esac
+            if [ -e "$resolved/galaxy.yml" ] || [ -e "$resolved/galaxy.yaml" ] || [ -e "${resolved%/*}/galaxy.yml" ] || [ -e "${resolved%/*}/galaxy.yaml" ]; then
+              echo "::error::$path is a link into a directory holding a galaxy.yml or galaxy.yaml: Molecule's prerun installs its dependencies from Galaxy (ANS-4)."
+              exit 1
+            fi
+          }
           for dir in "${found[@]}"; do
+            refuse_link "$dir"
             if [ ! -f "$dir/molecule/default/molecule.yml" ]; then
               echo "::error::$dir has no molecule/default/molecule.yml (ANS-15)."
               exit 1
@@ -228,6 +265,11 @@ jobs:
                 fi
               fi
             done
+            shopt -s dotglob
+            for entry in "$dir"/*; do
+              refuse_link "$entry"
+            done
+            shopt -u dotglob
           done
           galaxy_file=$(find . \( -name galaxy.yml -o -name galaxy.yaml \) -print | sed -n 1p)
           if [ -n "$galaxy_file" ]; then

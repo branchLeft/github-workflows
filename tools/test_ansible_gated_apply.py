@@ -1093,6 +1093,97 @@ class ShardDiscoveryTests(unittest.TestCase):
         self.assertNotEqual(result.code, 0)
         self.assertIn("galaxy.yml must not exist", result.log)
 
+    def discover_with_links(self, links: dict[str, str], files: dict[str, str]) -> Result:
+        """Run the step on a project with one role, `alpha`, and a tree `ext` beside the Ansible directory.
+
+        `files` maps a path under the sandbox to its text. `links` maps a path under the Ansible directory to a
+        target path under the sandbox, and each link is made after the files, so a link can point into `ext`.
+        """
+        sandbox = Sandbox(self)
+        ansible = sandbox.dir / "ansible"
+        scenario_dir = ansible / "roles" / "alpha" / "molecule" / "default"
+        scenario_dir.mkdir(parents=True)
+        scenario_dir.joinpath("molecule.yml").write_text(GOOD_SCENARIO)
+        ansible.joinpath("requirements.yml").write_text(EMPTY_COLLECTIONS)
+        for relative, text in files.items():
+            target = sandbox.dir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text)
+        for relative, destination in links.items():
+            link = ansible / relative
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(sandbox.dir / destination)
+        return sandbox.run(find_step("discover", "shards"), shards_env())
+
+    def test_a_link_in_the_role_directory_that_leaves_the_ansible_directory_fails(self) -> None:
+        """Prerun resolves each entry of the role directory, so a link renamed from galaxy.yml still reaches the file it names."""
+        galaxy = "---\nnamespace: branchleft\nname: probe\nversion: 1.0.0\ndependencies:\n  community.general: '*'\n"
+        cases = {
+            "a renamed link to a file": ({"roles/alpha/notes.yml": "ext/galaxy.yml"}, {"ext/galaxy.yml": galaxy}),
+            "a link to a directory": ({"roles/alpha/branchleft": "ext/ns"}, {"ext/ns/galaxy.yml": galaxy}),
+            "a link to a directory with no galaxy file in it": ({"roles/alpha/branchleft": "ext/ns"}, {"ext/ns/other.yml": "---\n"}),
+            "a link to a file with an ordinary name": ({"roles/alpha/notes.yml": "ext/plain.yml"}, {"ext/plain.yml": "---\n"}),
+        }
+        for label, (links, files) in cases.items():
+            with self.subTest(case=label):
+                result = self.discover_with_links(links, files)
+                self.assertNotEqual(result.code, 0, label)
+                (name,) = links
+                self.assertIn(f"{name} is a link that leaves the Ansible directory", result.log)
+                self.assertNotIn("matrix", result.outputs)
+
+    def test_a_role_directory_that_is_a_link_out_of_the_ansible_directory_fails(self) -> None:
+        """The role directory is the working directory of the run, so prerun reads ../../galaxy.yml from where the link points."""
+        files = {
+            "ext/roles/x/molecule/default/molecule.yml": GOOD_SCENARIO,
+            "ext/galaxy.yml": "---\nnamespace: branchleft\nname: probe\nversion: 1.0.0\n",
+        }
+        result = self.discover_with_links({"roles/x": "ext/roles/x"}, files)
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("roles/x is a link that leaves the Ansible directory", result.log)
+        self.assertNotIn("matrix", result.outputs)
+
+    def test_a_link_in_the_role_directory_that_cannot_be_resolved_fails(self) -> None:
+        """A dangling link has no resolved path to judge, and macOS realpath fails on it, so it is refused rather than guessed at."""
+        result = self.discover_with_links({"roles/alpha/notes.yml": "nowhere.yml"}, {})
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("roles/alpha/notes.yml is a link that cannot be resolved", result.log)
+        self.assertNotIn("matrix", result.outputs)
+
+    def test_a_link_in_the_role_directory_to_a_galaxy_file_inside_the_tree_fails_by_what_it_names(self) -> None:
+        """A renamed link to a galaxy.yml that is inside the tree is caught by the link rule as well as by the file rule."""
+        galaxy = "---\nnamespace: branchleft\nname: probe\nversion: 1.0.0\n"
+        for name in ("galaxy.yml", "galaxy.yaml"):
+            with self.subTest(target=name):
+                result = self.discover_with_links({"roles/alpha/notes.yml": f"ansible/roles/alpha/files/{name}"}, {f"ansible/roles/alpha/files/{name}": galaxy})
+                self.assertNotEqual(result.code, 0)
+                self.assertIn("roles/alpha/notes.yml is a link to a file named galaxy.yml or galaxy.yaml", result.log)
+
+    def test_a_link_in_the_role_directory_into_a_directory_holding_a_galaxy_file_fails(self) -> None:
+        galaxy = "---\nnamespace: branchleft\nname: probe\nversion: 1.0.0\n"
+        cases = {
+            "to the directory": ("ansible/roles/alpha/files", {"ansible/roles/alpha/files/galaxy.yml": galaxy}),
+            "to a file in it": ("ansible/roles/alpha/files/other.yml", {"ansible/roles/alpha/files/galaxy.yaml": galaxy, "ansible/roles/alpha/files/other.yml": "---\n"}),
+        }
+        for label, (destination, files) in cases.items():
+            with self.subTest(case=label):
+                result = self.discover_with_links({"roles/alpha/ns": destination}, files)
+                self.assertNotEqual(result.code, 0)
+                self.assertIn("roles/alpha/ns is a link into a directory holding a galaxy.yml or galaxy.yaml", result.log)
+
+    def test_a_link_that_stays_inside_the_tree_and_names_no_galaxy_file_passes(self) -> None:
+        """The control: the rule refuses what prerun can read, not every link. A deeper link out of the tree is not read by prerun."""
+        cases = {
+            "an entry linked to a file in the tree": ({"roles/alpha/notes.yml": "ansible/roles/alpha/files/plain.yml"}, {"ansible/roles/alpha/files/plain.yml": "---\n"}),
+            "an entry linked to a directory in the tree": ({"roles/alpha/docs": "ansible/roles/alpha/files"}, {"ansible/roles/alpha/files/plain.yml": "---\n"}),
+            "a link two levels down that leaves the tree": ({"roles/alpha/files/shared": "ext/shared.conf"}, {"ext/shared.conf": "x\n"}),
+        }
+        for label, (links, files) in cases.items():
+            with self.subTest(case=label):
+                result = self.discover_with_links(links, files)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(json.loads(result.outputs["matrix"]), {"include": [{"name": "roles/alpha", "path": "roles/alpha"}]})
+
     def test_a_scenario_that_does_not_disable_the_dependency_step_fails(self) -> None:
         cases = {
             "enabled": "dependency:\n  name: galaxy\n  enabled: true\n",

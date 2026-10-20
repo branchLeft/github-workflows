@@ -374,7 +374,8 @@ README changes, so does this list.
   `pip install --require-hashes` refuses a package whose hash it does not list, so
   a caller whose file is unhashed fails at the install (ANS-4). Nothing is fetched
   from Galaxy: the collections come with the `ansible` package in the lock.
-  Molecule has two ways to reach Galaxy, and the discover job closes both. A
+  Molecule has two ways to reach Galaxy, and the discover job closes both, with
+  the one input named below left open. A
   scenario must set `dependency.enabled: false`. And Molecule's `prerun`, which is
   on by default and which the workflow leaves on because it is what makes a role
   resolve by its full name (with `prerun: false` the converge fails with "role not
@@ -384,7 +385,16 @@ README changes, so does this list.
   of a `galaxy.yml`. So each of those requirements files that exists must hold only
   `collections: []`, and no `galaxy.yml` or `galaxy.yaml` may exist anywhere under
   the Ansible directory (wider than the places prerun looks, so that no copy of
-  ansible-compat's search rules is needed). The `requirements.yml` of the Ansible
+  ansible-compat's search rules is needed). The search by name does not see
+  through a link, and prerun resolves the role directory and every direct entry of
+  it. So the role directory and each direct entry that is a link are refused when
+  the link cannot be resolved, when it resolves outside the Ansible directory,
+  when it resolves to a file named `galaxy.yml` or `galaxy.yaml`, or when it or its
+  parent directory holds either file. Links deeper in a role are left alone,
+  because prerun does not read them and `shared-infra` has legitimate ones there.
+  One input is not covered: a role directory that sits directly under the Ansible
+  directory, where prerun also reads a `galaxy.yml` two levels above it, outside
+  the tree the discover job searches. The `requirements.yml` of the Ansible
   directory is held to the same shape, and ansible-lint runs `--offline`. Vendoring
   the packages is not built. A Galaxy route in ansible-compat or Molecule that a
   later release adds is not covered until this list is updated. The lock must pin the tools the
