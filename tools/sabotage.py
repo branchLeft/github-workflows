@@ -1,19 +1,7 @@
-"""Sabotage proof for tools/test_ansible_gated_apply.py.
+"""Sabotage proof for tools/test_ansible_gated_apply.py: break each control, require its test red.
 
-A control is proven by breaking it and watching the test that guards it go red.
-Each case below is one exact edit (or a few) to the text of the gated apply, the
-drift check or the ssh-check-hosts action. The runner copies the repository,
-applies the edit, regenerates the structure snapshot (so the snapshot test does
-not stand in for the test that is meant to fail) and runs the named tests. A case
-passes only if every named test goes red. The unedited tree is run first and must
-be green, so a red can only come from the edit. An edit whose text is no longer
-found fails the case: the code moved and the case must be rewritten.
-
-    python3 tools/sabotage.py                  run every case
-    python3 tools/sabotage.py NAME ...         run the cases whose name contains NAME
-    python3 tools/sabotage.py --list           list the cases
-    python3 tools/sabotage.py --discover       run each edit against the whole suite and
-                                               print the tests that went red, to write `red`
+What it does, how to run one case and how to add one: README, section
+"ansible-drift-check.yml", paragraph on tools/sabotage.py.
 """
 
 from __future__ import annotations

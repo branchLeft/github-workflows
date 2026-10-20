@@ -541,7 +541,13 @@ The tests of every step are the same module as the gated apply's. `tools/sabotag
 breaks each control in a copy of the repository, one exact edit at a time, and requires
 the test that guards it to go red, after a run of the unedited tree that must be green.
 The `Sabotage proof` job of the self-test workflow runs it on every pull request, so
-the log of that job is the recorded red and green of every control.
+the log of that job is the recorded red and green of every control. Each case in the
+file is one exact edit and the tests (as `Class.method`) that must go red; the
+snapshot is regenerated in the copy first, so it cannot stand in for them. An edit
+whose text is no longer found fails its case, because the code moved. To add one, put
+a `Case` in `CASES`, run `python3 tools/sabotage.py --discover NAME` to see which
+tests the edit turns red, and name them. `python3 tools/sabotage.py NAME` runs the
+cases whose name contains `NAME`, and `--list` lists them.
 
 ## Actions
 
