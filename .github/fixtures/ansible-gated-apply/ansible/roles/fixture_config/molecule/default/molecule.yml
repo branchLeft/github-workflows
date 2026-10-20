@@ -10,7 +10,7 @@ dependency:
   # Molecule's prerun stays on, because it is what makes the role resolve by its
   # full name; the discover job refuses the files prerun would install from
   # Galaxy (a requirements file in the role directory, a galaxy.yml).
-  enabled: true
+  enabled: false
 driver:
   name: docker
 platforms:
