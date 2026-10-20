@@ -960,7 +960,7 @@ def shards_env(**changes: str) -> dict[str, str]:
     return values
 
 
-GOOD_SCENARIO = "dependency:\n  name: galaxy\n  enabled: false\ndriver:\n  name: docker\n"
+GOOD_SCENARIO = "prerun: false\ndependency:\n  name: galaxy\n  enabled: false\ndriver:\n  name: docker\n"
 EMPTY_COLLECTIONS = "---\ncollections: []\n"
 
 
@@ -1016,11 +1016,11 @@ class ShardDiscoveryTests(unittest.TestCase):
 
     def test_a_scenario_that_does_not_disable_the_dependency_step_fails(self) -> None:
         cases = {
-            "enabled": "dependency:\n  name: galaxy\n  enabled: true\n",
-            "no dependency key": "driver:\n  name: docker\n",
-            "dependency without enabled": "dependency:\n  name: galaxy\n",
-            "enabled as the string false": "dependency:\n  enabled: 'false'\n",
-            "dependency not a mapping": "dependency: galaxy\n",
+            "enabled": "prerun: false\ndependency:\n  name: galaxy\n  enabled: true\n",
+            "no dependency key": "prerun: false\ndriver:\n  name: docker\n",
+            "dependency without enabled": "prerun: false\ndependency:\n  name: galaxy\n",
+            "enabled as the string false": "prerun: false\ndependency:\n  enabled: 'false'\n",
+            "dependency not a mapping": "prerun: false\ndependency: galaxy\n",
             "a list at the top": "- dependency:\n    enabled: false\n",
             "a file that is not YAML": "dependency: [\n",
             "an empty file": "",
@@ -1030,6 +1030,25 @@ class ShardDiscoveryTests(unittest.TestCase):
                 result = self.discover(scenario=text)
                 self.assertNotEqual(result.code, 0, label)
                 self.assertIn("dependency.enabled to false", result.log)
+                self.assertNotIn("matrix", result.outputs)
+
+    def test_a_scenario_that_leaves_molecules_prerun_on_fails(self) -> None:
+        """Prerun installs role-level requirements files and galaxy.yml dependencies, even with the dependency step off."""
+        dependency = "dependency:\n  name: galaxy\n  enabled: false\n"
+        cases = {
+            "prerun true": "prerun: true\n" + dependency,
+            "no prerun key (Molecule's default is on)": dependency + "driver:\n  name: docker\n",
+            "prerun as the string false": "prerun: 'false'\n" + dependency,
+            "prerun as a number": "prerun: 0\n" + dependency,
+            "prerun null": "prerun:\n" + dependency,
+            "prerun under another key": "provisioner:\n  prerun: false\n" + dependency,
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                result = self.discover(scenario=text)
+                self.assertNotEqual(result.code, 0, label)
+                self.assertIn("must set prerun to false", result.log)
+                self.assertNotIn("dependency.enabled to false", result.log)
                 self.assertNotIn("matrix", result.outputs)
 
     def test_a_role_with_no_scenario_still_fails(self) -> None:

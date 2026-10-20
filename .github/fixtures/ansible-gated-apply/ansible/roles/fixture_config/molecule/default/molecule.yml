@@ -3,10 +3,14 @@
 # ROLE_TEST_RUN_ID, so the instance name is unique to one run. When the variable
 # is unset the name falls back to one the Docker daemon rejects, so a run
 # without the workflow fails at create instead of sharing a container name.
+# Nothing is fetched from Galaxy: the collections come with the `ansible`
+# package in the lock. The workflow's discover job requires both settings below.
+# Molecule's prerun is on by default and installs every requirements file under
+# the role directory (and the dependencies of a galaxy.yml there) on its own,
+# whatever dependency.enabled says, so it is switched off here too.
+prerun: false
 dependency:
   name: galaxy
-  # Nothing is fetched from Galaxy: the collections come with the `ansible`
-  # package in the lock, and the workflow's discover job requires this setting.
   enabled: false
 driver:
   name: docker

@@ -166,12 +166,16 @@ jobs:
       # empty list fails, because an empty matrix would skip the shard job and
       # the gate would have nothing to be red about.
       #
-      # Nothing is fetched from Galaxy (ANS-4). A requirements.yml that is there
-      # must hold exactly `collections: []`, and each scenario must set
-      # dependency.enabled to false. yq reads the file and jq judges it; a file yq
-      # cannot parse, or a missing yq, fails the step. The other home of this rule
-      # is shared-infra's ansible/checks/check_pins.py; the README ("Named limits")
-      # says how the two differ.
+      # Nothing is fetched from Galaxy by the job's own steps (ANS-4). A
+      # requirements.yml that is there must hold exactly `collections: []`, and
+      # each scenario must set dependency.enabled to false and prerun to false.
+      # Both are needed: Molecule's prerun (on by default) installs every
+      # requirements file under the role directory and the dependencies of any
+      # galaxy.yml there, and dependency.enabled: false does not stop it. yq reads
+      # the file and jq judges it; a file yq cannot parse, or a missing yq, fails
+      # the step. The other home of the requirements.yml rule is shared-infra's
+      # ansible/checks/check_pins.py; the README ("Named limits") says how the two
+      # differ.
       - name: List the Molecule shards from the repository tree
         id: shards
         env:
@@ -206,6 +210,10 @@ jobs:
             fi
             if ! yq -o=json . "$dir/molecule/default/molecule.yml" | jq -e '.dependency.enabled == false' > /dev/null; then
               echo "::error::$dir/molecule/default/molecule.yml must set dependency.enabled to false, so Molecule never reaches Galaxy (ANS-4)."
+              exit 1
+            fi
+            if ! yq -o=json . "$dir/molecule/default/molecule.yml" | jq -e '.prerun == false' > /dev/null; then
+              echo "::error::$dir/molecule/default/molecule.yml must set prerun to false, so Molecule's prerun never installs a role-level requirements file or galaxy.yml dependencies from Galaxy (ANS-4)."
               exit 1
             fi
           done

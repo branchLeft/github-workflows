@@ -373,10 +373,13 @@ README changes, so does this list.
   `requirements.txt` is a `uv pip compile --universal --generate-hashes` lock, and
   `pip install --require-hashes` refuses a package whose hash it does not list, so
   a caller whose file is unhashed fails at the install (ANS-4). Nothing is fetched
-  from Galaxy: the collections come with the `ansible` package in the lock. The
-  discover job fails if `requirements.yml` lists anything but `collections: []`, or
-  if a scenario leaves Molecule's dependency step enabled, and ansible-lint runs
-  `--offline`. Vendoring the packages is not built. The lock must pin the tools the
+  from Galaxy by the workflow's own steps: the collections come with the `ansible`
+  package in the lock. The discover job fails if `requirements.yml` lists anything
+  but `collections: []`, or if a scenario leaves Molecule's dependency step enabled
+  or its `prerun` on, and ansible-lint runs `--offline`. Both scenario settings are
+  needed: Molecule's `prerun` is on by default and installs every requirements file
+  under the role directory, and the dependencies of a `galaxy.yml` there, whatever
+  `dependency.enabled` says. Vendoring the packages is not built. The lock must pin the tools the
   workflow runs: `ansible`, `ansible-lint`, `molecule` with its Docker plugin,
   `yamllint`, `mypy` and `ruff`.
 - **The `requirements.yml` rule is also in `shared-infra`**, in

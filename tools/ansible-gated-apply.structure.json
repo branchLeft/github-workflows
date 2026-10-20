@@ -123,7 +123,7 @@
             },
             "id": "shards",
             "name": "List the Molecule shards from the repository tree",
-            "run-sha256": "5d31fae0badc1d76657cab3fbae6422ec18bc16d8f496c5ab7e3b837094527e9"
+            "run-sha256": "e62925112e3bee5eb4a7a5fb994f55b53df00a3b688f29b16979bec0eb0ddd61"
           }
         ],
         "timeout-minutes": 10
