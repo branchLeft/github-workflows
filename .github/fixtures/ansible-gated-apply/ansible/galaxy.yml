@@ -1,9 +1,0 @@
----
-namespace: branchleft
-name: fixture
-version: 1.0.0
-readme: README.md
-authors:
-  - fixture
-dependencies:
-  ansible.posix: '*'
