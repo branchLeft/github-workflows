@@ -1,8 +1,5 @@
 ---
-collections:
-  - name: ansible.posix
-    version: 2.2.2
-  - name: community.docker
-    version: 5.4.0
-  - name: community.library_inventory_filtering_v1
-    version: 1.1.5
+# Intentionally empty (ANS-4). The collections the role uses arrive with the
+# `ansible` package, which requirements.txt pins by version and hash. The
+# workflow's discover job fails if this file lists anything else.
+collections: []

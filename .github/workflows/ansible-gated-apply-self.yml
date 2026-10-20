@@ -32,6 +32,49 @@ jobs:
       - name: Run the tests of the workflow's steps
         run: python3 -m unittest discover -s tools -p 'test_ansible_gated_apply.py' -v
 
+  # The expected failure. It runs the install and the ansible-lint steps of the
+  # reusable workflow's `lint` job, taken from the workflow file by
+  # tools/run_workflow_steps.py so that the commands have one home, on a role that
+  # holds one deliberate error, and passes only when ansible-lint fails for that
+  # rule with that exit status. A non-zero exit alone is not a pass. It proves
+  # that ansible-lint, with the workflow's own flags, rejects bad input; it does
+  # not prove yamllint, mypy or ruff, and it does not prove that the `lint` job is
+  # wired into the gate (the `gated-apply` job below, run on a broken fixture,
+  # proves that). The rule id, the status and the summary line are the ones in
+  # .github/fixtures/ansible-gated-apply/lint-fail/README.md.
+  lint-expected-fail:
+    name: The lint rejects the lint-fail role
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the lint steps of the reusable workflow on the lint-fail role
+        run: |
+          set -uo pipefail
+          log="$RUNNER_TEMP/lint-fail.log"
+          status=0
+          python3 tools/run_workflow_steps.py .github/workflows/ansible-gated-apply.yml lint \
+            --input working-directory=.github/fixtures/ansible-gated-apply \
+            --input ansible-directory=ansible \
+            --step "Create the tool environment" \
+            --step "Install the pinned tools" \
+            --step "ansible-lint at the production profile" \
+            --step-input "ansible-lint at the production profile" ansible-directory=lint-fail \
+            > "$log" 2>&1 || status=$?
+          cat "$log"
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [ "$status" = 2 ] || fail "The lint steps ended with exit status $status on the lint-fail role. Expected 2, the status of ansible-lint when it finds a violation."
+          grep -Fq 'name[missing]: All tasks should be named.' "$log" || fail "ansible-lint did not report the rule name[missing]."
+          grep -Fq 'Failed: 1 failure(s), 0 warning(s)' "$log" || fail "ansible-lint did not report exactly one failure."
+          echo "ansible-lint rejected the lint-fail role for name[missing], with exit status 2."
+
   gated-apply:
     uses: ./.github/workflows/ansible-gated-apply.yml
     with:

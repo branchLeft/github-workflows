@@ -8,7 +8,9 @@ After a workflow change, regenerate the snapshot with
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import re
@@ -21,6 +23,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+import run_workflow_steps
 
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = Path(os.environ.get("ANSIBLE_GATED_APPLY_WORKFLOW", REPO / ".github/workflows/ansible-gated-apply.yml"))
@@ -75,6 +79,26 @@ printf '%s\\n' "$GH_HEAD"
 """
 
 
+# A stand-in for yq v4 that answers only the one call the workflow makes,
+# `yq -o=json . FILE`, by reading the file with PyYAML. Any other call, a missing
+# file or a file that is not YAML exits non-zero, as yq does. It is not yq: the
+# real yq runs in the self-test's own run of the discover job.
+YQ_STUB = f"""#!{sys.executable}
+import json
+import sys
+
+import yaml
+
+if sys.argv[1:3] != ["-o=json", "."] or len(sys.argv) != 4:
+    sys.exit(64)
+try:
+    with open(sys.argv[3], encoding="utf-8") as handle:
+        print(json.dumps(yaml.safe_load(handle)))
+except (OSError, yaml.YAMLError):
+    sys.exit(1)
+"""
+
+
 def summary_line(verdict: str, code: int, mode: str, commit: str, changed: int, reason: str = "ok") -> str:
     return (
         f"pull-trigger verdict={verdict} exit={code} reason={reason} mode={mode} "
@@ -102,7 +126,7 @@ class Sandbox:
         self.temp = self.dir / "runner-temp"
         for path in (self.bin, self.stubs, self.temp):
             path.mkdir()
-        for name, text in (("ssh", SSH_STUB), ("timeout", TIMEOUT_STUB), ("gh", GH_STUB)):
+        for name, text in (("ssh", SSH_STUB), ("timeout", TIMEOUT_STUB), ("gh", GH_STUB), ("yq", YQ_STUB)):
             target = self.bin / name
             target.write_text(text)
             target.chmod(0o755)
@@ -720,6 +744,15 @@ class ApplyGuardTests(unittest.TestCase):
     def test_the_apply_refuses_a_plan_with_nothing_to_change(self) -> None:
         self.assertNotEqual(self.guard(HAS_CHANGES="false").code, 0)
 
+    def test_the_apply_guard_refuses_only_the_literal_false_and_lets_every_other_value_through(self) -> None:
+        # The contract of the merged workflow: `!= false`, so a missing or unreadable
+        # output still reaches the approval and is never a silent skip. Several values,
+        # so that a guard written as `= true` or `= 1` cannot pass for one of them.
+        for value in ("true", "", "garbage", "True", "FALSE", "0", "no", "false "):
+            with self.subTest(has_changes=value):
+                result = self.guard(HAS_CHANGES=value)
+                self.assertEqual(result.code, 0, result.log)
+
     def test_the_apply_refuses_a_commit_other_than_the_planned_one(self) -> None:
         result = self.guard(PLANNED_SHA=OTHER_SHA)
         self.assertNotEqual(result.code, 0)
@@ -904,6 +937,426 @@ class SshOptionTests(unittest.TestCase):
             self.assertEqual(len(known_hosts), 1, call)
             self.assertTrue(known_hosts[0].endswith("/known_hosts"), call)
             self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA))
+
+
+FIXTURE = REPO / ".github/fixtures/ansible-gated-apply"
+LINT_JOB = "lint"
+INSTALL_STEPS = ("Create the tool environment", "Install the pinned tools")
+# The venv's bin directory under the sandbox's RUNNER_TEMP, where the steps look for a tool.
+VENV_BIN = "ansible-venv/bin"
+RECORDING_TOOL = """#!/usr/bin/env bash
+name="${0##*/}"
+printf '%s\\n' "$@" > "$STUB_DIR/$name.argv"
+"""
+
+
+def shards_env(**changes: str) -> dict[str, str]:
+    values = {
+        "WORKING_DIRECTORY": ".",
+        "ANSIBLE_DIRECTORY": "ansible",
+        "ROLE_DIRECTORIES": "roles/*\n",
+    }
+    values.update(changes)
+    return values
+
+
+GOOD_SCENARIO = "dependency:\n  name: galaxy\n  enabled: false\ndriver:\n  name: docker\n"
+EMPTY_COLLECTIONS = "---\ncollections: []\n"
+
+
+class ShardDiscoveryTests(unittest.TestCase):
+    """The discover step's rule on requirements.yml and on each shard's Molecule dependency step."""
+
+    def discover(self, scenario: str | None = GOOD_SCENARIO, requirements: str | None = EMPTY_COLLECTIONS) -> Result:
+        sandbox = Sandbox(self)
+        ansible = sandbox.dir / "ansible"
+        scenario_dir = ansible / "roles" / "alpha" / "molecule" / "default"
+        scenario_dir.mkdir(parents=True)
+        if scenario is not None:
+            scenario_dir.joinpath("molecule.yml").write_text(scenario)
+        if requirements is not None:
+            ansible.joinpath("requirements.yml").write_text(requirements)
+        return sandbox.run(find_step("discover", "shards"), shards_env())
+
+    def test_a_scenario_that_disables_the_dependency_step_and_an_empty_collection_list_pass(self) -> None:
+        result = self.discover()
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(json.loads(result.outputs["matrix"]), {"include": [{"name": "roles/alpha", "path": "roles/alpha"}]})
+
+    def test_an_absent_requirements_file_passes_because_nothing_reads_it(self) -> None:
+        self.assertEqual(self.discover(requirements=None).code, 0)
+
+    def test_requirements_that_list_anything_else_fail_and_name_the_file(self) -> None:
+        cases = {
+            "a collection": "---\ncollections:\n  - name: ansible.posix\n    version: 2.2.2\n",
+            "a role": "---\ncollections: []\nroles:\n  - name: geerlingguy.docker\n",
+            "an empty roles list beside the collections": "---\ncollections: []\nroles: []\n",
+            "an unknown key": "---\ncollections: []\nextra: 1\n",
+            "a bare list": "---\n- name: ansible.posix\n",
+            "a null collections value": "---\ncollections:\n",
+            "a scalar": "---\njust text\n",
+            "a comment only": "---\n# nothing here\n",
+            "an empty file": "",
+            "a file that is not YAML": "collections: [\n",
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                result = self.discover(requirements=text)
+                self.assertNotEqual(result.code, 0, label)
+                self.assertIn("requirements.yml must hold only", result.log)
+                self.assertNotIn("matrix", result.outputs)
+
+    def test_a_requirements_path_that_is_a_dangling_link_fails(self) -> None:
+        sandbox = Sandbox(self)
+        scenario_dir = sandbox.dir / "ansible" / "roles" / "alpha" / "molecule" / "default"
+        scenario_dir.mkdir(parents=True)
+        scenario_dir.joinpath("molecule.yml").write_text(GOOD_SCENARIO)
+        (sandbox.dir / "ansible" / "requirements.yml").symlink_to(sandbox.dir / "nowhere.yml")
+        self.assertNotEqual(sandbox.run(find_step("discover", "shards"), shards_env()).code, 0)
+
+    def test_a_scenario_that_does_not_disable_the_dependency_step_fails(self) -> None:
+        cases = {
+            "enabled": "dependency:\n  name: galaxy\n  enabled: true\n",
+            "no dependency key": "driver:\n  name: docker\n",
+            "dependency without enabled": "dependency:\n  name: galaxy\n",
+            "enabled as the string false": "dependency:\n  enabled: 'false'\n",
+            "dependency not a mapping": "dependency: galaxy\n",
+            "a list at the top": "- dependency:\n    enabled: false\n",
+            "a file that is not YAML": "dependency: [\n",
+            "an empty file": "",
+        }
+        for label, text in cases.items():
+            with self.subTest(case=label):
+                result = self.discover(scenario=text)
+                self.assertNotEqual(result.code, 0, label)
+                self.assertIn("dependency.enabled to false", result.log)
+                self.assertNotIn("matrix", result.outputs)
+
+    def test_a_role_with_no_scenario_still_fails(self) -> None:
+        result = self.discover(scenario=None)
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("molecule/default/molecule.yml", result.log)
+
+    def test_the_fixture_project_passes_the_rule(self) -> None:
+        sandbox = Sandbox(self)
+        values = shards_env(WORKING_DIRECTORY=str(FIXTURE))
+        result = sandbox.run(find_step("discover", "shards"), values)
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(json.loads(result.outputs["matrix"]), {"include": [{"name": "roles/fixture_config", "path": "roles/fixture_config"}]})
+
+
+def logical_lines(text: str) -> list[str]:
+    """The requirement lines of a pip file, with backslash continuations joined and comments dropped."""
+    joined: list[str] = []
+    pending = ""
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not pending and (not line or line.startswith("#")):
+            continue
+        if line.endswith("\\"):
+            pending += line[:-1].rstrip() + " "
+            continue
+        joined.append((pending + line).strip())
+        pending = ""
+    if pending:
+        joined.append(pending.strip())
+    return joined
+
+
+TOOLS = {"ansible", "ansible-lint", "molecule", "molecule-plugins", "yamllint", "mypy", "ruff"}
+EXACT_PIN = re.compile(r"(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[A-Za-z0-9._,-]+\])?==(?P<version>\d+(?:\.\d+)*)", re.ASCII)
+HASH = re.compile(r"--hash=sha256:[0-9a-f]{64}", re.ASCII)
+
+
+class LockTests(unittest.TestCase):
+    """The fixture's lock. The same facts shared-infra's ansible/checks/check_pins.py checks of its own."""
+
+    def setUp(self) -> None:
+        self.chosen = (FIXTURE / "ansible/requirements.in").read_text()
+        self.lock = (FIXTURE / "ansible/requirements.txt").read_text()
+
+    def test_requirements_in_pins_each_tool_exactly_and_names_nothing_else(self) -> None:
+        names: set[str] = set()
+        for line in logical_lines(self.chosen):
+            match = EXACT_PIN.fullmatch(line)
+            self.assertIsNotNone(match, line)
+            assert match is not None
+            names.add(match["name"])
+        self.assertEqual(names, TOOLS)
+
+    def test_every_line_of_the_lock_is_an_exact_pin_with_a_hash(self) -> None:
+        lines = logical_lines(self.lock)
+        self.assertGreater(len(lines), 40)
+        for line in lines:
+            requirement = line.split(" --hash=")[0].split(" ; ")[0]
+            self.assertIsNotNone(EXACT_PIN.fullmatch(requirement), line)
+            self.assertRegex(line, HASH, f"{requirement} has no hash")
+
+    def test_the_lock_agrees_with_requirements_in(self) -> None:
+        locked: dict[str, str] = {}
+        for line in logical_lines(self.lock):
+            match = EXACT_PIN.match(line)
+            assert match is not None
+            locked.setdefault(match["name"].lower(), match["version"])
+        for line in logical_lines(self.chosen):
+            match = EXACT_PIN.fullmatch(line)
+            assert match is not None
+            self.assertEqual(locked.get(match["name"].lower()), match["version"], line)
+
+    def test_the_lock_header_records_a_universal_hashed_compile_of_requirements_in(self) -> None:
+        header = " ".join(line for line in self.lock.splitlines()[:3] if line.startswith("#"))
+        for fact in ("uv pip compile requirements.in", "--universal", "--generate-hashes", "--python-version 3.12"):
+            self.assertIn(fact, header)
+
+
+class InstallStepTests(unittest.TestCase):
+    """The install steps of the lint and shard jobs: hashes required, no Galaxy, and one wording."""
+
+    def test_the_lint_and_shard_jobs_carry_the_same_environment_and_install_steps(self) -> None:
+        for name in INSTALL_STEPS:
+            with self.subTest(step=name):
+                self.assertEqual(find_step_named("lint", name), find_step_named("shard", name))
+
+    def test_no_pip_install_in_the_workflow_lacks_the_hash_and_virtualenv_flags(self) -> None:
+        seen = 0
+        for job_name, job in JOBS.items():
+            for step in job["steps"]:
+                for line in str(step.get("run", "")).splitlines():
+                    if re.search(r"\bpip\b.*\binstall\b|\binstall\b.*\bpip\b", line):
+                        seen += 1
+                        self.assertIn("--require-hashes", line, f"{job_name}: {line}")
+                        self.assertIn("--require-virtualenv", line, f"{job_name}: {line}")
+        self.assertGreaterEqual(seen, 2)
+
+    def test_both_jobs_run_pip_with_the_hash_flag_against_the_lock(self) -> None:
+        for job in ("lint", "shard"):
+            with self.subTest(job=job):
+                sandbox = Sandbox(self)
+                self.install_stub(sandbox, "pip")
+                result = sandbox.run(find_step_named(job, "Install the pinned tools"), {"ANSIBLE_DIRECTORY": "ansible"})
+                self.assertEqual(result.code, 0, result.log)
+                argv = (sandbox.stubs / "pip.argv").read_text().split()
+                self.assertEqual(argv, ["install", "--require-virtualenv", "--require-hashes", "-r", "ansible/requirements.txt"])
+
+    def test_nothing_fetches_a_collection_from_galaxy_or_sets_a_collections_path(self) -> None:
+        text = WORKFLOW.read_text()
+        for forbidden in ("ansible-galaxy", "collection install", "ANSIBLE_COLLECTIONS_PATH"):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("#")))
+
+    @staticmethod
+    def install_stub(sandbox: Sandbox, tool: str) -> None:
+        directory = sandbox.temp / VENV_BIN
+        directory.mkdir(parents=True, exist_ok=True)
+        target = directory / tool
+        target.write_text(RECORDING_TOOL)
+        target.chmod(0o755)
+
+
+class LintStepTests(unittest.TestCase):
+    """Each lint command, run with a recording stand-in for its tool."""
+
+    def argv(self, step_name: str, tool: str) -> list[str]:
+        sandbox = Sandbox(self)
+        InstallStepTests.install_stub(sandbox, tool)
+        result = sandbox.run(find_step_named(LINT_JOB, step_name), {"ANSIBLE_DIRECTORY": "ansible"})
+        self.assertEqual(result.code, 0, result.log)
+        return (sandbox.stubs / f"{tool}.argv").read_text().split()
+
+    def test_ansible_lint_runs_offline_strict_over_the_ansible_directory(self) -> None:
+        # The sandbox has no network, so the offline pin has to be an assertion on the arguments.
+        self.assertEqual(self.argv("ansible-lint at the production profile", "ansible-lint"), ["--offline", "--strict", "ansible"])
+
+    def test_yamllint_runs_strict_with_the_project_configuration(self) -> None:
+        self.assertEqual(self.argv("yamllint every YAML file", "yamllint"), ["--strict", "-c", ".yamllint", "ansible"])
+
+
+class DependabotTests(unittest.TestCase):
+    def test_dependabot_watches_the_fixture_lock_with_the_uv_ecosystem(self) -> None:
+        config = yaml.safe_load((REPO / ".github/dependabot.yml").read_text())
+        entries = [
+            entry
+            for entry in config["updates"]
+            if entry.get("package-ecosystem") == "uv" and entry.get("directory") == "/.github/fixtures/ansible-gated-apply/ansible"
+        ]
+        self.assertEqual(len(entries), 1)
+        self.assertIsInstance(entries[0].get("schedule"), dict)
+        self.assertTrue((FIXTURE / "ansible/requirements.in").is_file())
+
+
+class LintFailFixtureTests(unittest.TestCase):
+    RULE = "name[missing]"
+    SUMMARY = "Failed: 1 failure(s), 0 warning(s)"
+
+    @property
+    def job(self) -> dict[str, Any]:
+        document: dict[Any, Any] = yaml.safe_load(SELF_WORKFLOW.read_text())
+        return document["jobs"]["lint-expected-fail"]
+
+    def test_the_failing_role_sits_beside_the_real_project_and_shares_its_lint_configuration(self) -> None:
+        self.assertTrue((FIXTURE / "lint-fail/roles/lint_fail/tasks/main.yml").is_file())
+        self.assertFalse((FIXTURE / "ansible/lint-fail").exists())
+        for name in (".ansible-lint", ".yamllint"):
+            self.assertFalse((FIXTURE / "lint-fail" / name).exists(), name)
+            self.assertTrue((FIXTURE / name).is_file(), name)
+
+    def test_the_readme_the_job_and_the_task_agree_on_the_rule_id_and_the_status(self) -> None:
+        readme = (FIXTURE / "lint-fail/README.md").read_text()
+        text = str(self.job["steps"][-1]["run"])
+        for fact in (self.RULE, self.SUMMARY):
+            self.assertIn(fact, readme)
+            self.assertIn(fact, text)
+        self.assertRegex(readme, r"Exit status of ansible-lint: `2`")
+        self.assertIn('[ "$status" = 2 ]', text)
+        task = (FIXTURE / "lint-fail/roles/lint_fail/tasks/main.yml").read_text()
+        self.assertNotRegex(task, r"(?m)^\s*-?\s*name:")
+
+    def test_the_job_runs_the_lint_jobs_own_steps_by_name_and_is_bounded(self) -> None:
+        text = str(self.job["steps"][-1]["run"])
+        self.assertIn("timeout-minutes", self.job)
+        self.assertIn(".github/workflows/ansible-gated-apply.yml lint", text)
+        names = [step.get("name") for step in JOBS[LINT_JOB]["steps"]]
+        for step_name in (*INSTALL_STEPS, "ansible-lint at the production profile"):
+            self.assertIn(f'--step "{step_name}"', text)
+            self.assertIn(step_name, names)
+
+    def run_assertions(self, status: int, log: str) -> Result:
+        sandbox = Sandbox(self)
+        stub = sandbox.bin / "python3"
+        stub.write_text(f"#!/usr/bin/env bash\ncat <<'LOG'\n{log}\nLOG\nexit {status}\n")
+        stub.chmod(0o755)
+        return sandbox.run(self.job["steps"][-1], {})
+
+    def test_the_job_passes_only_for_the_named_rule_with_the_violation_status(self) -> None:
+        good = f"{self.SUMMARY} in 5 files\n{self.RULE}: All tasks should be named.\n"
+        self.assertEqual(self.run_assertions(2, good).code, 0)
+        bad = {
+            "a clean run": (0, good),
+            "another failure status": (1, good),
+            "a runner refusal": (99, good),
+            "another rule": (2, f"{self.SUMMARY}\nyaml[truthy]: Truthy value.\n"),
+            "the rule without the one-failure line": (2, f"Failed: 3 failure(s), 0 warning(s)\n{self.RULE}: All tasks should be named.\n"),
+            "no output": (2, ""),
+        }
+        for label, (status, log) in bad.items():
+            with self.subTest(case=label):
+                self.assertNotEqual(self.run_assertions(status, log).code, 0, label)
+
+
+WORKFLOW_TEXT = """\
+jobs:
+  work:
+    defaults:
+      run:
+        working-directory: ${{ inputs.base }}
+    steps:
+      - name: One
+        env:
+          WHO: ${{ inputs.who }}
+        run: |
+          echo "one $WHO" >> "$OUT"
+          mkdir -p "$RUNNER_TEMP/bin"
+          printf '#!/usr/bin/env bash\\necho from-the-tool\\n' > "$RUNNER_TEMP/bin/sometool"
+          chmod +x "$RUNNER_TEMP/bin/sometool"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          echo "FROM_ONE=carried" >> "$GITHUB_ENV"
+      - name: Two
+        env:
+          WHO: ${{ inputs.who }}
+        run: |
+          echo "two $WHO $FROM_ONE $(sometool) $(pwd -P | xargs basename)" >> "$OUT"
+      - name: Fails
+        run: exit 7
+      - name: After the failure
+        run: echo after >> "$OUT"
+      - name: Remote
+        uses: example/action@v1
+      - name: Guarded
+        if: always()
+        run: echo guarded
+      - name: Foreign expression
+        env:
+          SHA: ${{ github.sha }}
+        run: echo "$SHA"
+      - name: Expression in the body
+        run: echo "${{ inputs.who }}"
+"""
+
+
+class RunWorkflowStepsTests(unittest.TestCase):
+    """tools/run_workflow_steps.py, which lets a self-test job run the workflow's own steps."""
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp(prefix="run-steps-test-"))
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.workflow = self.dir / "workflow.yml"
+        self.workflow.write_text(WORKFLOW_TEXT)
+        self.out = self.dir / "out.txt"
+        (self.dir / "base").mkdir()
+        (self.dir / "other").mkdir()
+        os.environ["OUT"] = str(self.out)
+        self.addCleanup(os.environ.pop, "OUT", None)
+
+    def run_main(self, *arguments: str) -> int:
+        base = ["--input", f"base={self.dir / 'base'}"]
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            return run_workflow_steps.main([str(self.workflow), "work", *base, *arguments])
+
+    def written(self) -> list[str]:
+        return self.out.read_text().splitlines() if self.out.exists() else []
+
+    def test_it_runs_the_steps_in_order_with_inputs_in_the_working_directory_and_the_path_and_env_files(self) -> None:
+        status = self.run_main("--input", "who=alice", "--step", "One", "--step", "Two")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.written(), ["one alice", "two alice carried from-the-tool base"])
+
+    def test_a_step_input_replaces_the_input_for_that_step_only(self) -> None:
+        status = self.run_main("--input", "who=alice", "--step", "One", "--step", "Two", "--step-input", "Two", "who=bob")
+        self.assertEqual(status, 0)
+        self.assertEqual(self.written()[0], "one alice")
+        self.assertTrue(self.written()[1].startswith("two bob "), self.written())
+
+    def test_the_first_failing_step_stops_the_run_and_its_own_status_is_returned(self) -> None:
+        status = self.run_main("--input", "who=a", "--step", "One", "--step", "Fails", "--step", "After the failure")
+        self.assertEqual(status, 7)
+        self.assertEqual(self.written(), ["one a"])
+
+    def test_a_request_it_cannot_honour_exits_99_before_any_step_runs(self) -> None:
+        cases = {
+            "an unknown step": ["--step", "One", "--step", "Nope"],
+            "a step that uses an action": ["--step", "One", "--step", "Remote"],
+            "a step with a condition": ["--step", "One", "--step", "Guarded"],
+            "an expression it does not know": ["--step", "One", "--step", "Foreign expression"],
+            "an expression in the run text": ["--step", "One", "--step", "Expression in the body"],
+            "no steps": [],
+            "a step input for a step that is not run": ["--step", "One", "--step-input", "Two", "who=x"],
+            "a step input that is not NAME=VALUE": ["--step", "One", "--step-input", "One", "who"],
+        }
+        for label, arguments in cases.items():
+            with self.subTest(case=label):
+                self.assertEqual(self.run_main("--input", "who=a", *arguments), 99, label)
+                self.assertEqual(self.written(), [], label)
+
+    def test_an_input_nobody_gave_exits_99(self) -> None:
+        self.assertEqual(self.run_main("--step", "One"), 99)
+        self.assertEqual(self.written(), [])
+
+    def test_an_unknown_job_or_an_unreadable_workflow_exits_99(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(run_workflow_steps.main([str(self.workflow), "nojob", "--step", "One"]), 99)
+            self.assertEqual(run_workflow_steps.main([str(self.dir / "missing.yml"), "work", "--step", "One"]), 99)
+
+    def test_it_reads_the_real_workflow_and_resolves_every_step_it_is_asked_for(self) -> None:
+        job = run_workflow_steps.load_job(WORKFLOW, LINT_JOB)
+        planned = run_workflow_steps.plan_steps(
+            job,
+            [*INSTALL_STEPS, "ansible-lint at the production profile"],
+            {"ansible-directory": "ansible", "working-directory": "."},
+            {"ansible-lint at the production profile": {"ansible-directory": "lint-fail"}},
+        )
+        self.assertEqual([name for name, _, _ in planned], [*INSTALL_STEPS, "ansible-lint at the production profile"])
+        self.assertEqual(planned[1][2], {"ANSIBLE_DIRECTORY": "ansible"})
+        self.assertEqual(planned[2][2], {"ANSIBLE_DIRECTORY": "lint-fail"})
 
 
 if __name__ == "__main__":

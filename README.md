@@ -222,8 +222,8 @@ allowed key.
 
 | Job | Runs when | May do | Holds |
 | --- | --- | --- | --- |
-| `Discover the Ansible checks` | every run | validate the inputs, decide whether the run may reach a host, list the Molecule shards | nothing |
-| `Lint the Ansible inputs` | every run | yamllint, ansible-lint (production profile, `--strict`), mypy, ruff | nothing |
+| `Discover the Ansible checks` | every run | validate the inputs, decide whether the run may reach a host, list the Molecule shards, fail on a `requirements.yml` that lists anything or a scenario that leaves Molecule's dependency step enabled | nothing |
+| `Lint the Ansible inputs` | every run | install the hash lock, then yamllint, ansible-lint (production profile, `--strict`, `--offline`), mypy, ruff | nothing |
 | `Molecule: <role>` | every run, one per role | `molecule test` (with the idempotence step) and `molecule check` on containers on the runner | nothing; fails if `DOCKER_HOST` is set (ANS-15) |
 | `Plan the apply (check mode on each host)` | a push to the default branch of the repository itself | ask each host for a check-mode run of this commit, show the diff, decide `has_changes` | the check key, the host list and the known-hosts lines |
 | `Apply the planned commit (after approval)` | the same push, the plan succeeded, `has_changes` is not `false`, not a dry run | ask each host to apply the planned commit, then a second time to prove nothing is left | the apply key, the host list and the known-hosts lines, the environment's approval |
@@ -282,7 +282,7 @@ job, shown on the caller as `ansible / Ansible checks passed`.
 | --- | --- | --- |
 | `environment` | required | The deployment environment the apply job runs in. Must not be empty. |
 | `working-directory` | `.` | Directory holding the Ansible directory, `.ansible-lint` and `.yamllint`. |
-| `ansible-directory` | `ansible` | Directory, relative to `working-directory`, holding `requirements.txt`, `requirements.yml` and `pyproject.toml`. |
+| `ansible-directory` | `ansible` | Directory, relative to `working-directory`, holding `requirements.txt` (the hash lock), `pyproject.toml` and, if there is one, a `requirements.yml` that holds only `collections: []`. |
 | `role-directories` | `roles/*` | Globs, one per line, relative to `ansible-directory`; each match must hold `molecule/default/molecule.yml`. A repository with patterns too lists `patterns/*`. |
 | `python-paths` | `.` | Paths mypy and ruff check, relative to `ansible-directory`. Narrow it if a role keeps two modules of one name. |
 | `dry-run` | `false` | Replace the SSH call with `dry-run-stub` and never run the apply job. It can only skip an apply, never perform one. |
@@ -369,9 +369,21 @@ README changes, so does this list.
 - **Check mode has limits (ANS-10).** `has_changes` is the host's count. A role
   whose tasks skip silently in check mode reports fewer changes than an apply
   would make; the standard makes that the role's defect.
-- **Collections and tools install from the network** at their pinned versions. Vendoring
-  them is a named limit and is not built: `pip install` checks hashes only when the
-  caller's requirements file carries them.
+- **Tools and collections install from the package index, by hash.**
+  `requirements.txt` is a `uv pip compile --universal --generate-hashes` lock, and
+  `pip install --require-hashes` refuses a package whose hash it does not list, so
+  a caller whose file is unhashed fails at the install (ANS-4). Nothing is fetched
+  from Galaxy: the collections come with the `ansible` package in the lock. The
+  discover job fails if `requirements.yml` lists anything but `collections: []`, or
+  if a scenario leaves Molecule's dependency step enabled, and ansible-lint runs
+  `--offline`. Vendoring the packages is not built. The lock must pin the tools the
+  workflow runs: `ansible`, `ansible-lint`, `molecule` with its Docker plugin,
+  `yamllint`, `mypy` and `ruff`.
+- **The `requirements.yml` rule is also in `shared-infra`**, in
+  `ansible/checks/check_pins.py`, which a reusable workflow cannot import, so the
+  rule has two homes and each names the other. Two differences are on purpose: this
+  workflow passes an absent `requirements.yml` because it never reads one, and it
+  reads only each shard's `molecule/default` scenario, the only one it runs.
 - **The Molecule run is the plain `molecule test` and `molecule check`** in each
   role directory, with `ROLE_TEST_RUN_ID` set to a value unique to the run. A
   scenario that needs more than that (a harness, unit tests inside a container)
@@ -381,9 +393,17 @@ README changes, so does this list.
 - **A schedule is not wired.** The nightly drift run of ANS-17 is a check-mode run
   that applies nothing; it is a later addition to this workflow.
 
-The self-test is `.github/workflows/ansible-gated-apply-self.yml`. The tests of
-every shell step are `tools/test_ansible_gated_apply.py`, which run the step text
-from the workflow under bash with `ssh`, `gh` and `timeout` replaced by stubs:
+The self-test is `.github/workflows/ansible-gated-apply-self.yml`. It runs the
+workflow over the fixture, and its job `lint-expected-fail` runs the workflow's
+own install and ansible-lint steps (taken from the workflow file by
+`tools/run_workflow_steps.py`, so the commands have one home) on
+`.github/fixtures/ansible-gated-apply/lint-fail/`. It passes only when ansible-lint
+fails with the rule, the one-failure summary and the exit status named in that
+directory's README. It proves ansible-lint rejects bad input; it does not prove
+yamllint, mypy or ruff. The tests of every shell step are
+`tools/test_ansible_gated_apply.py`, which run the step text from the workflow
+under bash with `ssh`, `gh`, `timeout` and `yq` replaced by stubs (the real `yq`
+runs in the self-test's own run of the discover job):
 
 ```bash
 python3 -m unittest discover -s tools -p 'test_ansible_gated_apply.py' -v

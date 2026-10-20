@@ -37,7 +37,9 @@ on:
       ansible-directory:
         description: >-
           The Ansible directory, relative to working-directory. It holds
-          requirements.txt, requirements.yml and pyproject.toml.
+          requirements.txt (the hash lock of every package, collections
+          included), pyproject.toml, and requirements.yml if there is one, which
+          must hold only an empty collections list.
         type: string
         required: false
         default: ansible
@@ -163,6 +165,13 @@ jobs:
       # scenario: a role with none fails here, so it cannot pass untested. An
       # empty list fails, because an empty matrix would skip the shard job and
       # the gate would have nothing to be red about.
+      #
+      # Nothing is fetched from Galaxy (ANS-4). A requirements.yml that is there
+      # must hold exactly `collections: []`, and each scenario must set
+      # dependency.enabled to false. yq reads the file and jq judges it; a file yq
+      # cannot parse, or a missing yq, fails the step. The other home of this rule
+      # is shared-infra's ansible/checks/check_pins.py; the README ("Named limits")
+      # says how the two differ.
       - name: List the Molecule shards from the repository tree
         id: shards
         env:
@@ -195,7 +204,17 @@ jobs:
               echo "::error::$dir has no molecule/default/molecule.yml (ANS-15)."
               exit 1
             fi
+            if ! yq -o=json . "$dir/molecule/default/molecule.yml" | jq -e '.dependency.enabled == false' > /dev/null; then
+              echo "::error::$dir/molecule/default/molecule.yml must set dependency.enabled to false, so Molecule never reaches Galaxy (ANS-4)."
+              exit 1
+            fi
           done
+          if [ -e requirements.yml ] || [ -L requirements.yml ]; then
+            if ! yq -o=json . requirements.yml | jq -e '. == {"collections": []}' > /dev/null; then
+              echo "::error::requirements.yml must hold only 'collections: []'. The lock is requirements.txt, and nothing is fetched from Galaxy (ANS-4)."
+              exit 1
+            fi
+          fi
           printf 'Molecule runs over %s role(s):\n' "${#found[@]}"
           printf '  %s\n' "${found[@]}"
           matrix=$(printf '%s\n' "${found[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({name: ., path: .}) | {include: .}')
@@ -223,29 +242,25 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible-venv"
           echo "$RUNNER_TEMP/ansible-venv/bin" >> "$GITHUB_PATH"
 
+      # Every package, with its hash, comes from the one lock (ANS-4). pip
+      # refuses a line that has no hash. The shard job below carries the same two
+      # steps word for word; a test pins that they stay equal.
       - name: Install the pinned tools
         env:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv -r "$ANSIBLE_DIRECTORY/requirements.txt"'
-
-      - name: Install the pinned collections
-        env:
-          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: |
-          set -euo pipefail
-          collections="$RUNNER_TEMP/ansible-collections"
-          "$RUNNER_TEMP/ansible-venv/bin/ansible-galaxy" collection install -r "$ANSIBLE_DIRECTORY/requirements.yml" -p "$collections"
-          echo "ANSIBLE_COLLECTIONS_PATH=$collections" >> "$GITHUB_ENV"
+        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv --require-hashes -r "$ANSIBLE_DIRECTORY/requirements.txt"'
 
       - name: yamllint every YAML file under the Ansible directory
         env:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
         run: '"$RUNNER_TEMP/ansible-venv/bin/yamllint" --strict -c .yamllint "$ANSIBLE_DIRECTORY"'
 
+      # --offline: ansible-lint installs nothing from Galaxy and refreshes no
+      # schema, so a requirements.yml cannot add code outside the lock.
       - name: ansible-lint at the production profile
         env:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: '"$RUNNER_TEMP/ansible-venv/bin/ansible-lint" --strict "$ANSIBLE_DIRECTORY"'
+        run: '"$RUNNER_TEMP/ansible-venv/bin/ansible-lint" --offline --strict "$ANSIBLE_DIRECTORY"'
 
       - name: Type-check the Python
         working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}
@@ -314,16 +329,7 @@ jobs:
       - name: Install the pinned tools
         env:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv -r "$ANSIBLE_DIRECTORY/requirements.txt"'
-
-      - name: Install the pinned collections
-        env:
-          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: |
-          set -euo pipefail
-          collections="$RUNNER_TEMP/ansible-collections"
-          "$RUNNER_TEMP/ansible-venv/bin/ansible-galaxy" collection install -r "$ANSIBLE_DIRECTORY/requirements.yml" -p "$collections"
-          echo "ANSIBLE_COLLECTIONS_PATH=$collections" >> "$GITHUB_ENV"
+        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv --require-hashes -r "$ANSIBLE_DIRECTORY/requirements.txt"'
 
       - name: Molecule default sequence, with the idempotence step
         working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}

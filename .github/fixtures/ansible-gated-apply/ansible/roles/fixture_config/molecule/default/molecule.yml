@@ -5,7 +5,8 @@
 # without the workflow fails at create instead of sharing a container name.
 dependency:
   name: galaxy
-  # The workflow installs the pinned collections before it starts Molecule.
+  # Nothing is fetched from Galaxy: the collections come with the `ansible`
+  # package in the lock, and the workflow's discover job requires this setting.
   enabled: false
 driver:
   name: docker
