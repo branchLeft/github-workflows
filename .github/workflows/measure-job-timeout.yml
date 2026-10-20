@@ -1,0 +1,53 @@
+name: Measure job timeout result
+
+# Throwaway measurement for branchLeft/workspace#2342 (not for merge): what does
+# a dependent job see as needs.<job>.result when the job it needs hits its
+# timeout-minutes? Delete this branch after reading the run.
+
+on:
+  push:
+    branches: [measure/job-timeout-result-2342]
+
+permissions:
+  contents: read
+
+jobs:
+  hung:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 1
+    steps:
+      - name: Run past the job timeout
+        run: |
+          set -euo pipefail
+          sleep 240
+
+  after:
+    needs: [hung]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Say what the needed job reported
+        env:
+          RESULT: ${{ needs.hung.result }}
+        run: |
+          set -euo pipefail
+          echo "MEASURED needs.hung.result=$RESULT"
+
+  alert-if-failure:
+    needs: [hung]
+    if: always() && needs.hung.result == 'failure'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Runs only when the result is failure
+        run: echo "MEASURED the failure condition fired"
+
+  alert-if-cancelled:
+    needs: [hung]
+    if: always() && needs.hung.result == 'cancelled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Runs only when the result is cancelled
+        run: echo "MEASURED the cancelled condition fired"
