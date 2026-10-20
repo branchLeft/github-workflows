@@ -225,8 +225,8 @@ allowed key.
 | `Discover the Ansible checks` | every run | validate the inputs, decide whether the run may reach a host, list the Molecule shards | nothing |
 | `Lint the Ansible inputs` | every run | yamllint, ansible-lint (production profile, `--strict`), mypy, ruff | nothing |
 | `Molecule: <role>` | every run, one per role | `molecule test` (with the idempotence step) and `molecule check` on containers on the runner | nothing; fails if `DOCKER_HOST` is set (ANS-15) |
-| `Plan the apply (check mode on each host)` | a push to the default branch of the repository itself | ask each host for a check-mode run of this commit, show the diff, decide `has_changes` | the check key |
-| `Apply the planned commit (after approval)` | the same push, the plan succeeded, `has_changes` is not `false`, not a dry run | ask each host to apply the planned commit, then a second time to prove nothing is left | the apply key, the environment's approval |
+| `Plan the apply (check mode on each host)` | a push to the default branch of the repository itself | ask each host for a check-mode run of this commit, show the diff, decide `has_changes` | the check key, the host list and the known-hosts lines |
+| `Apply the planned commit (after approval)` | the same push, the plan succeeded, `has_changes` is not `false`, not a dry run | ask each host to apply the planned commit, then a second time to prove nothing is left | the apply key, the host list and the known-hosts lines, the environment's approval |
 | `Ansible checks passed` | every run, even after a failure | go red unless every job ended as expected for this kind of run | nothing |
 
 A pull request runs the first three and the gate only. The plan cannot run on a
@@ -369,8 +369,9 @@ README changes, so does this list.
 - **Check mode has limits (ANS-10).** `has_changes` is the host's count. A role
   whose tasks skip silently in check mode reports fewer changes than an apply
   would make; the standard makes that the role's defect.
-- **Collections and tools install from the network** at their pinned versions, as
-  in `shared-infra`; vendoring is decided by the foundation ticket (ANS-4).
+- **Collections and tools install from the network** at their pinned versions. Vendoring
+  them is a named limit and is not built: `pip install` checks hashes only when the
+  caller's requirements file carries them.
 - **The Molecule run is the plain `molecule test` and `molecule check`** in each
   role directory, with `ROLE_TEST_RUN_ID` set to a value unique to the run. A
   scenario that needs more than that (a harness, unit tests inside a container)

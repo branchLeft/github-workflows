@@ -181,6 +181,24 @@ def digest(hosts: list[str]) -> str:
     return hashlib.sha256(" ".join(hosts).encode()).hexdigest()
 
 
+def expected_ssh_call(dest: str, sha: str) -> list[str]:
+    """The exact arguments the plan and apply steps pass to ssh, key and known-hosts paths named."""
+    return [
+        "-T", "-i", "KEY", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=yes", "-o", "UserKnownHostsFile=KNOWN",
+        "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=30",
+        "-o", "ServerAliveInterval=30", "-o", "ForwardAgent=no", "-o", "ClearAllForwardings=yes",
+        "--", dest, sha,
+    ]
+
+
+def ssh_call_with_paths_named(line: str) -> list[str]:
+    tokens = line.split(" ")
+    if "-i" in tokens:
+        tokens[tokens.index("-i") + 1] = "KEY"
+    return ["UserKnownHostsFile=KNOWN" if token.startswith("UserKnownHostsFile=") else token for token in tokens]
+
+
 class StructureTests(unittest.TestCase):
     def test_the_only_trigger_is_workflow_call(self) -> None:
         self.assertEqual(set(DOC[True]), {"workflow_call"})
@@ -241,6 +259,89 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(job["name"], "Ansible checks passed")
         self.assertEqual(job["if"], "always()")
         self.assertEqual(set(job["needs"]), set(JOBS) - {"checks"})
+
+    def test_each_expression_that_feeds_a_gate_or_apply_step_comes_from_its_expected_source(self) -> None:
+        cases = [
+            ("checks", "Require every job", {
+                "DISCOVER": "${{ needs.discover.result }}",
+                "DELIVERY": "${{ needs.discover.outputs.delivery }}",
+                "LINT": "${{ needs.lint.result }}",
+                "SHARD": "${{ needs.shard.result }}",
+                "PLAN": "${{ needs.plan.result }}",
+                "APPLY": "${{ needs.apply.result }}",
+                "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
+                "DRY_RUN": "${{ inputs.dry-run }}",
+            }),
+            ("plan", "Refuse outside a push", {
+                "EVENT_NAME": "${{ github.event_name }}",
+                "REF": "${{ github.ref }}",
+                "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+                "IS_FORK": "${{ github.event.repository.fork }}",
+                "SHA": "${{ github.sha }}",
+                "ENVIRONMENT": "${{ inputs.environment }}",
+                "HOSTS": "${{ secrets.ssh_hosts }}",
+                "DRY_RUN": "${{ inputs.dry-run }}",
+                "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
+            }),
+            ("plan", "Check every host", {
+                "HOSTS": "${{ secrets.ssh_hosts }}",
+                "SHA": "${{ steps.guard.outputs.sha }}",
+                "DRY_RUN": "${{ inputs.dry-run }}",
+                "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
+                "WORKING_DIRECTORY": "${{ inputs.working-directory }}",
+                "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
+                "SSH_KEY": "${{ secrets.ssh_check_key }}",
+                "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
+            }),
+            ("plan", "Judge the answers", {
+                "SHA": "${{ steps.guard.outputs.sha }}",
+                "ENVIRONMENT": "${{ inputs.environment }}",
+                "DRY_RUN": "${{ inputs.dry-run }}",
+                "SSH_KEY": "${{ secrets.ssh_check_key }}",
+            }),
+            ("apply", "Refuse unless this is the approved", {
+                "EVENT_NAME": "${{ github.event_name }}",
+                "REF": "${{ github.ref }}",
+                "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+                "IS_FORK": "${{ github.event.repository.fork }}",
+                "SHA": "${{ github.sha }}",
+                "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
+                "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
+                "PLANNED_DIGEST": "${{ needs.plan.outputs.hosts_digest }}",
+                "HOSTS": "${{ secrets.ssh_hosts }}",
+                "ENVIRONMENT": "${{ inputs.environment }}",
+                "DRY_RUN": "${{ inputs.dry-run }}",
+            }),
+            ("apply", "default branch has moved", {
+                "GH_TOKEN": "${{ github.token }}",
+                "REPO": "${{ github.repository }}",
+                "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+                "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
+            }),
+            ("apply", "Apply on each host", {
+                "HOSTS": "${{ secrets.ssh_hosts }}",
+                "SHA": "${{ needs.plan.outputs.sha }}",
+                "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
+                "SSH_KEY": "${{ secrets.ssh_apply_key }}",
+                "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
+            }),
+        ]
+        for job, fragment, expected in cases:
+            with self.subTest(job=job, step=fragment):
+                self.assertEqual(find_step_named(job, fragment).get("env"), expected)
+
+    def test_the_apply_job_steps_are_the_guard_then_the_head_check_then_the_apply_with_no_if(self) -> None:
+        steps = JOBS["apply"]["steps"]
+        self.assertEqual(
+            [step.get("name") for step in steps],
+            [
+                "Refuse unless this is the approved, planned push",
+                "Refuse if the default branch has moved since the plan",
+                "Apply on each host, then run it again to prove nothing is left to change",
+            ],
+        )
+        for step in steps:
+            self.assertNotIn("if", step, step.get("name"))
 
 
 class PlanGuardTests(unittest.TestCase):
@@ -592,6 +693,21 @@ class ApplyTests(unittest.TestCase):
         self.assertNotEqual(result.code, 0)
         self.assertIn("second run", result.log)
 
+    def test_a_first_or_second_run_that_counts_a_change_while_saying_unchanged_fails_the_job(self) -> None:
+        cases = {
+            "the first run says unchanged and counts one change": (0, summary_line("unchanged", 0, "apply", "@SHA@", 1), None),
+            "the second run says unchanged and counts one change": (10, APPLIED, (0, summary_line("unchanged", 0, "apply", "@SHA@", 1), "")),
+            "the second run exits 11": (10, APPLIED, (11, summary_line("would-change", 11, "apply", "@SHA@", 2), "")),
+            "the second run exits 10": (10, APPLIED, (10, APPLIED, "")),
+        }
+        for name, (code, out, second) in cases.items():
+            with self.subTest(name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, code, out, second=second)
+                result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertNotIn("Applied commit", result.log)
+
     def test_the_first_failure_stops_the_run_before_the_next_host(self) -> None:
         sandbox = Sandbox(self)
         sandbox.host(HOST_ONE, 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"))
@@ -665,6 +781,26 @@ class GateTests(unittest.TestCase):
 
     def test_an_unknown_delivery_answer_is_red(self) -> None:
         self.assertNotEqual(self.gate(DELIVERY=""), 0)
+
+
+class SshOptionTests(unittest.TestCase):
+    def test_the_plan_and_apply_calls_pass_the_same_exact_ssh_options(self) -> None:
+        planned = Sandbox(self)
+        planned.host(HOST_ONE, 0, CLEAN)
+        planned.host(HOST_TWO, 0, CLEAN)
+        checked = planned.run(find_step_named("plan", "Check every host"), check_env())
+        self.assertEqual(checked.code, 0, checked.log)
+        applied = Sandbox(self)
+        for dest in (HOST_ONE, HOST_TWO):
+            applied.host(dest, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = applied.run(find_step_named("apply", "Apply on each host"), apply_env())
+        self.assertEqual(result.code, 0, result.log)
+        calls = planned.ssh_log() + applied.ssh_log()
+        self.assertEqual(len(calls), 6)
+        for call in calls:
+            dest = call.split(" ")[-2]
+            self.assertIn(dest, (HOST_ONE, HOST_TWO))
+            self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA))
 
 
 if __name__ == "__main__":
