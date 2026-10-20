@@ -1,0 +1,65 @@
+name: Fixture, a caller whose gate keeps the contract
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      has_changes: ${{ steps.noop.outputs.has_changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Save the update plan for the no-change check
+        continue-on-error: true
+        run: pulumi preview --stack production --save-plan preview-plan.json > /dev/null
+
+      # The verdict goes in the first line of the summary, so it precedes the write.
+      - name: Decide whether the plan changes anything
+        id: noop
+        if: always()
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@0123456789abcdef0123456789abcdef01234567 # v1.0.10
+        with:
+          preview-json: preview.json
+          plan-file: preview-plan.json
+
+      - name: Write the plan to the job summary
+        if: always()
+        run: echo "the plan" >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    name: Apply
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: [plan]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.plan.outputs.has_changes != 'false'
+    steps:
+      - name: Apply
+        run: echo apply
+
+  apply-gate:
+    name: Check the apply gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the apply gate
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@0123456789abcdef0123456789abcdef01234567 # v1.0.10
+        with:
+          workflow: .github/workflows/infra-ci.yml
+          pairs: |
+            plan:apply
+          verdict-step: noop
+          summary-step: Write the plan to the job summary
+          plan-file: preview-plan.json

@@ -1,0 +1,170 @@
+name: Plan has changes (self-test)
+
+# This repo tests the action with its own working copy (the local path below),
+# not a tagged one, so a pull request that changes the action is checked by the
+# change itself. It runs on every pull request, with no path filter, so a change
+# elsewhere in the repo cannot skip it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/plan-has-changes
+  FIXTURES: .github/actions/plan-has-changes/fixtures
+
+jobs:
+  unit-tests:
+    name: Parser unit tests
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the parser unit tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
+
+  action:
+    name: Action wiring
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Each step has a job-summary file of its own, which the runner keeps for
+      # the life of the job. The helper counts the files holding a line and fails
+      # if the runner no longer keeps them, so these checks cannot pass by seeing
+      # nothing. The layout is the runner's, not a documented interface. A
+      # composite step's text is held in more than one file, so a count is
+      # compared with the one before it, never with a fixed number.
+      - name: Count the headlines before any action has run
+        id: before
+        run: echo "count=$(bash "$FIXTURES/count-summaries-with.sh" 'No changes')" >> "$GITHUB_OUTPUT"
+
+      - name: A clean plan
+        id: clean
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+
+      - name: A clean plan reports false and a headline, and appends it
+        id: after_clean
+        env:
+          HAS_CHANGES: ${{ steps.clean.outputs.has_changes }}
+          SUMMARY_FILE: ${{ steps.clean.outputs.summary_file }}
+          BEFORE: ${{ steps.before.outputs.count }}
+        run: |
+          test "$HAS_CHANGES" = false
+          grep -q '^No changes: ' "$SUMMARY_FILE"
+          count=$(bash "$FIXTURES/count-summaries-with.sh" 'No changes')
+          test "$count" -gt "$BEFORE"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: A clean plan with the summary left to the caller
+        id: quiet
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+          write-summary: 'false'
+
+      - name: The verdict and the text are reported, and the summary is not appended to
+        env:
+          HAS_CHANGES: ${{ steps.quiet.outputs.has_changes }}
+          SUMMARY_FILE: ${{ steps.quiet.outputs.summary_file }}
+          AFTER_CLEAN: ${{ steps.after_clean.outputs.count }}
+        run: |
+          test "$HAS_CHANGES" = false
+          grep -q '^No changes: ' "$SUMMARY_FILE"
+          test "$(bash "$FIXTURES/count-summaries-with.sh" 'No changes')" -eq "$AFTER_CLEAN"
+
+      - name: A plan with a change
+        id: changed
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-changed.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+
+      - name: A plan with a change reports true and appends its own headline
+        env:
+          HAS_CHANGES: ${{ steps.changed.outputs.has_changes }}
+        run: |
+          test "$HAS_CHANGES" = true
+          test "$(bash "$FIXTURES/count-summaries-with.sh" '1 change')" -ge 1
+
+      - name: A plan file that was never saved
+        id: unsaved
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: no-such-plan.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+
+      - name: A missing plan file reports true
+        env:
+          HAS_CHANGES: ${{ steps.unsaved.outputs.has_changes }}
+        run: test "$HAS_CHANGES" = true
+
+      - name: A write-summary value that is neither true nor false
+        id: refused
+        continue-on-error: true
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+          working-directory: .github/actions/plan-has-changes/fixtures
+          write-summary: 'yes'
+
+      - name: The odd write-summary value is refused, not read as false
+        env:
+          OUTCOME: ${{ steps.refused.outcome }}
+          HAS_CHANGES: ${{ steps.refused.outputs.has_changes }}
+        run: |
+          test "$OUTCOME" = failure
+          test -z "$HAS_CHANGES"
+
+  action-in-a-job-with-a-default-directory:
+    name: Action wiring (job default directory)
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: .github/actions/plan-has-changes/fixtures
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The input paths with the default working-directory
+        id: defaulted
+        uses: ./.github/actions/plan-has-changes
+        with:
+          preview-json: preview-clean.json
+          plan-file: plan-clean.json
+
+      # What this proves: omit the input and the paths are read from the
+      # workspace root, so a caller whose files sit in its job's default directory
+      # must name that directory. It does not tell whether the job default reaches
+      # the action's steps; the action's own `working-directory` wins either way.
+      - name: Omitting the input reads from the workspace root, not the job default
+        env:
+          HAS_CHANGES: ${{ steps.defaulted.outputs.has_changes }}
+        run: test "$HAS_CHANGES" = true

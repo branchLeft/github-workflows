@@ -202,3 +202,154 @@ No secrets, no write permission, no per-repo allow-list change.
 This is the guard, not a sweep: adopting it in a repo carrying existing
 violations is expected to turn CI red (or advisory, in warn mode) on the
 instances already there, fixed caller by caller rather than in bulk.
+
+## Actions
+
+A reusable workflow is a whole job; a composite action is a step inside the
+caller's own job, which is what a decision needs when it reads files that only
+that job has produced.
+
+### `.github/actions/plan-has-changes`
+
+Decides whether a saved Pulumi plan would change anything, so that an apply job
+can skip, and the approval it would have asked for never be requested, when the
+answer is no. Fails closed: only a plan that parsed and is wholly unchanged
+gives `false`. Rules, limits and rationale:
+[`plan-has-changes.md`](.github/actions/plan-has-changes/plan-has-changes.md).
+The decision lives here once; a caller holds a `uses:` step and none of its
+logic.
+
+**Pin the commit, not the bare tag.** The standards workflow gate (CI-1)
+requires every `uses:` that is not a reusable workflow to name a 40-character
+commit SHA with a version comment, so the caller pins the commit the tag points
+to and says which tag it is. Tags are immutable (see Versioning), so the two
+name the same bytes. Read the commit with
+`git ls-remote https://github.com/branchLeft/github-workflows 'refs/tags/vX.Y.Z^{}'`
+(the `^{}` peels the signed tag to its commit). Dependabot's `github-actions`
+ecosystem moves both the SHA and the comment. Nothing greps the caller for the
+pin: the action runs its script from `github.action_path`, which is the revision
+the caller resolved, so there is no second-pin trap of the kind
+`merged-status.yml` has.
+
+**Caller usage** — a step in the plan job, after the two Pulumi previews:
+
+```yaml
+jobs:
+  plan:
+    outputs:
+      has_changes: ${{ steps.noop.outputs.has_changes }}
+    steps:
+      - name: Decide whether the plan changes anything
+        id: noop
+        if: always()
+        uses: branchLeft/github-workflows/.github/actions/plan-has-changes@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          preview-json: preview.json
+          plan-file: preview-plan.json
+          working-directory: infra/hosts
+
+  apply:
+    needs: [plan]
+    if: needs.plan.outputs.has_changes != 'false'
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `preview-json` | required | The `pulumi preview --json` output. |
+| `plan-file` | required | The plan saved by `pulumi preview --save-plan`. A missing file reads as `true`. |
+| `working-directory` | `.` | Directory both paths are relative to, itself relative to the workspace root. The action does not read your job's `defaults.run.working-directory`: omit this input and the paths are read from the workspace root, so name the directory here. |
+| `write-summary` | `true` | Append the headline to the job summary. `false` leaves the summary to the caller. Any other value fails the step. |
+
+| Output | Meaning |
+|---|---|
+| `has_changes` | `false` only for a plan that parsed and changes nothing, outputs included; `true` otherwise. Unset only if the verdict could not be written, which the apply job's `!= 'false'` reads as "ask". |
+| `summary_file` | A file holding the headline and, where the plan was not understood, the line naming what was not. For a caller that combines this verdict with another and writes the one headline itself (`write-summary: 'false'`). |
+
+The apply job must skip only on an explicit `'false'`, as above. `!= 'false'`
+is the whole contract: an unset output and every verdict the action could not
+establish must still ask. Check that in your own CI with `check-apply-gate`,
+below, rather than with a test of your own.
+
+**What it needs, and what it gets.** It needs `python3` on the runner, which
+`ubuntu-latest` has. The script reads two JSON files, makes no network call and
+needs no secret. But a composite step inherits the calling job's `env:`, and a
+plan job's `env:` usually holds the production plan credentials (the state
+passphrase, the cloud token, the storage keys). So code from this repo runs with
+whatever the plan job has in its environment. Callers can keep credentials off
+this step by scoping them with `env:` to the steps that need them (the Pulumi
+login and previews), not to the job.
+
+**Reviewing a Dependabot bump of the pin.** The pull request shows a SHA and a
+comment changing, not the code that will run with those credentials. Review it
+by the diff of this action's directory across the tag range, not by the CI
+result:
+
+```bash
+git diff vOLD vNEW -- .github/actions/plan-has-changes .github/actions/check-apply-gate
+```
+
+(or the same range at
+`https://github.com/branchLeft/github-workflows/compare/vOLD...vNEW`). Read
+`action.yml` and the script in full; a green check only shows the tests passed.
+
+### `.github/actions/check-apply-gate`
+
+Checks, in the calling repo's own CI, that a workflow keeps the contract above:
+each listed apply job needs its plan job and skips only on an explicit
+`has_changes != 'false'` (no `||`, no `always()`), and the plan job publishes the
+action's verdict, from a step that runs `if: always()` and before the step that
+writes the rest of the job summary. It is a separate action, not a mode of
+`plan-has-changes`, because it runs in a different job: a credential-free CI job
+that has checked the repo out, never the plan job with production credentials in
+its environment. It also holds the rule for the saved plan, which can carry
+resource inputs and ciphertext: only the step that saves it and the action may
+name it, and nothing uploads, prints or globs it. One home for the checks means a
+repo calls it and writes no test of these contracts of its own. It reads only the
+workflow file it is given; a repo that does not call it is not checked. Codes,
+rules and what stays each repo's own:
+[`check-apply-gate.md`](.github/actions/check-apply-gate/check-apply-gate.md).
+
+**Run it on `pull_request` and make it a required status check.** The plan jobs
+run only on a push to main, so a check wired only to push finds a broken gate
+after it has merged.
+
+**Caller usage** — a step in a credential-free job that runs on `pull_request` and
+on push to main, after the checkout, pinned as above:
+
+```yaml
+  apply-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          persist-credentials: false
+
+      - name: Check the apply gate
+        uses: branchLeft/github-workflows/.github/actions/check-apply-gate@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          workflow: .github/workflows/infra-ci.yml
+          pairs: |
+            plan:apply
+          verdict-step: noop
+          summary-step: Write the plan to the job summary
+          plan-file: preview-plan.json
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `workflow` | required | The workflow file, relative to the workspace root. |
+| `pairs` | required | Whitespace-separated `PLAN_JOB:APPLY_JOB`, job ids as they are keys under `jobs:`. One workflow with several plan and apply jobs lists them all. |
+| `verdict-step` | `noop` | Id of the plan-job step whose `has_changes` the job publishes: the plan-has-changes step, or a step that combines its output with another check. |
+| `summary-step` | empty | Name of the step that writes the rest of the job summary. When given, the verdict step must come before it. |
+| `plan-file` | required | The path `--save-plan` writes, as the workflow spells it. Only the save step and the plan-has-changes step may name it, and the latter must be given this same path. |
+| `save-step` | `Save the update plan for the no-change check` | Name of the plan job's step that saves the plan: `continue-on-error: true`, `--save-plan <plan-file>`, stdout to `/dev/null`. |
+
+It fails the step, with one annotation per finding, and has no outputs.
+
+This repo's `plan-has-changes-self.yml` and `check-apply-gate-self.yml` run both
+actions' unit tests and the actions themselves on every pull request. The
+plan-has-changes run checks the job summary through the runner's own per-step
+summary files, a directory layout that is the runner's and not a documented
+interface: the check fails, rather than passing, if that layout goes.
