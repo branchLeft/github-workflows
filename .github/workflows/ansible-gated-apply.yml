@@ -1,0 +1,820 @@
+name: Ansible gated apply
+
+# The reusable CI for a repository that keeps Ansible roles and delivers them to
+# hosts by the gated pull (ANS-17). Rules, inputs, secrets, the one-time setup
+# and the named limits are in the README ("ansible-gated-apply.yml").
+#
+# Five kinds of job. `discover` validates the inputs and lists the Molecule
+# shards. `lint` runs the static checks once. `shard` runs Molecule once per
+# role. `plan` asks each host, through the restricted route, what an apply of
+# this exact commit would change and shows it. `apply` waits on the deployment
+# gate and then asks each host to apply that same commit. The job named
+# `Ansible checks passed` is the one a caller requires.
+#
+# CI never holds a root shell. The only host access is an SSH key whose
+# authorized_keys line on the host runs one forced command, and that command
+# takes one commit id and nothing else. The plan job holds the check key. The
+# apply job holds the apply key, which is an environment secret, so only a job
+# that has passed the environment's approval can read it.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: >-
+          Name of the GitHub deployment environment that holds the required
+          reviewers and the apply key. The apply job runs in it, so the
+          approval click is GitHub's, not this workflow's.
+        type: string
+        required: true
+      working-directory:
+        description: >-
+          The directory, relative to the repository root, that holds the
+          Ansible directory, .ansible-lint and .yamllint.
+        type: string
+        required: false
+        default: '.'
+      ansible-directory:
+        description: >-
+          The Ansible directory, relative to working-directory. It holds
+          requirements.txt, requirements.yml and pyproject.toml.
+        type: string
+        required: false
+        default: ansible
+      role-directories:
+        description: >-
+          Globs, one per line, relative to ansible-directory, of the directories
+          that each hold a Molecule scenario at molecule/default.
+        type: string
+        required: false
+        default: roles/*
+      python-paths:
+        description: >-
+          Paths, space separated and relative to ansible-directory, that mypy
+          and ruff check.
+        type: string
+        required: false
+        default: .
+      dry-run:
+        description: >-
+          Replace the SSH call with dry-run-stub and never run the apply job.
+          For the self-test of this workflow; a dry run can only skip an apply,
+          never perform one.
+        type: boolean
+        required: false
+        default: false
+      dry-run-stub:
+        description: >-
+          With dry-run, the executable, relative to working-directory, that
+          stands in for the host. It receives the destination and the commit.
+        type: string
+        required: false
+        default: ''
+      host-timeout-minutes:
+        description: One host call is stopped after this many minutes.
+        type: number
+        required: false
+        default: 65
+      plan-timeout-minutes:
+        description: The plan job is stopped after this many minutes.
+        type: number
+        required: false
+        default: 90
+      apply-timeout-minutes:
+        description: The apply job is stopped after this many minutes, not counting the wait for approval.
+        type: number
+        required: false
+        default: 180
+    secrets:
+      ssh_hosts:
+        description: >-
+          The hosts to plan and apply, one SSH destination per line in the form
+          user@host. Each is reached only through the forced command. A secret,
+          so the job log masks the names. Pass it from a repository secret.
+        required: false
+      ssh_check_key:
+        description: >-
+          The private key of the plan job. On the host it is restricted to the
+          forced command in check mode. Pass it from a repository secret.
+        required: false
+      ssh_known_hosts:
+        description: The known_hosts lines of the hosts. Pass it from a repository secret.
+        required: false
+      ssh_apply_key:
+        description: >-
+          The private key of the apply job. Do not pass it. Store it as a secret
+          of the deployment environment, which the apply job reads because it
+          runs in that environment.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    name: Discover the Ansible checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      delivery: ${{ steps.context.outputs.delivery }}
+      matrix: ${{ steps.shards.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Delivery happens only for a push to the default branch of the
+      # repository itself. The host refuses a commit that is not on its main, so
+      # a plan on a pull request could not work either. Every other event runs
+      # the checks and nothing that reaches a host.
+      - name: Decide whether this run may reach a host
+        id: context
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IS_FORK: ${{ github.event.repository.fork }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+        run: |
+          set -euo pipefail
+          for value in "$WORKING_DIRECTORY" "$ANSIBLE_DIRECTORY"; do
+            case "$value" in
+              "" | /* | *..* | *[!A-Za-z0-9._/-]*)
+                echo "::error::A directory input must be a relative path of letters, digits, dot, underscore, dash and slash, with no '..'."
+                exit 1
+                ;;
+            esac
+          done
+          if ! printf '%s' "$ENVIRONMENT" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'; then
+            echo "::error::The environment input must name a deployment environment: letters, digits, dot, underscore and dash, at most 64 characters."
+            exit 1
+          fi
+          delivery=false
+          if [ "$EVENT_NAME" = push ] && [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] && [ "$IS_FORK" != true ]; then
+            delivery=true
+          fi
+          echo "delivery=$delivery" >> "$GITHUB_OUTPUT"
+          echo "This run reaches a host: $delivery"
+
+      # Every directory the globs match is one shard, and each must hold a
+      # scenario: a role with none fails here, so it cannot pass untested. An
+      # empty list fails, because an empty matrix would skip the shard job and
+      # the gate would have nothing to be red about.
+      - name: List the Molecule shards from the repository tree
+        id: shards
+        env:
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+          ROLE_DIRECTORIES: ${{ inputs.role-directories }}
+        run: |
+          set -euo pipefail
+          cd "$WORKING_DIRECTORY/$ANSIBLE_DIRECTORY"
+          shopt -s nullglob
+          found=()
+          while IFS= read -r glob; do
+            [ -n "$glob" ] || continue
+            case "$glob" in
+              /* | *..* | *[!A-Za-z0-9._*/-]*)
+                echo "::error::A role-directories line must be a relative glob of letters, digits, dot, underscore, dash, star and slash, with no '..'."
+                exit 1
+                ;;
+            esac
+            for dir in $glob/; do
+              found+=("${dir%/}")
+            done
+          done <<< "$ROLE_DIRECTORIES"
+          if [ "${#found[@]}" -eq 0 ]; then
+            echo "::error::No directory matched role-directories, so nothing would be tested."
+            exit 1
+          fi
+          for dir in "${found[@]}"; do
+            if [ ! -f "$dir/molecule/default/molecule.yml" ]; then
+              echo "::error::$dir has no molecule/default/molecule.yml (ANS-15)."
+              exit 1
+            fi
+          done
+          printf 'Molecule runs over %s role(s):\n' "${#found[@]}"
+          printf '  %s\n' "${found[@]}"
+          matrix=$(printf '%s\n' "${found[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({name: ., path: .}) | {include: .}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  lint:
+    name: Lint the Ansible inputs
+    needs: [discover]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The tools find each other on PATH (Molecule runs ansible-config), so the
+      # environment's bin directory is put there for the steps that follow.
+      - name: Create the tool environment
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/ansible-venv"
+          echo "$RUNNER_TEMP/ansible-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install the pinned tools
+        env:
+          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv -r "$ANSIBLE_DIRECTORY/requirements.txt"'
+
+      - name: Install the pinned collections
+        env:
+          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+        run: |
+          set -euo pipefail
+          collections="$RUNNER_TEMP/ansible-collections"
+          "$RUNNER_TEMP/ansible-venv/bin/ansible-galaxy" collection install -r "$ANSIBLE_DIRECTORY/requirements.yml" -p "$collections"
+          echo "ANSIBLE_COLLECTIONS_PATH=$collections" >> "$GITHUB_ENV"
+
+      - name: yamllint every YAML file under the Ansible directory
+        env:
+          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+        run: '"$RUNNER_TEMP/ansible-venv/bin/yamllint" --strict -c .yamllint "$ANSIBLE_DIRECTORY"'
+
+      - name: ansible-lint at the production profile
+        env:
+          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+        run: '"$RUNNER_TEMP/ansible-venv/bin/ansible-lint" --strict "$ANSIBLE_DIRECTORY"'
+
+      - name: Type-check the Python
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}
+        env:
+          PYTHON_PATHS: ${{ inputs.python-paths }}
+        run: |
+          set -euo pipefail
+          read -r -a paths <<< "$PYTHON_PATHS"
+          "$RUNNER_TEMP/ansible-venv/bin/mypy" "${paths[@]}"
+
+      - name: Lint the Python
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}
+        env:
+          PYTHON_PATHS: ${{ inputs.python-paths }}
+        run: |
+          set -euo pipefail
+          read -r -a paths <<< "$PYTHON_PATHS"
+          "$RUNNER_TEMP/ansible-venv/bin/ruff" check "${paths[@]}"
+
+      - name: Check the Python formatting
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}
+        env:
+          PYTHON_PATHS: ${{ inputs.python-paths }}
+        run: |
+          set -euo pipefail
+          read -r -a paths <<< "$PYTHON_PATHS"
+          "$RUNNER_TEMP/ansible-venv/bin/ruff" format --check "${paths[@]}"
+
+  shard:
+    name: 'Molecule: ${{ matrix.name }}'
+    needs: [discover]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      ROLE_TEST_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # ANS-15: the container test never reaches another engine. A set variable
+      # would point the Docker driver at it, so a set variable fails the job.
+      - name: Refuse a redirected container engine
+        run: |
+          set -euo pipefail
+          if [ -n "${DOCKER_HOST:-}" ]; then
+            echo "::error::DOCKER_HOST is set, so the container test could reach another engine (ANS-15)."
+            exit 1
+          fi
+
+      # The tools find each other on PATH (Molecule runs ansible-config), so the
+      # environment's bin directory is put there for the steps that follow.
+      - name: Create the tool environment
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/ansible-venv"
+          echo "$RUNNER_TEMP/ansible-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install the pinned tools
+        env:
+          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv -r "$ANSIBLE_DIRECTORY/requirements.txt"'
+
+      - name: Install the pinned collections
+        env:
+          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+        run: |
+          set -euo pipefail
+          collections="$RUNNER_TEMP/ansible-collections"
+          "$RUNNER_TEMP/ansible-venv/bin/ansible-galaxy" collection install -r "$ANSIBLE_DIRECTORY/requirements.yml" -p "$collections"
+          echo "ANSIBLE_COLLECTIONS_PATH=$collections" >> "$GITHUB_ENV"
+
+      - name: Molecule default sequence, with the idempotence step
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}
+        run: '"$RUNNER_TEMP/ansible-venv/bin/molecule" test'
+
+      - name: Molecule check action
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}
+        run: '"$RUNNER_TEMP/ansible-venv/bin/molecule" check'
+
+  # The plan job. It runs only for a push to the default branch. It holds the
+  # check key, which the host restricts to the forced command in check mode, and
+  # no other credential. The commit it plans is the commit this run is for.
+  plan:
+    name: Plan the apply (check mode on each host)
+    needs: [discover, lint, shard]
+    if: needs.discover.outputs.delivery == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.plan-timeout-minutes }}
+    outputs:
+      has_changes: ${{ steps.report.outputs.has_changes }}
+      sha: ${{ steps.guard.outputs.sha }}
+      hosts_digest: ${{ steps.guard.outputs.hosts_digest }}
+    steps:
+      # Only a dry run reads a file of this repository, the stand-in for the host.
+      - name: Checkout
+        if: inputs.dry-run == true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Refuse outside a push to the default branch, and check the inputs
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IS_FORK: ${{ github.event.repository.fork }}
+          SHA: ${{ github.sha }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          HOSTS: ${{ secrets.ssh_hosts }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [ "$EVENT_NAME" = push ] || fail "The plan job runs only for a push, not for $EVENT_NAME."
+          [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail "The plan job runs only for the default branch."
+          [ "$IS_FORK" != true ] || fail "The plan job never runs in a fork."
+          printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || fail "The commit is not 40 lowercase hex digits."
+          [ -n "$ENVIRONMENT" ] || fail "The environment input is empty, so the apply would have no approval."
+          if [ "$DRY_RUN" = true ]; then
+            [ -n "$DRY_RUN_STUB" ] || fail "dry-run needs dry-run-stub."
+          fi
+          # One validated destination per line. The apply job rebuilds the list
+          # from the same secret and must find the same digest, so it never
+          # reaches a host that was not planned. The names are not a job output
+          # because an output carrying a secret is dropped.
+          list=""
+          count=0
+          while IFS= read -r dest; do
+            [ -n "$dest" ] || continue
+            printf '%s' "$dest" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$' \
+              || fail "A hosts line is not of the form user@host."
+            case " $list " in *" $dest "*) fail "A host is listed twice." ;; esac
+            list="${list:+$list }$dest"
+            count=$((count + 1))
+          done <<< "$HOSTS"
+          [ "$count" -ge 1 ] || fail "The ssh_hosts secret lists no host, so there is nothing to plan."
+          [ "$count" -le 50 ] || fail "The ssh_hosts secret lists more than 50 hosts."
+          digest=$(printf '%s' "$list" | shasum -a 256 | cut -d ' ' -f 1)
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "hosts_digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Planning commit $SHA on $count host(s)."
+
+      - name: Check every host in check mode
+        id: check
+        env:
+          HOSTS: ${{ secrets.ssh_hosts }}
+          SHA: ${{ steps.guard.outputs.sha }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout-minutes }}
+          SSH_KEY: ${{ secrets.ssh_check_key }}
+          KNOWN_HOSTS: ${{ secrets.ssh_known_hosts }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          plan_dir="$RUNNER_TEMP/ansible-plan"
+          mkdir "$plan_dir"
+          ssh_args=()
+          if [ "$DRY_RUN" = true ]; then
+            stub="$GITHUB_WORKSPACE/$WORKING_DIRECTORY/$DRY_RUN_STUB"
+            [ -x "$stub" ] || fail "dry-run-stub is not an executable file."
+          else
+            [ -n "$SSH_KEY" ] || fail "The ssh_check_key secret is empty."
+            [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
+            (umask 077 && printf '%s\n' "$SSH_KEY" > "$plan_dir/id" && printf '%s\n' "$KNOWN_HOSTS" > "$plan_dir/known_hosts")
+            # The remote command is the commit and nothing else. The key's forced
+            # command on the host fixes the mode, so this caller cannot ask for an
+            # apply.
+            ssh_args=(-T -i "$plan_dir/id" -o IdentitiesOnly=yes -o BatchMode=yes
+              -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$plan_dir/known_hosts"
+              -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
+              -o ForwardAgent=no -o ClearAllForwardings=yes)
+          fi
+          i=0
+          while IFS= read -r dest; do
+            [ -n "$dest" ] || continue
+            i=$((i + 1))
+            n=$(printf '%02d' "$i")
+            printf '%s\n' "$dest" > "$plan_dir/$n.dest"
+            rc=0
+            if [ "$DRY_RUN" = true ]; then
+              "$stub" "$dest" "$SHA" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+            else
+              timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+            fi
+            printf '%s\n' "$rc" > "$plan_dir/$n.rc"
+          done <<< "$HOSTS"
+          rm -f "$plan_dir/id" "$plan_dir/known_hosts"
+          echo "Asked $i host(s); the answers are judged in the next step."
+
+      # The output of a host is held in files and never printed to the log. It
+      # is judged first, scanned for a secret, and only then written to the job
+      # summary. A host that failed, a diff that is too large to show whole and
+      # a diff that matches a secret pattern each fail the job, so no approval
+      # is asked for a plan the approver cannot read in full.
+      - name: Judge the answers, scan the diff and write the plan
+        id: report
+        env:
+          SHA: ${{ steps.guard.outputs.sha }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          SSH_KEY: ${{ secrets.ssh_check_key }}
+        run: |
+          set -euo pipefail
+          export LC_ALL=C
+          plan_dir="$RUNNER_TEMP/ansible-plan"
+          echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          per_host_cap=300000
+          total_cap=900000
+
+          # A pattern is "name|extended regular expression". The list is a
+          # backstop: the control is no_log and diff: false on the task (ANS-16).
+          patterns=(
+            'private-key|-----BEGIN [A-Z0-9 ]*PRIVATE KEY'
+            'aws-access-key|(AKIA|ASIA)[0-9A-Z]{16}'
+            'github-token|(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,})'
+            'slack-token|xox[abprs]-[A-Za-z0-9-]{10,}'
+            'payment-key|sk_(live|test)_[0-9A-Za-z]{20,}'
+            'jwt|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.'
+            'credential-assignment|(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_.-]*"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]"]{4,}'
+          )
+          keylines="$plan_dir/keylines"
+          : > "$keylines"
+          if [ -n "$SSH_KEY" ]; then
+            printf '%s\n' "$SSH_KEY" | awk 'length($0) >= 16 && $0 !~ /^-----/' > "$keylines"
+          fi
+
+          summary="$plan_dir/summary.md"
+          details="$plan_dir/details.md"
+          : > "$details"
+          rows="$plan_dir/rows.md"
+          : > "$rows"
+          total=0
+          clean=0
+          changed=0
+          failed=0
+          total_bytes=0
+
+          for destfile in "$plan_dir"/*.dest; do
+            base="${destfile%.dest}"
+            n="${base##*/}"
+            total=$((total + 1))
+            dest=$(cat "$destfile")
+            hostpart="${dest#*@}"
+            rc=$(cat "$base.rc")
+            verdict="failed"
+            note=""
+
+            line_count=$(wc -l < "$base.out" | tr -d ' ')
+            line=$(tr -d '\r' < "$base.out" | head -n 1)
+            re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+            if [ "$rc" = 255 ]; then
+              note="the SSH connection failed (exit 255)"
+            elif [ "$line_count" != 1 ] || ! [[ "$line" =~ $re ]]; then
+              note="the host did not answer with one summary line (exit $rc)"
+            else
+              f_verdict="${BASH_REMATCH[1]}"
+              f_exit="${BASH_REMATCH[2]}"
+              f_reason="${BASH_REMATCH[3]}"
+              f_commit="${BASH_REMATCH[4]}"
+              f_changed="${BASH_REMATCH[5]}"
+              if [ "$f_commit" != "$SHA" ] || [ "$f_exit" != "$rc" ]; then
+                note="the summary line names another commit or exit status (exit $rc)"
+              elif [ "$rc" = 0 ] && [ "$f_verdict" = unchanged ] && [ "$f_changed" = 0 ]; then
+                verdict="clean"
+              elif [ "$rc" = 11 ] && [ "$f_verdict" = would-change ]; then
+                verdict="changes"
+              else
+                note="verdict $f_verdict, reason $f_reason, exit $rc"
+              fi
+            fi
+
+            # The diff: control characters removed, the host name replaced.
+            cleaned="$base.clean"
+            if [ "$rc" = 255 ]; then
+              : > "$cleaned"
+            else
+              tr -d '\000-\010\013\014\016-\037\177' < "$base.err" \
+                | awk -v d="$dest" -v h="$hostpart" -v label="host $((10#$n))" '
+                    function mark(s, needle,    out, i) {
+                      out = ""
+                      while ((i = index(s, needle)) > 0) { out = out substr(s, 1, i - 1) "\001"; s = substr(s, i + length(needle)) }
+                      return out s
+                    }
+                    { s = mark(mark($0, d), h); gsub(/\001/, label, s); print s }' > "$cleaned"
+            fi
+            size=$(wc -c < "$cleaned" | tr -d ' ')
+            total_bytes=$((total_bytes + size))
+
+            hits=""
+            for entry in "${patterns[@]}"; do
+              name="${entry%%|*}"
+              regex="${entry#*|}"
+              if grep -Eiq -e "$regex" "$cleaned"; then
+                hits="${hits:+$hits, }$name"
+              fi
+            done
+            if [ -s "$keylines" ] && grep -Fq -f "$keylines" "$cleaned"; then
+              hits="${hits:+$hits, }ci-key-material"
+            fi
+
+            show=true
+            if [ -n "$hits" ]; then
+              show=false
+              verdict="failed"
+              note="the diff matched a secret pattern ($hits) and is withheld"
+            elif [ "$size" -gt "$per_host_cap" ] || [ "$total_bytes" -gt "$total_cap" ]; then
+              show=false
+              verdict="failed"
+              note="the diff is too large to show whole, so it cannot be approved from here"
+            fi
+
+            case "$verdict" in
+              clean) clean=$((clean + 1)) ;;
+              changes) changed=$((changed + 1)) ;;
+              *) failed=$((failed + 1)) ;;
+            esac
+
+            label="host $((10#$n))"
+            printf '| %s | %s | %s |\n' "$label" "$verdict" "${note:--}" >> "$rows"
+            if [ "$show" = true ] && [ -s "$cleaned" ]; then
+              fence=$(awk 'BEGIN { m = 2 } { s = $0; while (match(s, /`+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } } END { f = ""; for (k = 0; k <= m; k++) f = f "`"; print f }' "$cleaned")
+              {
+                printf '\n### %s\n\n' "$label"
+                printf '%stext\n' "$fence"
+                cat "$cleaned"
+                printf '%s\n' "$fence"
+              } >> "$details"
+            fi
+          done
+
+          if [ "$failed" -gt 0 ]; then
+            first="Plan failed: $failed of $total host(s) gave no usable answer, so no approval is requested for commit $SHA."
+          elif [ "$changed" -eq 0 ]; then
+            first="No changes: every host reports none for commit $SHA, so the apply is skipped and no approval is requested."
+          else
+            first="Changes: $changed of $total host(s) would change for commit $SHA, so the apply waits for the approval of environment $ENVIRONMENT."
+          fi
+          if [ "$DRY_RUN" = true ]; then
+            first="DRY RUN, the host call is a stub and nothing is applied. $first"
+          fi
+          {
+            printf '%s\n\n' "$first"
+            printf '| Host | Result | Note |\n| --- | --- | --- |\n'
+            cat "$rows"
+            cat "$details"
+          } > "$summary"
+          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$failed" -gt 0 ]; then
+            echo "::error::$first"
+            exit 1
+          fi
+          if [ "$changed" -eq 0 ] && [ "$clean" -eq "$total" ] && [ "$total" -ge 1 ]; then
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "$first"
+
+  # The apply job. Its environment is the deployment gate: GitHub holds the job
+  # until the environment's required reviewers approve it, and only then does it
+  # read the environment's secret. It never runs in a pull request, in a fork, in
+  # a dry run, or when the plan found nothing to change.
+  apply:
+    name: Apply the planned commit (after approval)
+    needs: [discover, plan]
+    if: >-
+      needs.discover.outputs.delivery == 'true'
+      && needs.plan.result == 'success'
+      && needs.plan.outputs.has_changes != 'false'
+      && inputs.dry-run == false
+      && inputs.environment != ''
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.apply-timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: ansible-apply-${{ github.repository }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: Refuse unless this is the approved, planned push
+        id: guard
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IS_FORK: ${{ github.event.repository.fork }}
+          SHA: ${{ github.sha }}
+          PLANNED_SHA: ${{ needs.plan.outputs.sha }}
+          HAS_CHANGES: ${{ needs.plan.outputs.has_changes }}
+          PLANNED_DIGEST: ${{ needs.plan.outputs.hosts_digest }}
+          HOSTS: ${{ secrets.ssh_hosts }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [ "$EVENT_NAME" = push ] || fail "The apply job runs only for a push, not for $EVENT_NAME."
+          [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail "The apply job runs only for the default branch."
+          [ "$IS_FORK" != true ] || fail "The apply job never runs in a fork."
+          [ "$DRY_RUN" != true ] || fail "The apply job never runs in a dry run."
+          [ -n "$ENVIRONMENT" ] || fail "The environment input is empty, so there is no approval."
+          [ "$HAS_CHANGES" != false ] || fail "The plan found nothing to change."
+          printf '%s' "$PLANNED_SHA" | grep -Eq '^[0-9a-f]{40}$' || fail "The planned commit is not 40 lowercase hex digits."
+          [ "$PLANNED_SHA" = "$SHA" ] || fail "The planned commit differs from this run's commit."
+          list=""
+          while IFS= read -r dest; do
+            [ -n "$dest" ] || continue
+            list="${list:+$list }$dest"
+          done <<< "$HOSTS"
+          digest=$(printf '%s' "$list" | shasum -a 256 | cut -d ' ' -f 1)
+          printf '%s' "$PLANNED_DIGEST" | grep -Eq '^[0-9a-f]{64}$' || fail "The planned host digest is missing."
+          [ "$digest" = "$PLANNED_DIGEST" ] || fail "The hosts are not the hosts that were planned."
+          echo "Applying the planned commit $PLANNED_SHA after the approval of $ENVIRONMENT."
+
+      # The approval can be hours old. If main has moved on, a newer run has its
+      # own plan, so this run stops rather than apply a commit nobody re-checked.
+      - name: Refuse if the default branch has moved since the plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          PLANNED_SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          set -euo pipefail
+          head=$(gh api "repos/$REPO/commits/$DEFAULT_BRANCH" --jq .sha)
+          if [ "$head" != "$PLANNED_SHA" ]; then
+            echo "::error::The default branch has moved on since the plan. Re-run from its new head, which has its own plan."
+            exit 1
+          fi
+          echo "The default branch head is still the planned commit."
+
+      - name: Apply on each host, then run it again to prove nothing is left to change
+        env:
+          HOSTS: ${{ secrets.ssh_hosts }}
+          SHA: ${{ needs.plan.outputs.sha }}
+          HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout-minutes }}
+          SSH_KEY: ${{ secrets.ssh_apply_key }}
+          KNOWN_HOSTS: ${{ secrets.ssh_known_hosts }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [ -n "$SSH_KEY" ] || fail "The ssh_apply_key secret is empty. It is a secret of the deployment environment."
+          [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
+          work="$RUNNER_TEMP/ansible-apply"
+          mkdir "$work"
+          (umask 077 && printf '%s\n' "$SSH_KEY" > "$work/id" && printf '%s\n' "$KNOWN_HOSTS" > "$work/known_hosts")
+          ssh_args=(-T -i "$work/id" -o IdentitiesOnly=yes -o BatchMode=yes
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
+            -o ForwardAgent=no -o ClearAllForwardings=yes)
+          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+
+          # Run one request and require the answer to be one of the accepted
+          # kinds. Arguments: host number, destination, label, then the accepted
+          # answers as "exit:verdict" words. The playbook output is dropped: it
+          # is on the host, and the job log is public.
+          ask() {
+            local num="$1" dest="$2" label="$3"
+            shift 3
+            local rc=0 out line accepted ok=1
+            out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" 2> /dev/null) || rc=$?
+            line=$(printf '%s\n' "$out" | tr -d '\r' | head -n 1)
+            if [ "$rc" = 255 ]; then
+              fail "Host $num, $label: the SSH connection failed (exit 255)."
+            fi
+            if [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" != 1 ] || ! [[ "$line" =~ $re ]]; then
+              fail "Host $num, $label: the host did not answer with one summary line (exit $rc)."
+            fi
+            if [ "${BASH_REMATCH[4]}" != "$SHA" ] || [ "${BASH_REMATCH[2]}" != "$rc" ]; then
+              fail "Host $num, $label: the summary line names another commit or exit status (exit $rc)."
+            fi
+            for accepted in "$@"; do
+              if [ "$accepted" = "$rc:${BASH_REMATCH[1]}" ]; then
+                ok=0
+              fi
+            done
+            if [ "$ok" -ne 0 ] || { [ "${BASH_REMATCH[1]}" = unchanged ] && [ "${BASH_REMATCH[5]}" != 0 ]; }; then
+              fail "Host $num, $label: verdict ${BASH_REMATCH[1]}, reason ${BASH_REMATCH[3]}, exit $rc."
+            fi
+            REPLY_VERDICT="${BASH_REMATCH[1]}"
+          }
+
+          i=0
+          while IFS= read -r dest; do
+            [ -n "$dest" ] || continue
+            i=$((i + 1))
+            ask "$i" "$dest" "apply" "10:applied" "0:unchanged"
+            first="$REPLY_VERDICT"
+            ask "$i" "$dest" "the second run, which must change nothing" "0:unchanged"
+            printf 'Host %s: %s, then a second run that changed nothing.\n' "$i" "$first" >> "$GITHUB_STEP_SUMMARY"
+          done <<< "$HOSTS"
+          rm -f "$work/id" "$work/known_hosts"
+          echo "Applied commit $SHA on $i host(s)."
+
+  # The check a caller requires. It runs even when a needed job failed or was
+  # skipped, and it fails unless each needed job ended as expected for this
+  # kind of run. In a run that never reaches a host, plan and apply must have
+  # been skipped; a plan or apply that ran there is a defect and fails.
+  checks:
+    name: Ansible checks passed
+    needs: [discover, lint, shard, plan, apply]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to have ended as expected
+        env:
+          DISCOVER: ${{ needs.discover.result }}
+          DELIVERY: ${{ needs.discover.outputs.delivery }}
+          LINT: ${{ needs.lint.result }}
+          SHARD: ${{ needs.shard.result }}
+          PLAN: ${{ needs.plan.result }}
+          APPLY: ${{ needs.apply.result }}
+          HAS_CHANGES: ${{ needs.plan.outputs.has_changes }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+          problems=0
+          expect() {
+            if [ "$2" != "$3" ]; then
+              echo "The $1 job reported $2, expected $3."
+              problems=1
+            fi
+          }
+          expect discover "$DISCOVER" success
+          expect lint "$LINT" success
+          expect shard "$SHARD" success
+          case "$DELIVERY" in
+            true)
+              expect plan "$PLAN" success
+              if [ "$DRY_RUN" = true ] || [ "$HAS_CHANGES" = false ]; then
+                expect apply "$APPLY" skipped
+              else
+                expect apply "$APPLY" success
+              fi
+              ;;
+            false)
+              expect plan "$PLAN" skipped
+              expect apply "$APPLY" skipped
+              ;;
+            *)
+              echo "The discover job did not say whether this run reaches a host: '$DELIVERY'."
+              problems=1
+              ;;
+          esac
+          if [ "$problems" -ne 0 ]; then
+            echo "Every job must end as expected."
+            exit 1
+          fi
+          echo "Every job ended as expected."

@@ -1,0 +1,32 @@
+---
+- name: Install the notice file
+  ansible.builtin.copy:
+    src: notice.txt
+    dest: '{{ fixture_config_notice_path }}'
+    owner: root
+    group: root
+    mode: '0644'
+  when: fixture_config_state == 'present'
+
+- name: Render the configuration file
+  ansible.builtin.template:
+    src: config.conf.j2
+    dest: '{{ fixture_config_config_path }}'
+    owner: root
+    group: root
+    mode: '0644'
+  vars:
+    config_greeting: '{{ fixture_config_greeting }}'
+  when: fixture_config_state == 'present'
+
+- name: Remove the notice file
+  ansible.builtin.file:
+    path: '{{ fixture_config_notice_path }}'
+    state: absent
+  when: fixture_config_state == 'absent'
+
+- name: Remove the configuration file
+  ansible.builtin.file:
+    path: '{{ fixture_config_config_path }}'
+    state: absent
+  when: fixture_config_state == 'absent'

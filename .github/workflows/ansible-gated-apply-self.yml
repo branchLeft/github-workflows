@@ -1,0 +1,45 @@
+name: Ansible gated apply (self-test)
+
+# This repo tests the reusable workflow with its own working copy (the local
+# path below), not a tagged one, so a pull request that changes the workflow is
+# checked by the change itself. It runs on every pull request, with no path
+# filter, so a change elsewhere in the repo cannot skip it.
+#
+# The caller runs lint and Molecule over the fixture project. On a pull request
+# the plan and apply jobs are skipped, as they are for every caller. On a push
+# to main the plan job runs with the host call replaced by the stub in the
+# fixture (a dry run), and the apply job never runs. No host exists to call.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Workflow step tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the tests of the workflow's steps
+        run: python3 -m unittest discover -s tools -p 'test_ansible_gated_apply.py' -v
+
+  gated-apply:
+    uses: ./.github/workflows/ansible-gated-apply.yml
+    with:
+      environment: ansible-self-test
+      working-directory: .github/fixtures/ansible-gated-apply
+      dry-run: true
+      dry-run-stub: stub/host.sh
+    secrets:
+      ssh_hosts: |
+        ci@first-stub-host
+        ci@second-stub-host

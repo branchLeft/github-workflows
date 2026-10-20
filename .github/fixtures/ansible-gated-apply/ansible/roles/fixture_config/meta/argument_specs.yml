@@ -1,0 +1,24 @@
+---
+argument_specs:
+  main:
+    short_description: Manage the FIXTURE_FILES of fixture_config
+    description: Writes one configuration file from a template and one fixed notice file, or removes both.
+    author: AUTHOR_NAME
+    options:
+      fixture_config_state:
+        type: str
+        description: Whether the files are present or absent.
+        choices: [present, absent]
+        default: present
+      fixture_config_config_path:
+        type: str
+        description: Absolute path of the configuration file.
+        default: /etc/fixture_config.conf
+      fixture_config_notice_path:
+        type: str
+        description: Absolute path of the notice file.
+        default: /etc/fixture_config.notice
+      fixture_config_greeting:
+        type: str
+        description: Value written into the configuration file.
+        default: FIXTURE_GREETING

@@ -203,6 +203,191 @@ This is the guard, not a sweep: adopting it in a repo carrying existing
 violations is expected to turn CI red (or advisory, in warn mode) on the
 instances already there, fixed caller by caller rather than in bulk.
 
+### `ansible-gated-apply.yml`
+
+The CI for a repository whose Ansible roles reach hosts by the gated pull
+(ANS-17): lint, Molecule, a check-mode plan of the exact commit on each host, and
+an apply that waits for the deployment gate. The standard it applies is
+`docs/stacks/ansible.md` in `branchLeft/standards` (ANS-4, ANS-5, ANS-6, ANS-10,
+ANS-15, ANS-16, ANS-17) and `CI-7`, `CI-12`, `CI-13`.
+
+**Nothing here holds a root shell.** The only host access is an SSH key whose
+line in `authorized_keys` runs one forced command that takes one commit id. The
+plan job holds the check key and the apply job holds the apply key. The host,
+not this workflow, decides what that commit may do: it refuses a commit that is
+not on its `main`, is older than the last applied, or is not signed by an
+allowed key.
+
+#### The jobs, and what each may do
+
+| Job | Runs when | May do | Holds |
+| --- | --- | --- | --- |
+| `Discover the Ansible checks` | every run | validate the inputs, decide whether the run may reach a host, list the Molecule shards | nothing |
+| `Lint the Ansible inputs` | every run | yamllint, ansible-lint (production profile, `--strict`), mypy, ruff | nothing |
+| `Molecule: <role>` | every run, one per role | `molecule test` (with the idempotence step) and `molecule check` on containers on the runner | nothing; fails if `DOCKER_HOST` is set (ANS-15) |
+| `Plan the apply (check mode on each host)` | a push to the default branch of the repository itself | ask each host for a check-mode run of this commit, show the diff, decide `has_changes` | the check key |
+| `Apply the planned commit (after approval)` | the same push, the plan succeeded, `has_changes` is not `false`, not a dry run | ask each host to apply the planned commit, then a second time to prove nothing is left | the apply key, the environment's approval |
+| `Ansible checks passed` | every run, even after a failure | go red unless every job ended as expected for this kind of run | nothing |
+
+A pull request runs the first three and the gate only. The plan cannot run on a
+pull request: the host takes only a commit that is on its `main`.
+
+The apply is skipped, visibly, when there is nothing to change: the first line of
+the plan's job summary says so and no approval is requested. `has_changes` is
+`false` only when every host answered with exit status 0, the summary line
+`verdict=unchanged` and `changed=0` for this commit. Anything else is `true`, and
+a host that failed, refused, did not answer, or gave an answer that could not be
+read fails the plan job. A task that cannot run in check mode must make the host
+report a change (ANS-10); that is the role's job, and this workflow believes the
+host's count.
+
+The apply job refuses unless all of these hold, and each is a step that fails the
+job, not only a condition: it is a push, to the default branch, not in a fork,
+not a dry run; the environment input is not empty; the commit is the one that was
+planned; the hosts are the hosts that were planned (a digest of the list); and,
+after the approval, the default branch head is still that commit. A newer push
+has its own plan and its own approval.
+
+#### How a repository calls it
+
+Add one caller, pinned to an exact tag (see Versioning). The workflow is not in
+any tag yet, so use the tag cut once it ships.
+
+```yaml
+name: ansible
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ansible:
+    uses: branchLeft/github-workflows/.github/workflows/ansible-gated-apply.yml@vX.Y.Z
+    with:
+      environment: production
+    secrets:
+      ssh_hosts: ${{ secrets.ANSIBLE_HOSTS }}
+      ssh_known_hosts: ${{ secrets.ANSIBLE_KNOWN_HOSTS }}
+      ssh_check_key: ${{ secrets.ANSIBLE_CHECK_KEY }}
+```
+
+The caller does not pass the apply key. The required status check is the gate
+job, shown on the caller as `ansible / Ansible checks passed`.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `environment` | required | The deployment environment the apply job runs in. Must not be empty. |
+| `working-directory` | `.` | Directory holding the Ansible directory, `.ansible-lint` and `.yamllint`. |
+| `ansible-directory` | `ansible` | Directory, relative to `working-directory`, holding `requirements.txt`, `requirements.yml` and `pyproject.toml`. |
+| `role-directories` | `roles/*` | Globs, one per line, relative to `ansible-directory`; each match must hold `molecule/default/molecule.yml`. A repository with patterns too lists `patterns/*`. |
+| `python-paths` | `.` | Paths mypy and ruff check, relative to `ansible-directory`. Narrow it if a role keeps two modules of one name. |
+| `dry-run` | `false` | Replace the SSH call with `dry-run-stub` and never run the apply job. It can only skip an apply, never perform one. |
+| `dry-run-stub` | empty | With `dry-run`, the executable, relative to `working-directory`, that stands in for a host. |
+| `host-timeout-minutes` | 65 | One host call is stopped after this long (the host's own limit is one hour by default). |
+| `plan-timeout-minutes` | 90 | Bound of the plan job. |
+| `apply-timeout-minutes` | 180 | Bound of the apply job, not counting the wait for approval. |
+
+| Secret | Passed by | Meaning |
+| --- | --- | --- |
+| `ssh_hosts` | the caller | One `user@host` per line. A secret so the job log masks the names; the job summary shows `host 1`, `host 2` in this order. |
+| `ssh_known_hosts` | the caller | The hosts' public keys in `known_hosts` form. Host key checking is on and the global file is not read. |
+| `ssh_check_key` | the caller | Private key of the plan job. On the host it may run the forced command in check mode only. |
+| `ssh_apply_key` | not passed: an environment secret | Private key of the apply job. It is read because the apply job runs in the environment, so a job that has not passed the approval cannot read it. |
+
+#### Setup the owner does once per repository
+
+These are settings and keys, not a script, and the commands belong in the
+runbook in `ghost-platform-docs`, not here.
+
+1. A deployment environment with the name the caller passes: required reviewers
+   set to the owner, self-review not allowed, and deployment branches limited to
+   the default branch.
+2. The apply key as a secret of that environment, and the check key, the host
+   list and the known-hosts lines as repository secrets.
+3. On each host, the `authorized_keys` lines for the two keys, one with
+   `--mode check` and one with `--mode apply` in the forced command, restricted
+   to the runners' source and with no shell, forwarding or terminal. The line and
+   the sudo variant are described in the `pull_trigger` role's README in
+   `branchLeft/shared-infra`.
+4. The caller workflow above, and the gate job as a required status check.
+
+#### What it assumes of the host (the `pull_trigger` role)
+
+The host side is a separate piece of work and the interface below is read from
+the role's README as written for its pull request, not from a release. If that
+README changes, so does this list.
+
+- The remote command is the 40-digit commit id and nothing else; the mode is
+  fixed by the key's forced command.
+- Standard output is one line: `pull-trigger verdict=V exit=N reason=R mode=M
+  commit=SHA playbook=P changed=C`. Standard error is the playbook's output,
+  with `--diff` in check mode.
+- The exit status is 0 (unchanged), 10 (applied), 11 (check mode would change),
+  20, 21, 30, 31 or 40 (refused, busy, failed, timed out, error). A second request
+  of the same commit exits 0 when the apply left nothing to change.
+
+#### Failure modes
+
+| Seen as | Cause | What to do |
+| --- | --- | --- |
+| Plan job red, `Plan failed:` first line | A host refused, was busy, failed, timed out, did not answer, or answered with a line this workflow cannot read or for another commit | Read the row for that host in the job summary, then the host's log. No approval was requested. |
+| Plan row says the diff matched a secret pattern | A line of the diff looks like a credential, or holds the check key | Fix the task with `no_log: true` and `diff: false` (ANS-16). The diff is withheld and the job fails. |
+| Plan row says the diff is too large | More than 300 KB for a host or 900 KB in all | Split the change. The approver must be able to read the whole plan. |
+| Apply job red, "moved on" | The default branch changed during the wait | Nothing to do: the newer push has its own plan and approval. |
+| Apply job red, "second run" | The apply left something to change, so the role is not idempotent (ANS-11) | Fix the role. The host is already at the applied state. |
+| Apply job red on one host | Hosts after it were not touched; hosts before it were applied | Read the host's log, fix forward with a new commit. |
+| Gate job red, "expected skipped" | A plan or apply ran in a run that cannot reach a host | A defect in a caller's use of the workflow. |
+
+#### Named limits
+
+- **The host route is not part of this workflow.** The role that installs the
+  forced command is a separate pull request. Until it is delivered and a caller
+  consumes this workflow, nothing has run against a real host. The first live
+  use is a separate piece of work. The self-test runs the plan job with the host
+  call stubbed.
+- **The approval is GitHub's, and this workflow cannot see whether the
+  environment has reviewers.** An environment with no reviewers lets the apply
+  run at once. The workflow refuses an empty environment name but cannot read the
+  environment's protection with its own token. The setting is checked by the
+  ruleset and settings audit (CI-12), not here.
+- **Runner addresses are not fixed.** A `from=` restriction on the key can only
+  name the networks the runners come from, so it is as wide as GitHub-hosted
+  runners unless the caller supplies its own.
+- **The diff is public.** The job summary is readable by everyone who can read the
+  repository, and the playbook's output reaches it. The scan is a backstop with a
+  fixed list of patterns; the control is `no_log` and `diff: false` on a task that
+  handles a secret (ANS-16). A pattern hit on a harmless line fails the job until
+  the task hides its value.
+- **The plan cannot show a change before the merge.** The host takes only a commit
+  of its own `main`, so the plan runs after the merge and before the approval,
+  which is the order ANS-17 describes. A pull request is checked by lint and
+  Molecule only.
+- **Check mode has limits (ANS-10).** `has_changes` is the host's count. A role
+  whose tasks skip silently in check mode reports fewer changes than an apply
+  would make; the standard makes that the role's defect.
+- **Collections and tools install from the network** at their pinned versions, as
+  in `shared-infra`; vendoring is decided by the foundation ticket (ANS-4).
+- **The Molecule run is the plain `molecule test` and `molecule check`** in each
+  role directory, with `ROLE_TEST_RUN_ID` set to a value unique to the run. A
+  scenario that needs more than that (a harness, unit tests inside a container)
+  is not covered by this workflow.
+- **No change detection.** Every call runs every check; a caller cannot narrow
+  it by path without making the gate job unreliable as a required check.
+- **A schedule is not wired.** The nightly drift run of ANS-17 is a check-mode run
+  that applies nothing; it is a later addition to this workflow.
+
+The self-test is `.github/workflows/ansible-gated-apply-self.yml`. The tests of
+every shell step are `tools/test_ansible_gated_apply.py`, which run the step text
+from the workflow under bash with `ssh`, `gh` and `timeout` replaced by stubs:
+
+```bash
+python3 -m unittest discover -s tools -p 'test_ansible_gated_apply.py' -v
+```
+
 ## Actions
 
 A reusable workflow is a whole job; a composite action is a step inside the

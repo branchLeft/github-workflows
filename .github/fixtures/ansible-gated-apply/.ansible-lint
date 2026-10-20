@@ -1,0 +1,8 @@
+---
+# The Ansible lint floor (ANS-5), as the repositories that call the workflow keep it.
+profile: production
+strict: true
+warn_list:
+  - experimental
+enable_list:
+  - no-log-password
