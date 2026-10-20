@@ -208,6 +208,11 @@ class Sandbox:
         path = self.stubs / f"{dest}.count"
         return int(path.read_text()) if path.exists() else 0
 
+    def removals(self) -> list[str]:
+        """The mode and path of each existing file `rm` was asked to remove, when the rm stand-in is on PATH."""
+        path = self.stubs / "rm.log"
+        return path.read_text().splitlines() if path.exists() else []
+
     def timeouts(self) -> list[str]:
         """The limit given to each call of `timeout`, in order."""
         path = self.stubs / "timeout.log"
@@ -1204,6 +1209,32 @@ class PlanTests(unittest.TestCase):
                 self.assertTrue(removed[0].startswith("-rw-------"), removed)
                 self.assertTrue(removed[0].endswith("/keylines"), removed)
 
+    def test_the_check_key_and_known_hosts_are_removed_on_every_way_out_a_failure_included(self) -> None:
+        def broken_date(sandbox: Sandbox) -> None:
+            # A failure after the keys are written and before the loop ends: `set -e` leaves the step.
+            sandbox.stub("date", "#!/usr/bin/env bash\nexit 1\n")
+
+        cases = {
+            "every host answered": (None, 0),
+            "a host dropped the connection": (None, 0),
+            "the step stopped on a failing command after the keys were written": (broken_date, 1),
+        }
+        for name, (prepare, code) in cases.items():
+            with self.subTest(case=name):
+                sandbox = Sandbox(self)
+                sandbox.stub("rm", RM_STUB)
+                sandbox.host(HOST_ONE, 0, CLEAN)
+                sandbox.host(HOST_TWO, 255 if "dropped" in name else 0, "" if "dropped" in name else CLEAN)
+                if prepare:
+                    prepare(sandbox)
+                result = sandbox.run(action_step("check"), check_env())
+                self.assertEqual(result.code, code, result.log)
+                log = sandbox.removals()
+                self.assertEqual(sorted(line.split("/")[-1] for line in log), ["id", "known_hosts"], log)
+                self.assertTrue(all(line.startswith("-rw-------") for line in log), log)
+                for leftover in ("id", "known_hosts"):
+                    self.assertFalse((sandbox.temp / "ansible-plan" / leftover).exists(), name)
+
 
 def apply_guard_env(**changes: str) -> dict[str, str]:
     values = {
@@ -1369,6 +1400,29 @@ class ApplyTests(unittest.TestCase):
         sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
         self.assertNotEqual(self.apply(sandbox, SSH_KEY="").code, 0)
         self.assertEqual(sandbox.ssh_log(), [])
+
+    def test_the_apply_key_and_known_hosts_are_removed_on_every_way_out_a_refusal_included(self) -> None:
+        cases = {
+            "every host applied and clean": (0, (10, APPLIED, ""), (0, UNCHANGED, "")),
+            "the first host refused": (1, (20, summary_line("refused", 20, "apply", "@SHA@", 0, "rollback"), ""), None),
+            "the first host was busy": (1, (21, summary_line("busy", 21, "apply", "@SHA@", 0), ""), None),
+            "the connection was dropped": (1, (255, "", ""), None),
+            "the answer was not a summary line": (1, (10, "nothing\n", ""), None),
+            "the second run changed something": (1, (10, APPLIED, ""), (10, APPLIED, "")),
+        }
+        for name, (code, first, second) in cases.items():
+            with self.subTest(case=name):
+                sandbox = Sandbox(self)
+                sandbox.stub("rm", RM_STUB)
+                sandbox.host(HOST_ONE, first[0], first[1], first[2], second=second)
+                sandbox.host(HOST_TWO, 10, APPLIED, second=(0, UNCHANGED, ""))
+                result = self.apply(sandbox)
+                self.assertEqual(result.code, code, result.log)
+                log = sandbox.removals()
+                self.assertEqual(sorted(line.split("/")[-1] for line in log), ["id", "known_hosts"], log)
+                self.assertTrue(all(line.startswith("-rw-------") for line in log), log)
+                for leftover in ("id", "known_hosts"):
+                    self.assertFalse((sandbox.temp / "ansible-apply" / leftover).exists(), name)
 
 
 def gate_env(**changes: str) -> dict[str, str]:

@@ -166,6 +166,8 @@ runs:
         }
         plan_dir="$RUNNER_TEMP/ansible-plan"
         mkdir "$plan_dir"
+        # The key copies go on every way out of the step, a failure included.
+        trap 'rm -f "$plan_dir/id" "$plan_dir/known_hosts"' EXIT
         ssh_args=()
         if [ "$DRY_RUN" = true ]; then
           stub="$GITHUB_WORKSPACE/$WORKING_DIRECTORY/$DRY_RUN_STUB"
@@ -215,7 +217,6 @@ runs:
           fi
           printf '%s\n' "$rc" > "$plan_dir/$n.rc"
         done <<< "$HOSTS"
-        rm -f "$plan_dir/id" "$plan_dir/known_hosts"
         echo "Asked $i host(s); the answers are judged in the next step."
 
     # The output of a host is held in files and never printed to the log. It is

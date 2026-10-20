@@ -552,6 +552,8 @@ jobs:
           [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
           work="$RUNNER_TEMP/ansible-apply"
           mkdir "$work"
+          # The key copies go on every way out of the step, a refusal included.
+          trap 'rm -f "$work/id" "$work/known_hosts"' EXIT
           (umask 077 && printf '%s\n' "$SSH_KEY" > "$work/id" && printf '%s\n' "$KNOWN_HOSTS" > "$work/known_hosts")
           ssh_args=(-T -i "$work/id" -o IdentitiesOnly=yes -o BatchMode=yes
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/known_hosts"
@@ -600,7 +602,6 @@ jobs:
             ask "$i" "$dest" "the second run, which must change nothing" "0:unchanged"
             printf 'Host %s: %s, then a second run that changed nothing.\n' "$i" "$first" >> "$GITHUB_STEP_SUMMARY"
           done <<< "$HOSTS"
-          rm -f "$work/id" "$work/known_hosts"
           echo "Applied commit $SHA on $i host(s)."
 
   # The check a caller requires. It runs even when a needed job failed or was

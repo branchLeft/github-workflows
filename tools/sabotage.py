@@ -228,6 +228,33 @@ CASES: list[Case] = [
         [Edit(ACTION, "        trap 'rm -f \"$keylines\"' EXIT\n", ""), Edit(ACTION, '        echo "$first"\n', '        echo "$first"\n        rm -f "$keylines"\n')],
         [f"{P}.test_key_material_is_copied_private_and_removed_on_every_way_out"],
     ),
+    # The fifth round of review (ws#2342): the key copies of the check and the apply go on every way out.
+    Case(
+        "check key copies not removed",
+        [Edit(ACTION, "        trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\"' EXIT\n", "")],
+        [f"{P}.test_the_check_key_and_known_hosts_are_removed_on_every_way_out_a_failure_included"],
+    ),
+    Case(
+        "check key copies removed only on the way out that succeeds",
+        [
+            Edit(ACTION, "        trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\"' EXIT\n", ""),
+            Edit(ACTION, '        echo "Asked $i host(s); the answers are judged in the next step."\n', '        rm -f "$plan_dir/id" "$plan_dir/known_hosts"\n        echo "Asked $i host(s); the answers are judged in the next step."\n'),
+        ],
+        [f"{P}.test_the_check_key_and_known_hosts_are_removed_on_every_way_out_a_failure_included"],
+    ),
+    Case(
+        "apply key copies not removed",
+        [Edit(GATED, "          trap 'rm -f \"$work/id\" \"$work/known_hosts\"' EXIT\n", "")],
+        [f"{A}.test_the_apply_key_and_known_hosts_are_removed_on_every_way_out_a_refusal_included"],
+    ),
+    Case(
+        "apply key copies removed only on the way out that succeeds",
+        [
+            Edit(GATED, "          trap 'rm -f \"$work/id\" \"$work/known_hosts\"' EXIT\n", ""),
+            Edit(GATED, '          echo "Applied commit $SHA on $i host(s)."\n', '          rm -f "$work/id" "$work/known_hosts"\n          echo "Applied commit $SHA on $i host(s)."\n'),
+        ],
+        [f"{A}.test_the_apply_key_and_known_hosts_are_removed_on_every_way_out_a_refusal_included"],
+    ),
     Case(
         "key copy made with the default mask",
         [Edit(ACTION, '(umask 077 && : > "$keylines")', ': > "$keylines"')],
