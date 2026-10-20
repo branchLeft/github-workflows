@@ -8,7 +8,7 @@
 # Molecule's prerun is on by default and installs every requirements file under
 # the role directory (and the dependencies of a galaxy.yml there) on its own,
 # whatever dependency.enabled says, so it is switched off here too.
-prerun: true
+prerun: false
 dependency:
   name: galaxy
   enabled: false
