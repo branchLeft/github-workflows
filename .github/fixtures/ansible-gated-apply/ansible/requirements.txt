@@ -1267,9 +1267,7 @@ wcmatch==11.1 \
     # via
     #   ansible-lint
     #   molecule
-yamllint==1.38.0 \
-    --hash=sha256:09e5f29531daab93366bb061e76019d5e91691ef0a40328f04c927387d1d364d \
-    --hash=sha256:fc394a5b3be980a4062607b8fdddc0843f4fa394152b6da21722f5d59013c220
+yamllint==1.38.0
     # via
     #   -r requirements.in
     #   ansible-lint
