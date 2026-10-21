@@ -300,6 +300,36 @@ CASES: list[Case] = [
         [Edit(DRIFT, "      && (needs.drift.result == 'failure' || needs.drift.result == 'cancelled')\n", "      && needs.drift.result == 'failure'\n")],
         [f"{S}.test_the_alert_runs_after_a_failed_or_timed_out_check_that_passed_the_guard_and_serialises_per_host_set"],
     ),
+    Case(
+        "apply gate: environment key deleted from the apply job",
+        [Edit(GATED, "    timeout-minutes: ${{ inputs.apply-timeout-minutes }}\n    environment: ${{ inputs.environment }}\n", "    timeout-minutes: ${{ inputs.apply-timeout-minutes }}\n")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "apply gate: environment hard-coded in the apply job",
+        [Edit(GATED, "    timeout-minutes: ${{ inputs.apply-timeout-minutes }}\n    environment: ${{ inputs.environment }}\n", "    timeout-minutes: ${{ inputs.apply-timeout-minutes }}\n    environment: production\n")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "apply gate: has_changes condition dropped from the apply if",
+        [Edit(GATED, "      && needs.plan.outputs.has_changes != 'false'\n", "")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "apply gate: apply guard passes a plan that found nothing",
+        [Edit(GATED, '[ "$HAS_CHANGES" != false ] || fail "The plan found nothing to change."', ":")],
+        ["ApplyGuardTests.test_the_apply_refuses_a_plan_with_nothing_to_change"],
+    ),
+    Case(
+        "apply gate: no-change verdict when a host would change",
+        [Edit(ACTION, '        if [ "$changed" -eq 0 ] && [ "$clean" -eq "$total" ] && [ "$total" -ge 1 ]; then', '        if [ "$total" -ge 1 ]; then')],
+        [f"{P}.test_one_host_with_changes_gives_has_changes_and_shows_its_diff"],
+    ),
+    Case(
+        "apply gate: a failed host does not fail the plan",
+        [Edit(ACTION, '        if [ "$failed" -gt 0 ]; then\n          echo "::error::$first"', '        if false; then\n          echo "::error::$first"')],
+        [f"{P}.test_a_host_that_fails_fails_the_job_and_asks_for_no_approval"],
+    ),
 ]
 
 
