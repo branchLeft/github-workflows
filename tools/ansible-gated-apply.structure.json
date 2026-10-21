@@ -488,7 +488,7 @@
             },
             "id": "shards",
             "name": "List the Molecule shards from the repository tree",
-            "run-sha256": "6d0e857e58d332069b9863e071c6480430ccf853a3675a79057f9ce0391da09c"
+            "run-sha256": "a4848f1f35184be34aeeaaab912445301a8c19ea3c5e44cc9826f730ffc7f4b8"
           }
         ],
         "timeout-minutes": 10
@@ -521,14 +521,7 @@
               "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
             },
             "name": "Install the pinned tools",
-            "run-sha256": "6d322ba995d4443390041b332a04b657b892757cae29c58ef2dfe7f4bd99bab2"
-          },
-          {
-            "env": {
-              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
-            },
-            "name": "Install the pinned collections",
-            "run-sha256": "c8c2b8fb255b6f5edd72d91988de98ebd5a7de9d6f9cb1e5f95e9ab16bbf71aa"
+            "run-sha256": "dd3c2497801338dbc21e995a9937978955d7a4c21dedef6504a5ca05e99bfb75"
           },
           {
             "env": {
@@ -542,7 +535,7 @@
               "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
             },
             "name": "ansible-lint at the production profile",
-            "run-sha256": "c4a99238b7cbc10ca97949968dc6c5fe7cccf75edebe9a858a79b35347876588"
+            "run-sha256": "ca59d74c944d0ecda1b17dab4a466372826a0f1369f0aeaebabe1da3873947a2"
           },
           {
             "env": {
@@ -695,14 +688,7 @@
               "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
             },
             "name": "Install the pinned tools",
-            "run-sha256": "6d322ba995d4443390041b332a04b657b892757cae29c58ef2dfe7f4bd99bab2"
-          },
-          {
-            "env": {
-              "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}"
-            },
-            "name": "Install the pinned collections",
-            "run-sha256": "c8c2b8fb255b6f5edd72d91988de98ebd5a7de9d6f9cb1e5f95e9ab16bbf71aa"
+            "run-sha256": "dd3c2497801338dbc21e995a9937978955d7a4c21dedef6504a5ca05e99bfb75"
           },
           {
             "name": "Molecule default sequence, with the idempotence step",
@@ -728,7 +714,7 @@
         "inputs": {
           "ansible-directory": {
             "default": "ansible",
-            "description": "The Ansible directory, relative to working-directory. It holds requirements.txt, requirements.yml and pyproject.toml.",
+            "description": "The Ansible directory, relative to working-directory. It holds requirements.txt (the hash lock of every package, collections included), pyproject.toml, and requirements.yml if there is one, which must hold only an empty collections list.",
             "required": false,
             "type": "string"
           },
@@ -823,6 +809,24 @@
           "environment": "ansible-self-test",
           "working-directory": ".github/fixtures/ansible-gated-apply"
         }
+      },
+      "lint-expected-fail": {
+        "name": "The lint rejects the lint-fail role",
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "name": "Run the lint steps of the reusable workflow on the lint-fail role",
+            "run-sha256": "393843a7d09855ace91b3de719136d7b01b1aab48494e3bfcc32f016438f8e32"
+          }
+        ],
+        "timeout-minutes": 15
       },
       "sabotage": {
         "name": "Sabotage proof",

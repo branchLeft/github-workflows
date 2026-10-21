@@ -17,3 +17,15 @@ updates:
     labels:
       - dependencies
       - github-actions
+
+  # The hash lock of the Ansible tools the self-test fixture installs. The `uv`
+  # ecosystem recompiles a `uv pip compile` lock from requirements.in; `pip`
+  # would run pip-compile, which cannot write a universal lock.
+  - package-ecosystem: uv
+    directory: /.github/fixtures/ansible-gated-apply/ansible
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies

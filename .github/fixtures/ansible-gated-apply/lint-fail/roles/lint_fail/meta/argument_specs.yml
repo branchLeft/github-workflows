@@ -1,0 +1,11 @@
+---
+argument_specs:
+  main:
+    short_description: Hold one deliberate lint error
+    description: Writes one file, with one task that carries no name.
+    author: AUTHOR_NAME
+    options:
+      lint_fail_path:
+        type: str
+        description: Absolute path of the file.
+        default: /etc/lint_fail.conf
