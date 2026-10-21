@@ -49,6 +49,8 @@ DG = "DriftGuardTests"
 DR = "DriftReportTests"
 AL = "AlertTests"
 PG = "PlanGuardTests"
+AG = "ApplyGuardTests"
+HM = "HeadMovedTests"
 
 CASES: list[Case] = [
     Case(
@@ -339,6 +341,62 @@ CASES: list[Case] = [
         "apply gate: a failed host does not fail the plan",
         [Edit(ACTION, '        if [ "$failed" -gt 0 ]; then\n          echo "::error::$first"', '        if false; then\n          echo "::error::$first"')],
         [f"{P}.test_a_host_that_fails_fails_the_job_and_asks_for_no_approval"],
+    ),
+    # The refusals of the apply guard and the head-moved stop, one case each.
+    Case(
+        "apply gate: event check dropped from the apply guard",
+        [Edit(GATED, '[ "$EVENT_NAME" = push ] || fail "The apply job runs only for a push, not for $EVENT_NAME."', ":")],
+        [f"{AG}.test_the_apply_refuses_in_a_pull_request_in_a_fork_and_in_a_dry_run"],
+    ),
+    Case(
+        "apply gate: default-branch check dropped from the apply guard",
+        [Edit(GATED, '[ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail "The apply job runs only for the default branch."', ":")],
+        [f"{AG}.test_the_apply_refuses_in_a_pull_request_in_a_fork_and_in_a_dry_run"],
+    ),
+    Case(
+        "apply gate: fork check dropped from the apply guard",
+        [Edit(GATED, '[ "$IS_FORK" != true ] || fail "The apply job never runs in a fork."', ":")],
+        [f"{AG}.test_the_apply_refuses_in_a_pull_request_in_a_fork_and_in_a_dry_run"],
+    ),
+    Case(
+        "apply gate: dry-run check dropped from the apply guard",
+        [Edit(GATED, '[ "$DRY_RUN" != true ] || fail "The apply job never runs in a dry run."', ":")],
+        [f"{AG}.test_the_apply_refuses_in_a_pull_request_in_a_fork_and_in_a_dry_run"],
+    ),
+    Case(
+        "apply gate: empty-environment backstop dropped from the apply guard",
+        [Edit(GATED, '[ -n "$ENVIRONMENT" ] || fail "The environment input is empty, so there is no approval."', ":")],
+        [f"{AG}.test_the_apply_refuses_without_an_environment"],
+    ),
+    Case(
+        "apply gate: planned commit format check dropped",
+        [Edit(GATED, "grep -Eq '^[0-9a-f]{40}$' || fail \"The planned commit is not 40 lowercase hex digits.\"", "grep -Eq '^[0-9a-f]{40}$' || :")],
+        [f"{AG}.test_the_planned_commit_must_be_40_lowercase_hex_digits"],
+    ),
+    Case(
+        "apply gate: planned commit equality check dropped",
+        [Edit(GATED, '[ "$PLANNED_SHA" = "$SHA" ] || fail "The planned commit differs from this run\'s commit."', ":")],
+        [f"{AG}.test_the_apply_refuses_a_commit_other_than_the_planned_one"],
+    ),
+    Case(
+        "apply gate: planned host digest format check dropped",
+        [Edit(GATED, "grep -Eq '^[0-9a-f]{64}$' || fail \"The planned host digest is missing.\"", "grep -Eq '^[0-9a-f]{64}$' || :")],
+        [f"{AG}.test_the_planned_host_digest_must_be_64_lowercase_hex_digits"],
+    ),
+    Case(
+        "apply gate: planned host digest equality check dropped",
+        [Edit(GATED, '[ "$digest" = "$PLANNED_DIGEST" ] || fail "The hosts are not the hosts that were planned."', ":")],
+        [f"{AG}.test_the_apply_refuses_hosts_that_were_not_planned"],
+    ),
+    Case(
+        "apply gate: moved default branch does not stop the apply",
+        [Edit(GATED, 'if [ "$head" != "$PLANNED_SHA" ]; then', "if false; then")],
+        [f"{HM}.test_a_branch_head_that_moved_stops_the_apply"],
+    ),
+    Case(
+        "apply gate: environment term joined with or in the apply if",
+        [Edit(GATED, "      && inputs.environment != ''\n", "      || inputs.environment != ''\n")],
+        [f"{S}.test_the_apply_job_is_gated"],
     ),
 ]
 

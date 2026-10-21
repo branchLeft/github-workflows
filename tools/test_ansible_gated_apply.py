@@ -526,15 +526,17 @@ class StructureTests(unittest.TestCase):
         job = JOBS["apply"]
         self.assertEqual(job["environment"], "${{ inputs.environment }}")
         self.assertIn("plan", job["needs"])
+        # The whole condition, every term joined by &&. A term joined by || would
+        # pass a per-term assertIn, so the test compares the entire string.
         condition = " ".join(str(job["if"]).split())
-        for required in (
-            "needs.discover.outputs.delivery == 'true'",
-            "needs.plan.result == 'success'",
-            "needs.plan.outputs.has_changes != 'false'",
-            "inputs.dry-run == false",
-            "inputs.environment != ''",
-        ):
-            self.assertIn(required, condition)
+        self.assertEqual(
+            condition,
+            "needs.discover.outputs.delivery == 'true' "
+            "&& needs.plan.result == 'success' "
+            "&& needs.plan.outputs.has_changes != 'false' "
+            "&& inputs.dry-run == false "
+            "&& inputs.environment != ''",
+        )
         self.assertFalse(job["concurrency"]["cancel-in-progress"])
 
     def test_the_plan_job_runs_only_for_delivery(self) -> None:
@@ -1319,6 +1321,20 @@ class ApplyGuardTests(unittest.TestCase):
     def test_the_apply_refuses_hosts_that_were_not_planned(self) -> None:
         self.assertNotEqual(self.guard(HOSTS=f"{HOST_ONE}\ndeploy@host-three\n").code, 0)
         self.assertNotEqual(self.guard(PLANNED_DIGEST="").code, 0)
+
+    def test_the_planned_commit_must_be_40_lowercase_hex_digits(self) -> None:
+        # Uppercase of the right commit: the equality check also refuses it, so
+        # the format check is the one that must name the refusal.
+        result = self.guard(PLANNED_SHA=SHA.upper())
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("lowercase hex", result.log)
+
+    def test_the_planned_host_digest_must_be_64_lowercase_hex_digits(self) -> None:
+        # Uppercase of the right digest: the equality check also refuses it, so
+        # the format check is the one that must name the refusal.
+        result = self.guard(PLANNED_DIGEST=digest([HOST_ONE, HOST_TWO]).upper())
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("digest is missing", result.log)
 
 
 class HeadMovedTests(unittest.TestCase):

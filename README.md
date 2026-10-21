@@ -331,8 +331,12 @@ These are settings and keys, not a script, and the commands belong in the
 runbook in `ghost-platform-docs`, not here.
 
 1. A deployment environment with the name the caller passes: required reviewers
-   set to the owner, self-review not allowed, and deployment branches limited to
-   the default branch.
+   set to the owner, **prevent self-review off**, and deployment branches limited
+   to the default branch. Self-review is allowed because the owner is the only
+   reviewer and the owner's own merge to the default branch starts the apply; with
+   it on, that approval could never be given. The cost is that the actor who
+   pushed the commit can approve its apply, so the approval is the owner's act and
+   is not delegated. The setting is the owner's to confirm.
 2. The apply key as a secret of that environment, and the check key, the host
    list and the known-hosts lines as repository secrets.
 3. On each host, the `authorized_keys` lines for the two keys, one with
