@@ -17,6 +17,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   unit-tests:
@@ -31,6 +32,23 @@ jobs:
 
       - name: Run the tests of the workflow's steps
         run: python3 -m unittest discover -s tools -p 'test_ansible_gated_apply.py' -v
+
+  # The proof that those tests guard what they claim to: each control is broken
+  # in a copy of the repository and the test that guards it must go red, after
+  # a run of the unedited tree that must be green. The log of this job is the
+  # recorded red and green of every control (tools/sabotage.py).
+  sabotage:
+    name: Sabotage proof
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Break each control and require its test to go red
+        run: python3 tools/sabotage.py
 
   # The expected failure. It runs the install and the ansible-lint steps of the
   # reusable workflow's `lint` job, taken from the workflow file by

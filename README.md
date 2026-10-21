@@ -225,7 +225,7 @@ allowed key.
 | `Discover the Ansible checks` | every run | validate the inputs, decide whether the run may reach a host, list the Molecule shards, fail on a `requirements.yml` that lists anything or a scenario that leaves Molecule's dependency step enabled | nothing |
 | `Lint the Ansible inputs` | every run | install the hash lock, then yamllint, ansible-lint (production profile, `--strict`, `--offline`), mypy, ruff | nothing |
 | `Molecule: <role>` | every run, one per role | `molecule test` (with the idempotence step) and `molecule check` on containers on the runner | nothing; fails if `DOCKER_HOST` is set (ANS-15) |
-| `Plan the apply (check mode on each host)` | a push to the default branch of the repository itself | ask each host for a check-mode run of this commit, show the diff, decide `has_changes` | the check key, the host list and the known-hosts lines |
+| `Plan the apply (check mode on each host)` | a push to the default branch of the repository itself | ask each host for a check-mode run of this commit (through the [`ssh-check-hosts`](#githubactionsssh-check-hosts) action), show the diff, decide `has_changes` | the check key, the host list and the known-hosts lines; `actions: read` |
 | `Apply the planned commit (after approval)` | the same push, the plan succeeded, `has_changes` is not `false`, not a dry run | ask each host to apply the planned commit, then a second time to prove nothing is left | the apply key, the host list and the known-hosts lines, the environment's approval |
 | `Ansible checks passed` | every run, even after a failure | go red unless every job ended as expected for this kind of run | nothing |
 
@@ -263,6 +263,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   ansible:
@@ -276,7 +277,33 @@ jobs:
 ```
 
 The caller does not pass the apply key. The required status check is the gate
-job, shown on the caller as `ansible / Ansible checks passed`.
+job, shown on the caller as `ansible / Ansible checks passed`. The caller grants
+`actions: read` because the plan job asks for it (see the next section); without
+the grant the whole call fails at startup, on a pull request too.
+
+#### How the plan job loads the host check
+
+The host check is the composite action `ssh-check-hosts`, shared with
+`ansible-drift-check.yml`. A reusable workflow cannot name an action of its own
+repository by a local path, because `uses: ./` resolves in the caller's
+workspace. So the plan job checks this repository out into `.gw` at the commit
+the caller pinned, and runs `./.gw/.github/actions/ssh-check-hosts` from there.
+That step holds the check key, so the commit is established before the checkout
+and nothing falls back to the default branch:
+
+1. The commit is read from the run record, `referenced_workflows` of
+   `GET /repos/{caller}/actions/runs/{run_id}`, which names the commit of each
+   reusable workflow the run called. Exactly one commit must name this workflow's
+   file in this repository, and it must be 40 lowercase hex digits. This is the
+   reason for the `actions: read` grant. `github.job_workflow_sha` is not used:
+   it is empty in a reusable workflow here, and an empty `ref` makes the checkout
+   take the default branch.
+2. The path `.gw` must not exist, so no file of the caller can sit where the
+   action is read from.
+3. After the checkout, `git rev-parse HEAD` in `.gw` must equal that commit and
+   the action file must be there.
+
+Any failure stops the job before the key is read.
 
 | Input | Default | Meaning |
 | --- | --- | --- |
@@ -415,8 +442,8 @@ README changes, so does this list.
   is not covered by this workflow.
 - **No change detection.** Every call runs every check; a caller cannot narrow
   it by path without making the gate job unreliable as a required check.
-- **A schedule is not wired.** The nightly drift run of ANS-17 is a check-mode run
-  that applies nothing; it is a later addition to this workflow.
+- **A schedule is not part of this workflow.** The nightly drift run of ANS-17 is
+  its own workflow, `ansible-drift-check.yml`, below.
 
 `tools/run_workflow_steps.py WORKFLOW JOB --input NAME=VALUE --step "Step name"`
 runs the named steps of one job exactly as their `run:` text is written, in order,
@@ -436,13 +463,146 @@ own install and ansible-lint steps (taken from the workflow file by
 fails with the rule, the one-failure summary and the exit status named in that
 directory's README. It proves ansible-lint rejects bad input; it does not prove
 yamllint, mypy or ruff. The tests of every shell step are
-`tools/test_ansible_gated_apply.py`, which run the step text from the workflow
-under bash with `ssh`, `gh`, `timeout` and `yq` replaced by stubs (the real `yq`
-runs in the self-test's own run of the discover job):
+`tools/test_ansible_gated_apply.py`, which run the step text from the workflows and
+the `ssh-check-hosts` action under bash with `ssh`, `gh`, `timeout` and `yq`
+replaced by stubs (the real `yq` runs in the self-test's own run of the discover
+job):
 
 ```bash
 python3 -m unittest discover -s tools -p 'test_ansible_gated_apply.py' -v
 ```
+
+### `ansible-drift-check.yml`
+
+The nightly check that each host still matches the commit it was last given
+(ANS-17). It asks each host, in check mode, what an apply of the default branch
+head would change. It is red when any host would change or cannot say, and it
+opens or updates one issue. **It applies nothing and cannot:** it holds the check
+key only, runs in no deployment environment and takes no apply key. The check key
+is restricted on the host to the forced command in check mode, so even a changed
+workflow could not apply with it.
+
+It is two jobs, so that the credential that can write an issue is never in the job
+that holds the SSH key:
+
+| Job | Runs when | May do | Holds |
+| --- | --- | --- | --- |
+| `Check every host for drift (check mode)` | a `schedule` or `workflow_dispatch` run on the default branch of the repository itself, not a fork | the guard, the pin of the shared actions (as in the plan job above), then the `ssh-check-hosts` action with `fail-on-changes` | the check key, the host list and the known-hosts lines; `contents: read` and `actions: read` |
+| `Open or update the drift issue` | the check job failed or was cancelled (a job that reaches its timeout reports `cancelled`, see "Blind spots and noise") after the guard passed; never after a clean run or a refusal by the guard | open one issue, or comment on the open one | `issues: write` and no secret |
+
+The guard refuses every other event, a ref that is not the default branch, a fork,
+a commit that is not 40 lowercase hex digits and a label that is not a plain word.
+It reads `default_branch` and `fork` from the event payload: if a `schedule`
+payload ever lacks them, the guard refuses every run, and the first scheduled run
+of a caller shows which it is.
+
+#### How a repository calls it
+
+Add one caller, pinned to an exact tag (see Versioning), from a schedule and from
+a manual run. The caller grants the union of the two jobs' permissions.
+
+```yaml
+name: ansible-drift
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  drift:
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    uses: branchLeft/github-workflows/.github/workflows/ansible-drift-check.yml@vX.Y.Z
+    with:
+      host-label: edge
+    secrets:
+      ssh_hosts: ${{ secrets.ANSIBLE_HOSTS }}
+      ssh_known_hosts: ${{ secrets.ANSIBLE_KNOWN_HOSTS }}
+      ssh_check_key: ${{ secrets.ANSIBLE_CHECK_KEY }}
+```
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `host-label` | required | A short name for this set of hosts: letters, digits, dot, underscore and dash, at most 32 characters. It names the issue and its label. It is not a host name, because the hosts are secrets. |
+| `host-timeout-minutes` | 65 | One host call is stopped after this long. A whole number from 1. |
+| `check-timeout-minutes` | 90 | Bound of the check job, from 10 to 350 (GitHub ends a job at 360). The hosts are asked one after another and share this time less five minutes: a call is stopped at the smaller of `host-timeout-minutes` and what is left, and a host reached after that is not asked and is judged `no-answer`. So a run of hung hosts ends red with an outcome and opens the issue; it does not wait for the job bound. |
+
+All three secrets are required and are the same secrets as the plan job's:
+`ssh_hosts`, `ssh_known_hosts` and `ssh_check_key`. There is no input for a host
+or a key, and no dry run.
+
+#### What a red run means, and how to clear it
+
+The job summary names what each host answered, as `host 1`, `host 2` in the order
+of the list, and the first line says which kind of red it is. A host that would
+change is **drift**; every other red is not drift and says what it is instead.
+
+| First line says | The host answered | Meaning | To clear |
+| --- | --- | --- | --- |
+| `drift: N changed` | exit 11, `would-change` | Check mode shows a change for the default branch head. Two causes: the host was edited by hand, or a change was merged and its apply has not run (waiting for approval, or failed). The diff is in the summary. | Merged but not applied: approve or re-run the gated apply of that commit. A hand edit: decide whether the apply should overwrite it or the repository should take it, then apply. Then run this workflow by hand and confirm it is green. |
+| `refused: busy` | exit 21 | The host was already running a request when the check came. | Usually nothing: the next night asks again. Run the workflow by hand once the other request is done. |
+| `refused: not-on-main`, `rollback`, `unsigned`, `bad-signature`, `signer-not-allowed`, `playbook-not-allowed`, `bad-request`, or `other` | exit 20, with that reason | The host refused the commit: it is not on the host's `main` or is older than the last one applied, or it is not signed by an allowed key, or the request was malformed. `other` is a reason this workflow does not know. | Read the host's own log and the `pull_trigger` role's README in `branchLeft/shared-infra`. A retry does not change a refusal. |
+| `unreachable` | the SSH call failed (exit 255) | The host is down or unreachable, the key is rejected, or the host key changed. | Check the host and the key's `authorized_keys` line; run the workflow by hand. |
+| `no usable answer` | not one summary line for this commit, or no call at all | The host answered with something else, or for another commit or exit status, or the call was stopped at its limit, or the time given to the check was spent before the host was reached (its row says `not asked`). | Read the host's log. If hosts were not asked, an earlier host was slow or hung: clear that one first, and run the workflow by hand. |
+| `failed` | exit 30, 31 or 40, or an answer that contradicts itself | The playbook failed, timed out, or the trigger errored. | Read the host's log and fix forward. |
+| `diff withheld` | a diff that matched a secret pattern, or was too large to show | The host would change but the diff cannot be shown. The check still counts it as not clean. | Fix the task with `no_log: true` and `diff: false` (ANS-16), or split the change. |
+| `Not clean` with several kinds | more than one of the above | Each kind is counted in the first line. | Clear each. |
+
+An issue whose outcome reads `unknown` means the run stopped before it could judge:
+the pin failed, the caller did not grant `actions: read`, or the key or the known
+hosts were empty. Read the run.
+
+#### The issue
+
+One open issue per host set: titled `Host drift: <host-label>`, labelled
+`host-drift:<host-label>`. A red run opens it if none is open, and otherwise adds
+a comment, so a nightly red is one thread, not one issue a night. The workflow
+finds it by the label, which only a person with triage rights can set, and never
+by a title search. Its body holds the outcome, the counts and the run link, and
+never a host name or a diff. The workflow never closes it: close it after a run by
+hand is green.
+
+#### Blind spots and noise
+
+- **Red every night** from the merge of a change until its apply is approved and
+  has run. That is the intended signal, and each night adds a comment to the one
+  issue.
+- **No alert when the nightly does not run.** GitHub disables a scheduled
+  workflow after 60 days without repository activity. A caller that does not grant
+  `issues: write` or `actions: read` gets a failed call at startup, with no job
+  and no issue.
+- **A job that reaches its timeout reports `cancelled`, not `failure`, to the job
+  that needs it.** Measured on a throwaway run of this repository
+  ([run 39514617371](https://github.com/branchLeft/github-workflows/actions/runs/39514617371)):
+  the needed job ended `cancelled`, and a job that waited on it with `always()` ran
+  and read `cancelled`. The alert therefore runs for `failure` and for `cancelled`,
+  and a timeout opens an issue whose outcome reads `unknown`. The hosts are judged
+  inside the job's time (see `check-timeout-minutes`), so a timeout is reached only
+  if something outside the host calls hangs. The cost of covering it: a person who
+  cancels the run by hand also gets an `unknown` comment on the issue.
+- **A busy host is a refusal and is not retried.** The next night asks again.
+- **The check sees what check mode sees (ANS-10).** A task that skips silently in
+  check mode hides its drift here as it does in the plan.
+- **The commit checked is the default branch head the run was started at.** There
+  is no refusal for an older head here; the host refuses a commit it should not take.
+
+The tests of every step are the same module as the gated apply's. `tools/sabotage.py`
+breaks each control in a copy of the repository, one exact edit at a time, and requires
+the test that guards it to go red, after a run of the unedited tree that must be green.
+The `Sabotage proof` job of the self-test workflow runs it on every pull request, so
+the log of that job is the recorded red and green of every control. Each case in the
+file is one exact edit and the tests (as `Class.method`) that must go red; the
+snapshot is regenerated in the copy first, so it cannot stand in for them. An edit
+whose text is no longer found fails its case, because the code moved. To add one, put
+a `Case` in `CASES`, run `python3 tools/sabotage.py --discover NAME` to see which
+tests the edit turns red, and name them. `python3 tools/sabotage.py NAME` runs the
+cases whose name contains `NAME`, and `--list` lists them.
 
 ## Actions
 
@@ -594,3 +754,56 @@ actions' unit tests and the actions themselves on every pull request. The
 plan-has-changes run checks the job summary through the runner's own per-step
 summary files, a directory layout that is the runner's and not a documented
 interface: the check fails, rather than passing, if that layout goes.
+
+### `.github/actions/ssh-check-hosts`
+
+Asks each host, through the restricted SSH route, what an apply of one commit
+would change, judges the answers, scans each diff for secrets and writes the
+result to the job summary. It is the one home of the host check: the plan job of
+`ansible-gated-apply.yml` and the job of `ansible-drift-check.yml` both call it,
+so the host list is validated, the check key is used and the answers are judged in
+one place. It holds the check key and never applies.
+
+It is not for a caller's own workflow. It is loaded by the two workflows above, from
+a checkout of this repository at the commit the caller pinned (see "How the plan
+job loads the host check"), and it takes the secrets as inputs.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `hosts` | required | One `user@host` per line, from a secret. Each line is checked against a pattern; a duplicate or more than 50 hosts is refused. |
+| `known-hosts` | empty | The known_hosts lines, from a secret. Empty only in a dry run. |
+| `check-key` | empty | The private key of the check route, from a secret. Empty only in a dry run. |
+| `sha` | required | The commit to ask about, 40 lowercase hex digits. |
+| `dry-run` | `false` | `true` replaces the SSH call with `dry-run-stub`. |
+| `dry-run-stub` | empty | With `dry-run`, the executable, relative to `working-directory`, that stands in for a host. |
+| `working-directory` | `.` | What `dry-run-stub` is relative to. |
+| `host-timeout` | `65` | One host call is stopped after this many minutes. A whole number from 1. |
+| `total-timeout` | empty | Empty puts no bound on the hosts together. A whole number of minutes is the time all the calls share: each is stopped at the smaller of `host-timeout` and what is left, and a host reached after the time is spent is not asked and is judged `no-answer`. The caller's job bound must sit above it. The drift workflow passes its job bound less five minutes; the plan job passes nothing. |
+| `environment` | empty | The deployment environment named in the plan wording. Not read when `fail-on-changes` is `true`. |
+| `fail-on-changes` | `false` | `false` is the plan: a host that would change is a result, and the step fails only for a host that gave no usable answer. `true` is the drift check: any answer that is not clean also fails the step, and the summary names the kind. |
+
+| Output | Meaning |
+| --- | --- |
+| `has-changes` | `false` only when every host answered clean for this commit; `true` otherwise. |
+| `hosts-digest` | The SHA-256 of the validated host list. The apply job recomputes it from the same secret and refuses a list that differs. |
+| `outcome` | `ok`, `drift`, `refused`, `unreachable`, `no-answer`, `failed`, `withheld`, or `mixed`. Empty if the step stopped before it could judge. |
+| `detail` | The kinds with counts and no host name, as in the first line of the summary. Empty if the step stopped before it could judge. |
+
+How the host's answer is classified (the host exits are those of the `pull_trigger`
+role; this workflow believes its summary line only when it names this commit and the
+exit status):
+
+| Host exit and verdict | Kind | Plan (`fail-on-changes` false) | Drift check (`true`) |
+| --- | --- | --- | --- |
+| 0, `unchanged`, `changed=0` | `ok` | clean | green |
+| 11, `would-change` | `drift` | a result, `has-changes` is `true`, the apply waits for approval | red |
+| 20, `refused`, reason as listed | `refused: <reason>`, or `refused: other` | red | red |
+| 21, `busy` | `refused: busy` | red | red |
+| 30, 31, 40, or an answer that contradicts itself | `failed` | red | red |
+| 255, the SSH call failed | `unreachable` | red | red |
+| not one summary line for this commit | `no-answer` | red | red |
+| any of the above with a diff that matched a secret pattern or is too large | `withheld` | red | red |
+
+The self-test is `.github/workflows/ssh-check-hosts-self.yml`: it runs the action on a
+real runner against the stand-in host in the fixture, with `fail-on-changes` both
+ways, on every pull request.

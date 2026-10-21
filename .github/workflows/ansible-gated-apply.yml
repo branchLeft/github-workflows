@@ -420,17 +420,23 @@ jobs:
 
   # The plan job. It runs only for a push to the default branch. It holds the
   # check key, which the host restricts to the forced command in check mode, and
-  # no other credential. The commit it plans is the commit this run is for.
+  # no other credential. The commit it plans is the commit this run is for. The
+  # host check itself is the composite action ssh-check-hosts, which a reusable
+  # workflow cannot name as a local path, so the job checks this repository out
+  # at the commit it was called at and runs the action from there.
   plan:
     name: Plan the apply (check mode on each host)
     needs: [discover, lint, shard]
     if: needs.discover.outputs.delivery == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.plan-timeout-minutes }}
+    permissions:
+      actions: read
+      contents: read
     outputs:
-      has_changes: ${{ steps.report.outputs.has_changes }}
+      has_changes: ${{ steps.ssh.outputs.has-changes }}
       sha: ${{ steps.guard.outputs.sha }}
-      hosts_digest: ${{ steps.guard.outputs.hosts_digest }}
+      hosts_digest: ${{ steps.ssh.outputs.hosts-digest }}
     steps:
       # Only a dry run reads a file of this repository, the stand-in for the host.
       - name: Checkout
@@ -448,7 +454,6 @@ jobs:
           IS_FORK: ${{ github.event.repository.fork }}
           SHA: ${{ github.sha }}
           ENVIRONMENT: ${{ inputs.environment }}
-          HOSTS: ${{ secrets.ssh_hosts }}
           DRY_RUN: ${{ inputs.dry-run }}
           DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
         run: |
@@ -465,246 +470,80 @@ jobs:
           if [ "$DRY_RUN" = true ]; then
             [ -n "$DRY_RUN_STUB" ] || fail "dry-run needs dry-run-stub."
           fi
-          # One validated destination per line. The apply job rebuilds the list
-          # from the same secret and must find the same digest, so it never
-          # reaches a host that was not planned. The names are not a job output
-          # because an output carrying a secret is dropped.
-          list=""
-          count=0
-          while IFS= read -r dest; do
-            [ -n "$dest" ] || continue
-            printf '%s' "$dest" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$' \
-              || fail "A hosts line is not of the form user@host."
-            case " $list " in *" $dest "*) fail "A host is listed twice." ;; esac
-            list="${list:+$list }$dest"
-            count=$((count + 1))
-          done <<< "$HOSTS"
-          [ "$count" -ge 1 ] || fail "The ssh_hosts secret lists no host, so there is nothing to plan."
-          [ "$count" -le 50 ] || fail "The ssh_hosts secret lists more than 50 hosts."
-          digest=$(printf '%s' "$list" | shasum -a 256 | cut -d ' ' -f 1)
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
-          echo "hosts_digest=$digest" >> "$GITHUB_OUTPUT"
-          echo "Planning commit $SHA on $count host(s)."
+          echo "Planning commit $SHA."
 
-      - name: Check every host in check mode
-        id: check
+      # The commit this workflow was called at is read from the run record, which
+      # names the commit of every reusable workflow the run called. The runner
+      # gives no value for it here (the job's own workflow commit context is empty), and an
+      # empty ref would make the checkout below take the default branch and run
+      # unpinned code with the key. So exactly one full commit id must be found,
+      # and the path must be free of any file of the caller. Needs actions: read.
+      - name: Resolve the commit this workflow was called at
+        id: pin
         env:
-          HOSTS: ${{ secrets.ssh_hosts }}
-          SHA: ${{ steps.guard.outputs.sha }}
-          DRY_RUN: ${{ inputs.dry-run }}
-          DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
-          WORKING_DIRECTORY: ${{ inputs.working-directory }}
-          HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout-minutes }}
-          SSH_KEY: ${{ secrets.ssh_check_key }}
-          KNOWN_HOSTS: ${{ secrets.ssh_known_hosts }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          CALLED_WORKFLOW: branchLeft/github-workflows/.github/workflows/ansible-gated-apply.yml
         run: |
           set -euo pipefail
           fail() {
             echo "::error::$1"
             exit 1
           }
-          plan_dir="$RUNNER_TEMP/ansible-plan"
-          mkdir "$plan_dir"
-          ssh_args=()
-          if [ "$DRY_RUN" = true ]; then
-            stub="$GITHUB_WORKSPACE/$WORKING_DIRECTORY/$DRY_RUN_STUB"
-            [ -x "$stub" ] || fail "dry-run-stub is not an executable file."
-          else
-            [ -n "$SSH_KEY" ] || fail "The ssh_check_key secret is empty."
-            [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
-            (umask 077 && printf '%s\n' "$SSH_KEY" > "$plan_dir/id" && printf '%s\n' "$KNOWN_HOSTS" > "$plan_dir/known_hosts")
-            # The remote command is the commit and nothing else. The key's forced
-            # command on the host fixes the mode, so this caller cannot ask for an
-            # apply.
-            ssh_args=(-T -i "$plan_dir/id" -o IdentitiesOnly=yes -o BatchMode=yes
-              -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$plan_dir/known_hosts"
-              -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
-              -o ForwardAgent=no -o ClearAllForwardings=yes)
+          run_re='^[0-9]+$'
+          sha_re='^[0-9a-f]{40}$'
+          [[ "$RUN_ID" =~ $run_re ]] || fail "The run id is not a number."
+          record=$(gh api "repos/$REPO/actions/runs/$RUN_ID") \
+            || fail "The run record could not be read, so the commit this workflow was called at is unknown. The caller must grant actions: read. Refusing to fall back to the default branch."
+          called=$(printf '%s' "$record" | jq -r --arg prefix "$CALLED_WORKFLOW@" '(.referenced_workflows // [])[] | select(.path | startswith($prefix)) | "\(.sha) \(.path)"' | sort -u)
+          count=$(printf '%s' "$called" | grep -c . || true)
+          [ "$count" -eq 1 ] || fail "The run record names $count commits for $CALLED_WORKFLOW, not exactly one. Refusing to fall back to the default branch."
+          pinned="${called%% *}"
+          [[ "$pinned" =~ $sha_re ]] || fail "The commit the run record names is not 40 lowercase hex digits. Refusing to fall back to the default branch."
+          if [ -e "$GITHUB_WORKSPACE/.gw" ] || [ -L "$GITHUB_WORKSPACE/.gw" ]; then
+            fail "The path .gw already exists in the workspace, so the shared actions cannot be checked out into a clean directory."
           fi
-          i=0
-          while IFS= read -r dest; do
-            [ -n "$dest" ] || continue
-            i=$((i + 1))
-            n=$(printf '%02d' "$i")
-            printf '%s\n' "$dest" > "$plan_dir/$n.dest"
-            rc=0
-            if [ "$DRY_RUN" = true ]; then
-              "$stub" "$dest" "$SHA" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
-            else
-              timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
-            fi
-            printf '%s\n' "$rc" > "$plan_dir/$n.rc"
-          done <<< "$HOSTS"
-          rm -f "$plan_dir/id" "$plan_dir/known_hosts"
-          echo "Asked $i host(s); the answers are judged in the next step."
+          echo "sha=$pinned" >> "$GITHUB_OUTPUT"
+          echo "The shared actions are taken from commit $pinned, the commit of ${called#* }."
 
-      # The output of a host is held in files and never printed to the log. It
-      # is judged first, scanned for a secret, and only then written to the job
-      # summary. A host that failed, a diff that is too large to show whole and
-      # a diff that matches a secret pattern each fail the job, so no approval
-      # is asked for a plan the approver cannot read in full.
-      - name: Judge the answers, scan the diff and write the plan
-        id: report
+      - name: Check out the shared actions at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/github-workflows
+          ref: ${{ steps.pin.outputs.sha }}
+          path: .gw
+          persist-credentials: false
+
+      - name: Verify the checkout is that commit
         env:
-          SHA: ${{ steps.guard.outputs.sha }}
-          ENVIRONMENT: ${{ inputs.environment }}
-          DRY_RUN: ${{ inputs.dry-run }}
-          SSH_KEY: ${{ secrets.ssh_check_key }}
+          PINNED_SHA: ${{ steps.pin.outputs.sha }}
         run: |
           set -euo pipefail
-          export LC_ALL=C
-          plan_dir="$RUNNER_TEMP/ansible-plan"
-          echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          per_host_cap=300000
-          total_cap=900000
-
-          # A pattern is "name|extended regular expression". The list is a
-          # backstop: the control is no_log and diff: false on the task (ANS-16).
-          patterns=(
-            'private-key|-----BEGIN [A-Z0-9 ]*PRIVATE KEY'
-            'aws-access-key|(AKIA|ASIA)[0-9A-Z]{16}'
-            'github-token|(gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,})'
-            'slack-token|xox[abprs]-[A-Za-z0-9-]{10,}'
-            'payment-key|sk_(live|test)_[0-9A-Za-z]{20,}'
-            'jwt|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.'
-            'credential-assignment|(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_.-]*"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]"]{4,}'
-          )
-          keylines="$plan_dir/keylines"
-          : > "$keylines"
-          if [ -n "$SSH_KEY" ]; then
-            printf '%s\n' "$SSH_KEY" | awk 'length($0) >= 16 && $0 !~ /^-----/' > "$keylines"
-          fi
-
-          summary="$plan_dir/summary.md"
-          details="$plan_dir/details.md"
-          : > "$details"
-          rows="$plan_dir/rows.md"
-          : > "$rows"
-          total=0
-          clean=0
-          changed=0
-          failed=0
-          total_bytes=0
-
-          for destfile in "$plan_dir"/*.dest; do
-            base="${destfile%.dest}"
-            n="${base##*/}"
-            total=$((total + 1))
-            dest=$(cat "$destfile")
-            hostpart="${dest#*@}"
-            rc=$(cat "$base.rc")
-            verdict="failed"
-            note=""
-
-            line_count=$(wc -l < "$base.out" | tr -d ' ')
-            line=$(tr -d '\r' < "$base.out" | head -n 1)
-            re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
-            if [ "$rc" = 255 ]; then
-              note="the SSH connection failed (exit 255)"
-            elif [ "$line_count" != 1 ] || ! [[ "$line" =~ $re ]]; then
-              note="the host did not answer with one summary line (exit $rc)"
-            else
-              f_verdict="${BASH_REMATCH[1]}"
-              f_exit="${BASH_REMATCH[2]}"
-              f_reason="${BASH_REMATCH[3]}"
-              f_commit="${BASH_REMATCH[4]}"
-              f_changed="${BASH_REMATCH[5]}"
-              if [ "$f_commit" != "$SHA" ] || [ "$f_exit" != "$rc" ]; then
-                note="the summary line names another commit or exit status (exit $rc)"
-              elif [ "$rc" = 0 ] && [ "$f_verdict" = unchanged ] && [ "$f_changed" = 0 ]; then
-                verdict="clean"
-              elif [ "$rc" = 11 ] && [ "$f_verdict" = would-change ]; then
-                verdict="changes"
-              else
-                note="verdict $f_verdict, reason $f_reason, exit $rc"
-              fi
-            fi
-
-            # The diff: control characters removed, the host name replaced.
-            cleaned="$base.clean"
-            if [ "$rc" = 255 ]; then
-              : > "$cleaned"
-            else
-              tr -d '\000-\010\013\014\016-\037\177' < "$base.err" \
-                | awk -v d="$dest" -v h="$hostpart" -v label="host $((10#$n))" '
-                    function mark(s, needle,    out, i) {
-                      out = ""
-                      while ((i = index(s, needle)) > 0) { out = out substr(s, 1, i - 1) "\001"; s = substr(s, i + length(needle)) }
-                      return out s
-                    }
-                    { s = mark(mark($0, d), h); gsub(/\001/, label, s); print s }' > "$cleaned"
-            fi
-            size=$(wc -c < "$cleaned" | tr -d ' ')
-            total_bytes=$((total_bytes + size))
-
-            hits=""
-            for entry in "${patterns[@]}"; do
-              name="${entry%%|*}"
-              regex="${entry#*|}"
-              if grep -Eiq -e "$regex" "$cleaned"; then
-                hits="${hits:+$hits, }$name"
-              fi
-            done
-            if [ -s "$keylines" ] && grep -Fq -f "$keylines" "$cleaned"; then
-              hits="${hits:+$hits, }ci-key-material"
-            fi
-
-            show=true
-            if [ -n "$hits" ]; then
-              show=false
-              verdict="failed"
-              note="the diff matched a secret pattern ($hits) and is withheld"
-            elif [ "$size" -gt "$per_host_cap" ] || [ "$total_bytes" -gt "$total_cap" ]; then
-              show=false
-              verdict="failed"
-              note="the diff is too large to show whole, so it cannot be approved from here"
-            fi
-
-            case "$verdict" in
-              clean) clean=$((clean + 1)) ;;
-              changes) changed=$((changed + 1)) ;;
-              *) failed=$((failed + 1)) ;;
-            esac
-
-            label="host $((10#$n))"
-            printf '| %s | %s | %s |\n' "$label" "$verdict" "${note:--}" >> "$rows"
-            if [ "$show" = true ] && [ -s "$cleaned" ]; then
-              fence=$(awk 'BEGIN { m = 2 } { s = $0; while (match(s, /`+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } } END { f = ""; for (k = 0; k <= m; k++) f = f "`"; print f }' "$cleaned")
-              {
-                printf '\n### %s\n\n' "$label"
-                printf '%stext\n' "$fence"
-                cat "$cleaned"
-                printf '%s\n' "$fence"
-              } >> "$details"
-            fi
-          done
-
-          if [ "$failed" -gt 0 ]; then
-            first="Plan failed: $failed of $total host(s) gave no usable answer, so no approval is requested for commit $SHA."
-          elif [ "$changed" -eq 0 ]; then
-            first="No changes: every host reports none for commit $SHA, so the apply is skipped and no approval is requested."
-          else
-            first="Changes: $changed of $total host(s) would change for commit $SHA, so the apply waits for the approval of environment $ENVIRONMENT."
-          fi
-          if [ "$DRY_RUN" = true ]; then
-            first="DRY RUN, the host call is a stub and nothing is applied. $first"
-          fi
-          {
-            printf '%s\n\n' "$first"
-            printf '| Host | Result | Note |\n| --- | --- | --- |\n'
-            cat "$rows"
-            cat "$details"
-          } > "$summary"
-          cat "$summary" >> "$GITHUB_STEP_SUMMARY"
-
-          if [ "$failed" -gt 0 ]; then
-            echo "::error::$first"
+          fail() {
+            echo "::error::$1"
             exit 1
-          fi
-          if [ "$changed" -eq 0 ] && [ "$clean" -eq "$total" ] && [ "$total" -ge 1 ]; then
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
-          fi
-          echo "$first"
+          }
+          head=$(git -C "$GITHUB_WORKSPACE/.gw" rev-parse HEAD)
+          [ "$head" = "$PINNED_SHA" ] || fail "The shared actions are at $head, not at the commit $PINNED_SHA this workflow was called at."
+          [ -f "$GITHUB_WORKSPACE/.gw/.github/actions/ssh-check-hosts/action.yml" ] || fail "The checkout holds no ssh-check-hosts action."
+          echo "The shared actions are at $head."
+
+      - name: Check every host in check mode and write the plan
+        id: ssh
+        uses: ./.gw/.github/actions/ssh-check-hosts
+        with:
+          hosts: ${{ secrets.ssh_hosts }}
+          known-hosts: ${{ secrets.ssh_known_hosts }}
+          check-key: ${{ secrets.ssh_check_key }}
+          sha: ${{ steps.guard.outputs.sha }}
+          # standards-allow-next-line CI-2 dry-run is the name of an action input in a with: map, not a run: body (the matcher reads the key as run:)
+          dry-run: ${{ inputs.dry-run }}
+          dry-run-stub: ${{ inputs.dry-run-stub }}
+          working-directory: ${{ inputs.working-directory }}
+          host-timeout: ${{ inputs.host-timeout-minutes }}
+          environment: ${{ inputs.environment }}
 
   # The apply job. Its environment is the deployment gate: GitHub holds the job
   # until the environment's required reviewers approve it, and only then does it
@@ -798,6 +637,8 @@ jobs:
           [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
           work="$RUNNER_TEMP/ansible-apply"
           mkdir "$work"
+          # The key copies go on every way out of the step, a refusal included.
+          trap 'rm -f "$work/id" "$work/known_hosts"' EXIT
           (umask 077 && printf '%s\n' "$SSH_KEY" > "$work/id" && printf '%s\n' "$KNOWN_HOSTS" > "$work/known_hosts")
           ssh_args=(-T -i "$work/id" -o IdentitiesOnly=yes -o BatchMode=yes
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/known_hosts"
@@ -808,12 +649,14 @@ jobs:
           # Run one request and require the answer to be one of the accepted
           # kinds. Arguments: host number, destination, label, then the accepted
           # answers as "exit:verdict" words. The playbook output is dropped: it
-          # is on the host, and the job log is public.
+          # is on the host, and the job log is public. The call takes its input
+          # from /dev/null: the host loop below reads the host list from its own
+          # standard input, and ssh would swallow the hosts after the first.
           ask() {
             local num="$1" dest="$2" label="$3"
             shift 3
             local rc=0 out line accepted ok=1
-            out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" 2> /dev/null) || rc=$?
+            out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" < /dev/null 2> /dev/null) || rc=$?
             line=$(printf '%s\n' "$out" | tr -d '\r' | head -n 1)
             if [ "$rc" = 255 ]; then
               fail "Host $num, $label: the SSH connection failed (exit 255)."
@@ -844,7 +687,6 @@ jobs:
             ask "$i" "$dest" "the second run, which must change nothing" "0:unchanged"
             printf 'Host %s: %s, then a second run that changed nothing.\n' "$i" "$first" >> "$GITHUB_STEP_SUMMARY"
           done <<< "$HOSTS"
-          rm -f "$work/id" "$work/known_hosts"
           echo "Applied commit $SHA on $i host(s)."
 
   # The check a caller requires. It runs even when a needed job failed or was

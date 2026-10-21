@@ -1,4 +1,369 @@
 {
+  "action": {
+    "description": "Ask each host, through the restricted SSH route, what an apply of one commit would change, judge the answers, scan the diff for secrets and write the result to the job summary. It holds the check key and never applies.",
+    "inputs": {
+      "check-key": {
+        "default": "",
+        "description": "The private key of the check route, which the host restricts to the forced command in check mode. Pass it from a secret. Empty only in a dry run.",
+        "required": false
+      },
+      "dry-run": {
+        "default": "false",
+        "description": "true replaces the SSH call with dry-run-stub; false (the default) calls the hosts.",
+        "required": false
+      },
+      "dry-run-stub": {
+        "default": "",
+        "description": "With dry-run, the executable, relative to working-directory, that stands in for a host.",
+        "required": false
+      },
+      "environment": {
+        "default": "",
+        "description": "The deployment environment the plan's apply would wait on. It appears in the plan wording only and is not read when fail-on-changes is true.",
+        "required": false
+      },
+      "fail-on-changes": {
+        "default": "false",
+        "description": "false (the default) is the plan: a host that would change is a result, the step succeeds and has-changes says so. true is the drift check: any host that would change, or any answer that is not a clean one, fails the step.",
+        "required": false
+      },
+      "host-timeout": {
+        "default": "65",
+        "description": "One host call is stopped after this many minutes.",
+        "required": false
+      },
+      "hosts": {
+        "description": "The hosts to check, one user@host per line. Pass it from a secret so the job log masks the names.",
+        "required": true
+      },
+      "known-hosts": {
+        "default": "",
+        "description": "The known_hosts lines of the hosts. Pass it from a secret. Empty only in a dry run.",
+        "required": false
+      },
+      "sha": {
+        "description": "The commit to ask about, 40 lowercase hex digits.",
+        "required": true
+      },
+      "total-timeout": {
+        "default": "",
+        "description": "Empty (the default) puts no bound on the hosts together. A whole number of minutes is the time all the host calls share: each call is stopped at the smaller of host-timeout and what is left, and a host reached after the time is spent is not asked and is judged as no-answer. The caller's job bound must sit above it.",
+        "required": false
+      },
+      "working-directory": {
+        "default": ".",
+        "description": "The directory, relative to the workspace root, that dry-run-stub is relative to.",
+        "required": false
+      }
+    },
+    "name": "Check every host in check mode",
+    "outputs": {
+      "detail": {
+        "description": "The outcome in words with counts, and no host name. Empty if the step stopped before it could judge.",
+        "value": "${{ steps.report.outputs.detail }}"
+      },
+      "has-changes": {
+        "description": "false only when every host answered clean for this commit; true for every other outcome.",
+        "value": "${{ steps.report.outputs.has_changes }}"
+      },
+      "hosts-digest": {
+        "description": "The SHA-256 of the validated host list, so a later job can prove it uses the same hosts.",
+        "value": "${{ steps.validate.outputs.hosts_digest }}"
+      },
+      "outcome": {
+        "description": "ok, drift, refused, unreachable, no-answer, failed, withheld, or mixed when more than one of those occurred. Empty if the step stopped before it could judge.",
+        "value": "${{ steps.report.outputs.outcome }}"
+      }
+    },
+    "runs": {
+      "steps": [
+        {
+          "env": {
+            "DRY_RUN": "${{ inputs.dry-run }}",
+            "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
+            "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
+            "HOSTS": "${{ inputs.hosts }}",
+            "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+            "SHA": "${{ inputs.sha }}",
+            "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}"
+          },
+          "id": "validate",
+          "name": "Validate the host list and the inputs",
+          "run-sha256": "ea6291e51db2d2697e8d1f3a4d5da843c2d9de61ba02fba1d720f78477c31a04",
+          "shell": "bash"
+        },
+        {
+          "env": {
+            "DRY_RUN": "${{ inputs.dry-run }}",
+            "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
+            "HOSTS": "${{ inputs.hosts }}",
+            "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+            "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
+            "SHA": "${{ inputs.sha }}",
+            "SSH_KEY": "${{ inputs.check-key }}",
+            "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
+            "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
+          },
+          "id": "check",
+          "name": "Check every host in check mode",
+          "run-sha256": "dca09aa50750af6fc8bcd89bb6e6ec3ee16d5a7e728a8dca4aa077db2d4a4bc6",
+          "shell": "bash"
+        },
+        {
+          "env": {
+            "DRY_RUN": "${{ inputs.dry-run }}",
+            "ENVIRONMENT": "${{ inputs.environment }}",
+            "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
+            "SHA": "${{ inputs.sha }}",
+            "SSH_KEY": "${{ inputs.check-key }}"
+          },
+          "id": "report",
+          "name": "Judge the answers, scan the diff and write the result",
+          "run-sha256": "77cca2659cf525bf6353051997731ac67a6b9957ebaec89b82d52de0ec79cf4f",
+          "shell": "bash"
+        }
+      ],
+      "using": "composite"
+    }
+  },
+  "action-self": {
+    "jobs": {
+      "check": {
+        "name": "Action wiring: ${{ matrix.name }}",
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "continue-on-error": true,
+            "id": "ssh",
+            "name": "Run the action against the stand-in host",
+            "uses": "./.github/actions/ssh-check-hosts",
+            "with": {
+              "dry-run": "true",
+              "dry-run-stub": "stub/host.sh",
+              "environment": "ansible-self-test",
+              "fail-on-changes": "${{ matrix.fail-on-changes }}",
+              "hosts": "${{ matrix.hosts }}",
+              "sha": "${{ github.sha }}",
+              "working-directory": ".github/fixtures/ansible-gated-apply"
+            }
+          },
+          {
+            "env": {
+              "DETAIL": "${{ steps.ssh.outputs.detail }}",
+              "EXPECT_HAS_CHANGES": "${{ matrix.has-changes }}",
+              "EXPECT_OUTCOME": "${{ matrix.outcome }}",
+              "EXPECT_STEP_OUTCOME": "${{ matrix.step-outcome }}",
+              "HAS_CHANGES": "${{ steps.ssh.outputs.has-changes }}",
+              "HOSTS_DIGEST": "${{ steps.ssh.outputs.hosts-digest }}",
+              "OUTCOME": "${{ steps.ssh.outputs.outcome }}",
+              "STEP_OUTCOME": "${{ steps.ssh.outcome }}"
+            },
+            "name": "The step ended as the case expects, with the outputs it expects",
+            "run-sha256": "f39f5c2abb107ea78820bc7f84433b0dbb04c6e3f6727f5848c5aed48bfa08fb"
+          }
+        ],
+        "strategy": {
+          "fail-fast": false,
+          "matrix": {
+            "include": [
+              {
+                "fail-on-changes": "false",
+                "has-changes": "true",
+                "hosts": "ci@first-stub-host\nci@second-stub-host",
+                "name": "plan wording, one host would change",
+                "outcome": "drift",
+                "step-outcome": "success"
+              },
+              {
+                "fail-on-changes": "true",
+                "has-changes": "",
+                "hosts": "ci@first-stub-host\nci@second-stub-host",
+                "name": "drift check, one host would change",
+                "outcome": "",
+                "step-outcome": "failure"
+              },
+              {
+                "fail-on-changes": "true",
+                "has-changes": "false",
+                "hosts": "ci@first-stub-host",
+                "name": "drift check, every host clean",
+                "outcome": "ok",
+                "step-outcome": "success"
+              }
+            ]
+          }
+        },
+        "timeout-minutes": 10
+      }
+    },
+    "name": "SSH check hosts (self-test)",
+    "on": {
+      "pull_request": null,
+      "push": {
+        "branches": [
+          "main"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "read"
+    }
+  },
+  "drift": {
+    "jobs": {
+      "alert": {
+        "concurrency": {
+          "cancel-in-progress": false,
+          "group": "ansible-drift-alert-${{ github.repository }}-${{ inputs.host-label }}"
+        },
+        "if": "always() && (needs.drift.result == 'failure' || needs.drift.result == 'cancelled') && needs.drift.outputs.guard_refused != 'true'",
+        "name": "Open or update the drift issue",
+        "needs": [
+          "drift"
+        ],
+        "permissions": {
+          "issues": "write"
+        },
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "env": {
+              "DETAIL": "${{ needs.drift.outputs.detail }}",
+              "GH_REPO": "${{ github.repository }}",
+              "GH_TOKEN": "${{ github.token }}",
+              "HOST_LABEL": "${{ inputs.host-label }}",
+              "OUTCOME": "${{ needs.drift.outputs.outcome }}",
+              "RUN_URL": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            },
+            "name": "Open the issue, or comment on the open one",
+            "run-sha256": "e6ad5bf4f71b6d446b2ef5132d9ffe1ac4796d9ec9fce13c901e4dbd057e15fa"
+          }
+        ],
+        "timeout-minutes": 10
+      },
+      "drift": {
+        "name": "Check every host for drift (check mode)",
+        "outputs": {
+          "detail": "${{ steps.check.outputs.detail }}",
+          "guard_refused": "${{ steps.guard.outputs.refused }}",
+          "outcome": "${{ steps.check.outputs.outcome }}"
+        },
+        "permissions": {
+          "actions": "read",
+          "contents": "read"
+        },
+        "runs-on": "ubuntu-24.04",
+        "steps": [
+          {
+            "env": {
+              "CHECK_TIMEOUT": "${{ inputs.check-timeout-minutes }}",
+              "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+              "EVENT_NAME": "${{ github.event_name }}",
+              "HOST_LABEL": "${{ inputs.host-label }}",
+              "HOST_TIMEOUT": "${{ inputs.host-timeout-minutes }}",
+              "IS_FORK": "${{ github.event.repository.fork }}",
+              "REF": "${{ github.ref }}",
+              "SHA": "${{ github.sha }}"
+            },
+            "id": "guard",
+            "name": "Refuse outside a schedule or a manual run on the default branch",
+            "run-sha256": "1e0f1130730ed619d56e653b95af4da42c4fe97edf43f855efb7d13e43eea5ba"
+          },
+          {
+            "env": {
+              "CALLED_WORKFLOW": "branchLeft/github-workflows/.github/workflows/ansible-drift-check.yml",
+              "GH_TOKEN": "${{ github.token }}",
+              "REPO": "${{ github.repository }}",
+              "RUN_ID": "${{ github.run_id }}"
+            },
+            "id": "pin",
+            "name": "Resolve the commit this workflow was called at",
+            "run-sha256": "a7c1f2410f7d7389a3deeebc55f1f7bd421ac9b9aa3869a9564efcedef16ca3f"
+          },
+          {
+            "name": "Check out the shared actions at that commit",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "path": ".gw",
+              "persist-credentials": false,
+              "ref": "${{ steps.pin.outputs.sha }}",
+              "repository": "branchLeft/github-workflows"
+            }
+          },
+          {
+            "env": {
+              "PINNED_SHA": "${{ steps.pin.outputs.sha }}"
+            },
+            "name": "Verify the checkout is that commit",
+            "run-sha256": "0925f1683a9852e14e42c4e4a80fee04aa9f0d3ff781361cabeae758f0cca9e6"
+          },
+          {
+            "id": "check",
+            "name": "Check every host in check mode, red on any drift",
+            "uses": "./.gw/.github/actions/ssh-check-hosts",
+            "with": {
+              "check-key": "${{ secrets.ssh_check_key }}",
+              "fail-on-changes": "true",
+              "host-timeout": "${{ inputs.host-timeout-minutes }}",
+              "hosts": "${{ secrets.ssh_hosts }}",
+              "known-hosts": "${{ secrets.ssh_known_hosts }}",
+              "sha": "${{ github.sha }}",
+              "total-timeout": "${{ steps.guard.outputs.budget }}"
+            }
+          }
+        ],
+        "timeout-minutes": "${{ inputs.check-timeout-minutes }}"
+      }
+    },
+    "name": "Ansible drift check",
+    "on": {
+      "workflow_call": {
+        "inputs": {
+          "check-timeout-minutes": {
+            "default": 90,
+            "description": "The drift job is stopped after this many minutes, from 10 to 350. The host calls share this time less five minutes, so a hung host is judged as no-answer before the job is stopped.",
+            "required": false,
+            "type": "number"
+          },
+          "host-label": {
+            "description": "A short name for this set of hosts, for the issue title and its label. Letters, digits, dot, underscore and dash, at most 32 characters. Not a host name: the hosts are secrets.",
+            "required": true,
+            "type": "string"
+          },
+          "host-timeout-minutes": {
+            "default": 65,
+            "description": "One host call is stopped after this many minutes.",
+            "required": false,
+            "type": "number"
+          }
+        },
+        "secrets": {
+          "ssh_check_key": {
+            "description": "The private key of the check route. On the host it is restricted to the forced command in check mode. Pass it from a repository secret.",
+            "required": true
+          },
+          "ssh_hosts": {
+            "description": "The hosts to check, one SSH destination per line in the form user@host. A secret, so the job log masks the names. Pass it from a repository secret.",
+            "required": true
+          },
+          "ssh_known_hosts": {
+            "description": "The known_hosts lines of the hosts. Pass it from a repository secret.",
+            "required": true
+          }
+        }
+      }
+    },
+    "permissions": {
+      "contents": "read"
+    }
+  },
   "gated": {
     "jobs": {
       "apply": {
@@ -52,7 +417,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "772d484d944bde13db01310a9d36ad0e3565ad2ad0deeb6e4960559726190cee"
+            "run-sha256": "91ffb0ebb4474ea3970a817b0b07a628625e619df3784ab2c544e1eac6632f32"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -208,9 +573,13 @@
           "shard"
         ],
         "outputs": {
-          "has_changes": "${{ steps.report.outputs.has_changes }}",
-          "hosts_digest": "${{ steps.guard.outputs.hosts_digest }}",
+          "has_changes": "${{ steps.ssh.outputs.has-changes }}",
+          "hosts_digest": "${{ steps.ssh.outputs.hosts-digest }}",
           "sha": "${{ steps.guard.outputs.sha }}"
+        },
+        "permissions": {
+          "actions": "read",
+          "contents": "read"
         },
         "runs-on": "ubuntu-24.04",
         "steps": [
@@ -229,40 +598,57 @@
               "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
               "ENVIRONMENT": "${{ inputs.environment }}",
               "EVENT_NAME": "${{ github.event_name }}",
-              "HOSTS": "${{ secrets.ssh_hosts }}",
               "IS_FORK": "${{ github.event.repository.fork }}",
               "REF": "${{ github.ref }}",
               "SHA": "${{ github.sha }}"
             },
             "id": "guard",
             "name": "Refuse outside a push to the default branch, and check the inputs",
-            "run-sha256": "4530fe6e951d1ea2ebc39d4715cc0faef69c031f61ab94288a3da12c15a75735"
+            "run-sha256": "d8dbdeba1864fabeeb31c44a8b2cca05b09f703d94a37c6c27e1e316f24dea3a"
           },
           {
             "env": {
-              "DRY_RUN": "${{ inputs.dry-run }}",
-              "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
-              "HOSTS": "${{ secrets.ssh_hosts }}",
-              "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
-              "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
-              "SHA": "${{ steps.guard.outputs.sha }}",
-              "SSH_KEY": "${{ secrets.ssh_check_key }}",
-              "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
+              "CALLED_WORKFLOW": "branchLeft/github-workflows/.github/workflows/ansible-gated-apply.yml",
+              "GH_TOKEN": "${{ github.token }}",
+              "REPO": "${{ github.repository }}",
+              "RUN_ID": "${{ github.run_id }}"
             },
-            "id": "check",
-            "name": "Check every host in check mode",
-            "run-sha256": "92b62edd4ea3d1f11211ab7e6b56819e28912573cc8064af0f8a1d769545464f"
+            "id": "pin",
+            "name": "Resolve the commit this workflow was called at",
+            "run-sha256": "a7c1f2410f7d7389a3deeebc55f1f7bd421ac9b9aa3869a9564efcedef16ca3f"
+          },
+          {
+            "name": "Check out the shared actions at that commit",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "path": ".gw",
+              "persist-credentials": false,
+              "ref": "${{ steps.pin.outputs.sha }}",
+              "repository": "branchLeft/github-workflows"
+            }
           },
           {
             "env": {
-              "DRY_RUN": "${{ inputs.dry-run }}",
-              "ENVIRONMENT": "${{ inputs.environment }}",
-              "SHA": "${{ steps.guard.outputs.sha }}",
-              "SSH_KEY": "${{ secrets.ssh_check_key }}"
+              "PINNED_SHA": "${{ steps.pin.outputs.sha }}"
             },
-            "id": "report",
-            "name": "Judge the answers, scan the diff and write the plan",
-            "run-sha256": "56a474a3a3cd8ebcb5c6b0fced7bde28be05180e568cd28a29c2c244d7fb5249"
+            "name": "Verify the checkout is that commit",
+            "run-sha256": "0925f1683a9852e14e42c4e4a80fee04aa9f0d3ff781361cabeae758f0cca9e6"
+          },
+          {
+            "id": "ssh",
+            "name": "Check every host in check mode and write the plan",
+            "uses": "./.gw/.github/actions/ssh-check-hosts",
+            "with": {
+              "check-key": "${{ secrets.ssh_check_key }}",
+              "dry-run": "${{ inputs.dry-run }}",
+              "dry-run-stub": "${{ inputs.dry-run-stub }}",
+              "environment": "${{ inputs.environment }}",
+              "host-timeout": "${{ inputs.host-timeout-minutes }}",
+              "hosts": "${{ secrets.ssh_hosts }}",
+              "known-hosts": "${{ secrets.ssh_known_hosts }}",
+              "sha": "${{ steps.guard.outputs.sha }}",
+              "working-directory": "${{ inputs.working-directory }}"
+            }
           }
         ],
         "timeout-minutes": "${{ inputs.plan-timeout-minutes }}"
@@ -442,6 +828,24 @@
         ],
         "timeout-minutes": 15
       },
+      "sabotage": {
+        "name": "Sabotage proof",
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "name": "Break each control and require its test to go red",
+            "run-sha256": "69e3bd0aea2dc9810d2def00560b89fe83db40a6182a71f88bbaa93ce568b27c"
+          }
+        ],
+        "timeout-minutes": 20
+      },
       "unit-tests": {
         "name": "Workflow step tests",
         "runs-on": "ubuntu-latest",
@@ -471,6 +875,7 @@
       }
     },
     "permissions": {
+      "actions": "read",
       "contents": "read"
     }
   }
