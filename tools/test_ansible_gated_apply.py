@@ -2380,12 +2380,17 @@ class InstallStepTests(unittest.TestCase):
         self.assertNotIn("job_workflow_sha", text)
         self.assertNotIn("job_workflow_ref", text)
         for job_name, job in JOBS.items():
+            pin_seen = False
             for step in job["steps"]:
+                if step.get("id") == "pin":
+                    pin_seen = True
                 if str(step.get("uses", "")).startswith("actions/checkout@"):
                     with_ = step.get("with", {})
                     if with_.get("repository") == "branchLeft/github-workflows":
                         # The shared actions, at the commit the run record names (the pin step).
-                        # The step after the checkout checks that the checkout is that commit.
+                        # The pair is allowed only where a `pin` step runs before this checkout;
+                        # elsewhere `steps.pin.outputs.sha` is empty and checks out main.
+                        self.assertTrue(pin_seen, f"{job_name}: {step.get('name')} checks out the shared actions with no pin step before it")
                         self.assertEqual(with_.get("ref"), "${{ steps.pin.outputs.sha }}", f"{job_name}: {step.get('name')}")
                         continue
                     self.assertNotIn("repository", with_, f"{job_name}: {step.get('name')}")
