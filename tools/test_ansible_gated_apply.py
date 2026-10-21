@@ -532,6 +532,7 @@ class StructureTests(unittest.TestCase):
             "needs.plan.result == 'success'",
             "needs.plan.outputs.has_changes != 'false'",
             "inputs.dry-run == false",
+            "inputs.environment != ''",
         ):
             self.assertIn(required, condition)
         self.assertFalse(job["concurrency"]["cancel-in-progress"])

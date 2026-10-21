@@ -316,6 +316,16 @@ CASES: list[Case] = [
         [f"{S}.test_the_apply_job_is_gated"],
     ),
     Case(
+        "apply gate: non-empty environment term dropped from the apply if",
+        [Edit(GATED, "      && inputs.environment != ''\n", "")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "apply gate: empty apply key no longer refused",
+        [Edit(GATED, '[ -n "$SSH_KEY" ] || fail "The ssh_apply_key secret is empty. It is a secret of the deployment environment."', ":")],
+        [f"{A}.test_the_apply_key_secret_must_be_present"],
+    ),
+    Case(
         "apply gate: apply guard passes a plan that found nothing",
         [Edit(GATED, '[ "$HAS_CHANGES" != false ] || fail "The plan found nothing to change."', ":")],
         ["ApplyGuardTests.test_the_apply_refuses_a_plan_with_nothing_to_change"],
