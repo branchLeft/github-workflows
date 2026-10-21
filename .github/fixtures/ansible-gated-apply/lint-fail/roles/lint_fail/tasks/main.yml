@@ -1,0 +1,9 @@
+---
+- ansible.builtin.file:
+    path: '{{ lint_fail_path }}'
+    state: touch
+    mode: '0644'
+    owner: root
+    group: root
+    modification_time: preserve
+    access_time: preserve

@@ -37,7 +37,9 @@ on:
       ansible-directory:
         description: >-
           The Ansible directory, relative to working-directory. It holds
-          requirements.txt, requirements.yml and pyproject.toml.
+          requirements.txt (the hash lock of every package, collections
+          included), pyproject.toml, and requirements.yml if there is one, which
+          must hold only an empty collections list.
         type: string
         required: false
         default: ansible
@@ -163,6 +165,39 @@ jobs:
       # scenario: a role with none fails here, so it cannot pass untested. An
       # empty list fails, because an empty matrix would skip the shard job and
       # the gate would have nothing to be red about.
+      #
+      # Nothing is fetched from Galaxy (ANS-4). Molecule has two ways to reach it,
+      # and this step closes both.
+      #  - The dependency step: each scenario must set dependency.enabled to
+      #    false.
+      #  - Molecule's prerun, which is on by default and which this workflow
+      #    leaves on, because it is what makes a role resolve by its full name.
+      #    It installs from Galaxy every requirements file at the six paths
+      #    ansible-compat searches under the role directory (listed below), and
+      #    the dependencies of a galaxy.yml. So each of those files that exists
+      #    must hold exactly `collections: []`, and no galaxy.yml or galaxy.yaml
+      #    may exist anywhere under the Ansible directory. That is wider than the
+      #    places prerun looks, on purpose: it needs no copy of ansible-compat's
+      #    search rules.
+      # The search by name does not see through a link, and prerun resolves every
+      # direct entry of the role directory, and the role directory itself. So
+      # that directory and each direct entry of it that is a link is judged by
+      # where it resolves, and refused when it cannot be resolved, when it leaves
+      # the Ansible directory, when it is a file named galaxy.yml or galaxy.yaml,
+      # or when it or its parent directory holds either file. Every role
+      # directory is also judged by its physical path, link or not, because
+      # Molecule runs there: one reached through a linked parent directory that
+      # leaves the Ansible directory is refused. A link deeper down is not read
+      # by prerun and is left alone, because shared-infra has legitimate ones
+      # there. Not covered: a role directory whose physical path is directly
+      # under the Ansible directory (a link inside the tree can put one there),
+      # where prerun also reads a galaxy.yml two levels above it, outside the
+      # tree this step can see.
+      # The requirements.yml of the Ansible directory itself is held to the same
+      # shape. yq reads each file and jq judges it; a file yq cannot parse, or a
+      # missing yq, fails the step. The other home of that rule is shared-infra's
+      # ansible/checks/check_pins.py; the README ("Named limits") says how the two
+      # differ.
       - name: List the Molecule shards from the repository tree
         id: shards
         env:
@@ -190,12 +225,75 @@ jobs:
             echo "::error::No directory matched role-directories, so nothing would be tested."
             exit 1
           fi
+          root=$(pwd -P)
+          refuse_link() {
+            local path=$1 resolved
+            [ -L "$path" ] || return 0
+            if ! resolved=$(realpath "$path" 2> /dev/null) || [ ! -e "$path" ]; then
+              echo "::error::$path is a link that cannot be resolved, so what Molecule's prerun would read through it cannot be judged (ANS-4)."
+              exit 1
+            fi
+            case "$resolved" in
+              "$root" | "$root"/*) ;;
+              *)
+                echo "::error::$path is a link that leaves the Ansible directory: Molecule's prerun resolves it and reads what it reaches (ANS-4)."
+                exit 1
+                ;;
+            esac
+            case "${resolved##*/}" in
+              galaxy.yml | galaxy.yaml)
+                echo "::error::$path is a link to a file named galaxy.yml or galaxy.yaml: Molecule's prerun installs its dependencies from Galaxy (ANS-4)."
+                exit 1
+                ;;
+            esac
+            if [ -e "$resolved/galaxy.yml" ] || [ -e "$resolved/galaxy.yaml" ] || [ -e "${resolved%/*}/galaxy.yml" ] || [ -e "${resolved%/*}/galaxy.yaml" ]; then
+              echo "::error::$path is a link into a directory holding a galaxy.yml or galaxy.yaml: Molecule's prerun installs its dependencies from Galaxy (ANS-4)."
+              exit 1
+            fi
+          }
           for dir in "${found[@]}"; do
+            refuse_link "$dir"
+            physical=$(cd "$dir" && pwd -P)
+            case "$physical" in
+              "$root" | "$root"/*) ;;
+              *)
+                echo "::error::$dir is a role directory whose physical path leaves the Ansible directory, through a link in a parent directory: Molecule runs there and its prerun reads a galaxy.yml two levels above it (ANS-4)."
+                exit 1
+                ;;
+            esac
             if [ ! -f "$dir/molecule/default/molecule.yml" ]; then
               echo "::error::$dir has no molecule/default/molecule.yml (ANS-15)."
               exit 1
             fi
+            if ! yq -o=json . "$dir/molecule/default/molecule.yml" | jq -e '.dependency.enabled == false' > /dev/null; then
+              echo "::error::$dir/molecule/default/molecule.yml must set dependency.enabled to false, so Molecule's dependency step never reaches Galaxy (ANS-4)."
+              exit 1
+            fi
+            for file in requirements.yml roles/requirements.yml collections/requirements.yml tests/requirements.yml tests/integration/requirements.yml tests/unit/requirements.yml; do
+              if [ -e "$dir/$file" ] || [ -L "$dir/$file" ]; then
+                if ! yq -o=json . "$dir/$file" | jq -e '. == {"collections": []}' > /dev/null; then
+                  echo "::error::$dir/$file must hold only 'collections: []': Molecule's prerun installs what it lists from Galaxy (ANS-4)."
+                  exit 1
+                fi
+              fi
+            done
+            shopt -s dotglob
+            for entry in "$dir"/*; do
+              refuse_link "$entry"
+            done
+            shopt -u dotglob
           done
+          galaxy_file=$(find . \( -name galaxy.yml -o -name galaxy.yaml \) -print | sed -n 1p)
+          if [ -n "$galaxy_file" ]; then
+            echo "::error::$galaxy_file must not exist: Molecule's prerun installs the dependencies of a galaxy.yml from Galaxy (ANS-4)."
+            exit 1
+          fi
+          if [ -e requirements.yml ] || [ -L requirements.yml ]; then
+            if ! yq -o=json . requirements.yml | jq -e '. == {"collections": []}' > /dev/null; then
+              echo "::error::requirements.yml must hold only 'collections: []'. The lock is requirements.txt, and nothing is fetched from Galaxy (ANS-4)."
+              exit 1
+            fi
+          fi
           printf 'Molecule runs over %s role(s):\n' "${#found[@]}"
           printf '  %s\n' "${found[@]}"
           matrix=$(printf '%s\n' "${found[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0)) | map({name: ., path: .}) | {include: .}')
@@ -223,29 +321,25 @@ jobs:
           python3 -m venv "$RUNNER_TEMP/ansible-venv"
           echo "$RUNNER_TEMP/ansible-venv/bin" >> "$GITHUB_PATH"
 
+      # Every package, with its hash, comes from the one lock (ANS-4). pip
+      # refuses a line that has no hash. The shard job below carries the same two
+      # steps word for word; a test pins that they stay equal.
       - name: Install the pinned tools
         env:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv -r "$ANSIBLE_DIRECTORY/requirements.txt"'
-
-      - name: Install the pinned collections
-        env:
-          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: |
-          set -euo pipefail
-          collections="$RUNNER_TEMP/ansible-collections"
-          "$RUNNER_TEMP/ansible-venv/bin/ansible-galaxy" collection install -r "$ANSIBLE_DIRECTORY/requirements.yml" -p "$collections"
-          echo "ANSIBLE_COLLECTIONS_PATH=$collections" >> "$GITHUB_ENV"
+        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv --require-hashes -r "$ANSIBLE_DIRECTORY/requirements.txt"'
 
       - name: yamllint every YAML file under the Ansible directory
         env:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
         run: '"$RUNNER_TEMP/ansible-venv/bin/yamllint" --strict -c .yamllint "$ANSIBLE_DIRECTORY"'
 
+      # --offline: ansible-lint installs nothing from Galaxy and refreshes no
+      # schema, so a requirements.yml cannot add code outside the lock.
       - name: ansible-lint at the production profile
         env:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: '"$RUNNER_TEMP/ansible-venv/bin/ansible-lint" --strict "$ANSIBLE_DIRECTORY"'
+        run: '"$RUNNER_TEMP/ansible-venv/bin/ansible-lint" --offline --strict "$ANSIBLE_DIRECTORY"'
 
       - name: Type-check the Python
         working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}
@@ -314,16 +408,7 @@ jobs:
       - name: Install the pinned tools
         env:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv -r "$ANSIBLE_DIRECTORY/requirements.txt"'
-
-      - name: Install the pinned collections
-        env:
-          ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-        run: |
-          set -euo pipefail
-          collections="$RUNNER_TEMP/ansible-collections"
-          "$RUNNER_TEMP/ansible-venv/bin/ansible-galaxy" collection install -r "$ANSIBLE_DIRECTORY/requirements.yml" -p "$collections"
-          echo "ANSIBLE_COLLECTIONS_PATH=$collections" >> "$GITHUB_ENV"
+        run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv --require-hashes -r "$ANSIBLE_DIRECTORY/requirements.txt"'
 
       - name: Molecule default sequence, with the idempotence step
         working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}
