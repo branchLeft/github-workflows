@@ -398,6 +398,16 @@ CASES: list[Case] = [
         [Edit(GATED, "      && inputs.environment != ''\n", "      || inputs.environment != ''\n")],
         [f"{S}.test_the_apply_job_is_gated"],
     ),
+    Case(
+        "drift alert: guard-refused term joined with or",
+        [Edit(DRIFT, "      && needs.drift.outputs.guard_refused != 'true'\n", "      || needs.drift.outputs.guard_refused != 'true'\n")],
+        [f"{S}.test_the_alert_runs_after_a_failed_or_timed_out_check_that_passed_the_guard_and_serialises_per_host_set"],
+    ),
+    Case(
+        "apply gate: empty known-hosts refusal no longer refused",
+        [Edit(GATED, '[ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."', ":")],
+        [f"{A}.test_the_known_hosts_secret_must_be_present"],
+    ),
 ]
 
 

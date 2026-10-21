@@ -806,12 +806,15 @@ class StructureTests(unittest.TestCase):
         # A job that hits timeout-minutes reports `cancelled` to the job that needs it
         # (measured: https://github.com/branchLeft/github-workflows/actions/runs/39514617371),
         # so the condition has to name both results or a timeout ends silently.
-        for required in (
-            "always()",
-            "(needs.drift.result == 'failure' || needs.drift.result == 'cancelled')",
-            "needs.drift.outputs.guard_refused != 'true'",
-        ):
-            self.assertIn(required, condition)
+        # The whole condition is compared, not each term: a term joined by || would
+        # pass a per-term assertIn, and an alert that fires after a refused guard
+        # is a control failing open.
+        self.assertEqual(
+            condition,
+            "always() "
+            "&& (needs.drift.result == 'failure' || needs.drift.result == 'cancelled') "
+            "&& needs.drift.outputs.guard_refused != 'true'",
+        )
         self.assertFalse(job["concurrency"]["cancel-in-progress"])
         self.assertIn("inputs.host-label", job["concurrency"]["group"])
         self.assertEqual([s.get("if") for s in job["steps"]], [None])
@@ -1449,6 +1452,17 @@ class ApplyTests(unittest.TestCase):
         sandbox = Sandbox(self)
         sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
         self.assertNotEqual(self.apply(sandbox, SSH_KEY="").code, 0)
+        self.assertEqual(sandbox.ssh_log(), [])
+
+    def test_the_known_hosts_secret_must_be_present(self) -> None:
+        # Same shape as test_the_apply_key_secret_must_be_present: a host that would
+        # apply, a non-zero exit, no ssh call, and the refusal's own message. The
+        # message is what proves the refusal ran, not only that the step failed.
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, KNOWN_HOSTS="")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("The ssh_known_hosts secret is empty.", result.log)
         self.assertEqual(sandbox.ssh_log(), [])
 
     def test_the_apply_key_and_known_hosts_are_removed_on_every_way_out_a_refusal_included(self) -> None:
