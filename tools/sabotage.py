@@ -49,6 +49,8 @@ DG = "DriftGuardTests"
 DR = "DriftReportTests"
 AL = "AlertTests"
 PG = "PlanGuardTests"
+AG = "ApplyGuardTests"
+HM = "HeadMovedTests"
 
 CASES: list[Case] = [
     Case(
@@ -299,6 +301,112 @@ CASES: list[Case] = [
         "alert ignores a timed-out check",
         [Edit(DRIFT, "      && (needs.drift.result == 'failure' || needs.drift.result == 'cancelled')\n", "      && needs.drift.result == 'failure'\n")],
         [f"{S}.test_the_alert_runs_after_a_failed_or_timed_out_check_that_passed_the_guard_and_serialises_per_host_set"],
+    ),
+    Case(
+        "apply gate: environment key deleted from the apply job",
+        [Edit(GATED, "    timeout-minutes: ${{ inputs.apply-timeout-minutes }}\n    environment: ${{ inputs.environment }}\n", "    timeout-minutes: ${{ inputs.apply-timeout-minutes }}\n")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "apply gate: environment hard-coded in the apply job",
+        [Edit(GATED, "    timeout-minutes: ${{ inputs.apply-timeout-minutes }}\n    environment: ${{ inputs.environment }}\n", "    timeout-minutes: ${{ inputs.apply-timeout-minutes }}\n    environment: production\n")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "apply gate: has_changes condition dropped from the apply if",
+        [Edit(GATED, "      && needs.plan.outputs.has_changes != 'false'\n", "")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "apply gate: non-empty environment term dropped from the apply if",
+        [Edit(GATED, "      && inputs.environment != ''\n", "")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "apply gate: empty apply key no longer refused",
+        [Edit(GATED, '[ -n "$SSH_KEY" ] || fail "The ssh_apply_key secret is empty. It is a secret of the deployment environment."', ":")],
+        [f"{A}.test_the_apply_key_secret_must_be_present"],
+    ),
+    Case(
+        "apply gate: apply guard passes a plan that found nothing",
+        [Edit(GATED, '[ "$HAS_CHANGES" != false ] || fail "The plan found nothing to change."', ":")],
+        ["ApplyGuardTests.test_the_apply_refuses_a_plan_with_nothing_to_change"],
+    ),
+    Case(
+        "apply gate: no-change verdict when a host would change",
+        [Edit(ACTION, '        if [ "$changed" -eq 0 ] && [ "$clean" -eq "$total" ] && [ "$total" -ge 1 ]; then', '        if [ "$total" -ge 1 ]; then')],
+        [f"{P}.test_one_host_with_changes_gives_has_changes_and_shows_its_diff"],
+    ),
+    Case(
+        "apply gate: a failed host does not fail the plan",
+        [Edit(ACTION, '        if [ "$failed" -gt 0 ]; then\n          echo "::error::$first"', '        if false; then\n          echo "::error::$first"')],
+        [f"{P}.test_a_host_that_fails_fails_the_job_and_asks_for_no_approval"],
+    ),
+    # The refusals of the apply guard and the head-moved stop, one case each.
+    Case(
+        "apply gate: event check dropped from the apply guard",
+        [Edit(GATED, '[ "$EVENT_NAME" = push ] || fail "The apply job runs only for a push, not for $EVENT_NAME."', ":")],
+        [f"{AG}.test_the_apply_refuses_in_a_pull_request_in_a_fork_and_in_a_dry_run"],
+    ),
+    Case(
+        "apply gate: default-branch check dropped from the apply guard",
+        [Edit(GATED, '[ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail "The apply job runs only for the default branch."', ":")],
+        [f"{AG}.test_the_apply_refuses_in_a_pull_request_in_a_fork_and_in_a_dry_run"],
+    ),
+    Case(
+        "apply gate: fork check dropped from the apply guard",
+        [Edit(GATED, '[ "$IS_FORK" != true ] || fail "The apply job never runs in a fork."', ":")],
+        [f"{AG}.test_the_apply_refuses_in_a_pull_request_in_a_fork_and_in_a_dry_run"],
+    ),
+    Case(
+        "apply gate: dry-run check dropped from the apply guard",
+        [Edit(GATED, '[ "$DRY_RUN" != true ] || fail "The apply job never runs in a dry run."', ":")],
+        [f"{AG}.test_the_apply_refuses_in_a_pull_request_in_a_fork_and_in_a_dry_run"],
+    ),
+    Case(
+        "apply gate: empty-environment backstop dropped from the apply guard",
+        [Edit(GATED, '[ -n "$ENVIRONMENT" ] || fail "The environment input is empty, so there is no approval."', ":")],
+        [f"{AG}.test_the_apply_refuses_without_an_environment"],
+    ),
+    Case(
+        "apply gate: planned commit format check dropped",
+        [Edit(GATED, "grep -Eq '^[0-9a-f]{40}$' || fail \"The planned commit is not 40 lowercase hex digits.\"", "grep -Eq '^[0-9a-f]{40}$' || :")],
+        [f"{AG}.test_the_planned_commit_must_be_40_lowercase_hex_digits"],
+    ),
+    Case(
+        "apply gate: planned commit equality check dropped",
+        [Edit(GATED, '[ "$PLANNED_SHA" = "$SHA" ] || fail "The planned commit differs from this run\'s commit."', ":")],
+        [f"{AG}.test_the_apply_refuses_a_commit_other_than_the_planned_one"],
+    ),
+    Case(
+        "apply gate: planned host digest format check dropped",
+        [Edit(GATED, "grep -Eq '^[0-9a-f]{64}$' || fail \"The planned host digest is missing.\"", "grep -Eq '^[0-9a-f]{64}$' || :")],
+        [f"{AG}.test_the_planned_host_digest_must_be_64_lowercase_hex_digits"],
+    ),
+    Case(
+        "apply gate: planned host digest equality check dropped",
+        [Edit(GATED, '[ "$digest" = "$PLANNED_DIGEST" ] || fail "The hosts are not the hosts that were planned."', ":")],
+        [f"{AG}.test_the_apply_refuses_hosts_that_were_not_planned"],
+    ),
+    Case(
+        "apply gate: moved default branch does not stop the apply",
+        [Edit(GATED, 'if [ "$head" != "$PLANNED_SHA" ]; then', "if false; then")],
+        [f"{HM}.test_a_branch_head_that_moved_stops_the_apply"],
+    ),
+    Case(
+        "apply gate: environment term joined with or in the apply if",
+        [Edit(GATED, "      && inputs.environment != ''\n", "      || inputs.environment != ''\n")],
+        [f"{S}.test_the_apply_job_is_gated"],
+    ),
+    Case(
+        "drift alert: guard-refused term joined with or",
+        [Edit(DRIFT, "      && needs.drift.outputs.guard_refused != 'true'\n", "      || needs.drift.outputs.guard_refused != 'true'\n")],
+        [f"{S}.test_the_alert_runs_after_a_failed_or_timed_out_check_that_passed_the_guard_and_serialises_per_host_set"],
+    ),
+    Case(
+        "apply gate: empty known-hosts refusal no longer refused",
+        [Edit(GATED, '[ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."', ":")],
+        [f"{A}.test_the_known_hosts_secret_must_be_present"],
     ),
 ]
 
