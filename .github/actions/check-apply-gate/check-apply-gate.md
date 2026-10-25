@@ -42,6 +42,18 @@ The plan job:
 - if `summary-step` is given, the verdict step comes before the step of that
   name, so the verdict is the first line of the summary (`GATE-ORDER`).
 
+The caller may also name operands that every listed job's `if:` must carry, in
+the `required-operands` input, one per line. Each line must equal, after
+whitespace is folded, one top-level `&&` operand of the `if:` of every listed
+plan job and every listed apply job (`GATE-REQUIRED-OPERAND`). A job with no
+`if:` fails once for each operand. A plan job's `if:` must also hold no `||`
+outside a quoted string, because `A && B && X || true` splits into `A`, `B` and
+`X || true`: both operands match while the whole condition is always true. On
+the apply side `GATE-IF-OR` already covers that. A line that itself holds a
+top-level `&&` names two operands, so it is unreadable (`GATE-UNREADABLE`). An
+empty or all-blank input switches this check off, so a caller that does not pass
+it is checked as before.
+
 The saved plan, named by `plan-file`, can hold resource inputs and ciphertext, so
 for every listed plan job:
 
@@ -77,11 +89,13 @@ understand passes.
 
 These are about one repo's own jobs, so each repo keeps its own test for them:
 which jobs are gated applies at all and that a new one gets this check; the
-other operands of an apply `if:` (the push and main operands, the template
-guard); an apply job's other `needs`; the plan job's own `if:`, environment,
-permissions and credentials; the exact command a repo's save step runs beyond
-its `--save-plan` and `/dev/null`, and the command that produces `preview.json`;
-and what a caller does with the verdict when it combines it with another check.
+other operands of an apply `if:` (the template guard, and the push and main
+operands unless the caller passes `required-operands`); an apply job's other
+`needs`; the plan job's environment, permissions and credentials, and its `if:`
+beyond any operands the caller names in `required-operands`; the exact command a
+repo's save step runs beyond its `--save-plan` and `/dev/null`, and the command
+that produces `preview.json`; and what a caller does with the verdict when it
+combines it with another check.
 Nothing the check holds is kept in a caller's test as well.
 
 ## Limits

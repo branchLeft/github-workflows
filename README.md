@@ -705,9 +705,12 @@ that has checked the repo out, never the plan job with production credentials in
 its environment. It also holds the rule for the saved plan, which can carry
 resource inputs and ciphertext: only the step that saves it and the action may
 name it, and nothing uploads, prints or globs it. One home for the checks means a
-repo calls it and writes no test of these contracts of its own. It reads only the
-workflow file it is given; a repo that does not call it is not checked. Codes,
-rules and what stays each repo's own:
+repo calls it and writes no test of these contracts of its own. An optional input,
+`required-operands` (one operand per line; fails with `GATE-REQUIRED-OPERAND` when
+a listed plan or apply job's `if:` lacks one as a top-level `&&` operand; absent or
+empty means no such check), names operands such as the push and main-branch
+conditions. It reads only the workflow file it is given; a repo that does not call
+it is not checked. Codes, rules and what stays each repo's own:
 [`check-apply-gate.md`](.github/actions/check-apply-gate/check-apply-gate.md).
 
 **Run it on `pull_request` and make it a required status check.** The plan jobs
