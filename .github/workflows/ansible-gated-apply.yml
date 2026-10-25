@@ -87,6 +87,27 @@ on:
         type: number
         required: false
         default: 180
+      skip-rerun-after-merge-group:
+        description: >-
+          For a caller whose merge queue already runs these same checks on the
+          tree that is then pushed. On a push to the default branch, skip the
+          lint and Molecule jobs and, before anything reaches a host, require
+          that the check named by merge-group-check-name passed for the pushed
+          commit in a merge queue run; the discover job fails if it did not, or
+          if that cannot be read. Every other run is unchanged. The default,
+          false, keeps lint and Molecule on every run.
+        type: boolean
+        required: false
+        default: false
+      merge-group-check-name:
+        description: >-
+          With skip-rerun-after-merge-group, the name of the check run the
+          caller's merge queue run publishes for this gate, as GitHub shows it
+          (caller job name, then ' / ', then 'Ansible checks passed'). Required
+          then; ignored otherwise.
+        type: string
+        required: false
+        default: ''
     secrets:
       ssh_hosts:
         description: >-
@@ -119,6 +140,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       delivery: ${{ steps.context.outputs.delivery }}
+      rerun: ${{ steps.context.outputs.rerun }}
       matrix: ${{ steps.shards.outputs.matrix }}
     steps:
       - name: Checkout
@@ -140,6 +162,7 @@ jobs:
           ENVIRONMENT: ${{ inputs.environment }}
           WORKING_DIRECTORY: ${{ inputs.working-directory }}
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
+          SKIP_RERUN: ${{ inputs.skip-rerun-after-merge-group }}
         run: |
           set -euo pipefail
           for value in "$WORKING_DIRECTORY" "$ANSIBLE_DIRECTORY"; do
@@ -160,6 +183,54 @@ jobs:
           fi
           echo "delivery=$delivery" >> "$GITHUB_OUTPUT"
           echo "This run reaches a host: $delivery"
+          # Only a delivery run may skip lint and Molecule, and only after the
+          # next step has shown the merge queue ran them on this commit.
+          rerun=true
+          if [ "$delivery" = true ] && [ "$SKIP_RERUN" = true ]; then
+            rerun=false
+          fi
+          echo "rerun=$rerun" >> "$GITHUB_OUTPUT"
+          echo "This run runs lint and Molecule: $rerun"
+
+      # The proof that lets a delivery run skip lint and Molecule. The merge
+      # queue runs this workflow on the tree it then pushes, so the same commit
+      # carries a passing check run of the gate job, made by GitHub Actions in a
+      # check suite of a queue branch (gh-readonly-queue/...). A run of the gate
+      # in the push itself is on a suite of the default branch, so it does not
+      # count. Anything that cannot be read, or does not match, fails the job:
+      # the plan and the apply need this job, so nothing reaches a host.
+      - name: Confirm the merge queue passed this commit
+        id: confirm
+        if: steps.context.outputs.rerun == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          CHECK_NAME: ${{ inputs.merge-group-check-name }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [ -n "$CHECK_NAME" ] || fail "skip-rerun-after-merge-group needs merge-group-check-name, the check to look for."
+          printf '%s' "$SHA" | grep -Eq '^[0-9a-f]{40}$' || fail "The commit is not 40 lowercase hex digits."
+          runs=$(gh api --paginate -X GET "repos/$REPO/commits/$SHA/check-runs" -f per_page=100 -f check_name="$CHECK_NAME") \
+            || fail "The check runs of the commit could not be read, so nothing shows the merge queue passed it. Refusing."
+          suites=$(printf '%s' "$runs" | jq -r --arg name "$CHECK_NAME" --arg sha "$SHA" \
+            '.check_runs[]? | select(.name == $name and .status == "completed" and .conclusion == "success" and .head_sha == $sha and .app.slug == "github-actions") | .check_suite.id | tostring' | sort -u) \
+            || fail "The check runs of the commit could not be understood. Refusing."
+          id_re='^[0-9]+$'
+          for suite_id in $suites; do
+            [[ "$suite_id" =~ $id_re ]] || continue
+            suite=$(gh api "repos/$REPO/check-suites/$suite_id") \
+              || fail "A check suite of the commit could not be read, so nothing shows the merge queue passed it. Refusing."
+            if printf '%s' "$suite" | jq -e --arg sha "$SHA" '(.head_branch // "" | startswith("gh-readonly-queue/")) and .head_sha == $sha' > /dev/null; then
+              echo "The merge queue passed $CHECK_NAME for commit $SHA."
+              exit 0
+            fi
+          done
+          fail "No passing '$CHECK_NAME' check from a merge queue run was found for commit $SHA. Refusing to deliver without lint and Molecule."
 
       # Every directory the globs match is one shard, and each must hold a
       # scenario: a role with none fails here, so it cannot pass untested. An
@@ -302,6 +373,7 @@ jobs:
   lint:
     name: Lint the Ansible inputs
     needs: [discover]
+    if: needs.discover.outputs.rerun == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -371,6 +443,7 @@ jobs:
   shard:
     name: 'Molecule: ${{ matrix.name }}'
     needs: [discover]
+    if: needs.discover.outputs.rerun == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
@@ -427,7 +500,9 @@ jobs:
   plan:
     name: Plan the apply (check mode on each host)
     needs: [discover, lint, shard]
-    if: needs.discover.outputs.delivery == 'true'
+    # lint and shard are skipped when the merge queue already ran them; a
+    # skipped need would skip this job, so the condition names the statuses.
+    if: ${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.plan-timeout-minutes }}
     permissions:
@@ -710,6 +785,7 @@ jobs:
           APPLY: ${{ needs.apply.result }}
           HAS_CHANGES: ${{ needs.plan.outputs.has_changes }}
           DRY_RUN: ${{ inputs.dry-run }}
+          RERUN: ${{ needs.discover.outputs.rerun }}
         run: |
           set -euo pipefail
           problems=0
@@ -720,8 +796,20 @@ jobs:
             fi
           }
           expect discover "$DISCOVER" success
-          expect lint "$LINT" success
-          expect shard "$SHARD" success
+          case "$RERUN" in
+            true)
+              expect lint "$LINT" success
+              expect shard "$SHARD" success
+              ;;
+            false)
+              expect lint "$LINT" skipped
+              expect shard "$SHARD" skipped
+              ;;
+            *)
+              echo "The discover job did not say whether lint and Molecule run: '$RERUN'."
+              problems=1
+              ;;
+          esac
           case "$DELIVERY" in
             true)
               expect plan "$PLAN" success

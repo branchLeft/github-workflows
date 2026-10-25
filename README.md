@@ -281,6 +281,24 @@ job, shown on the caller as `ansible / Ansible checks passed`. The caller grants
 `actions: read` because the plan job asks for it (see the next section); without
 the grant the whole call fails at startup, on a pull request too.
 
+#### Skipping the re-run after a merge queue
+
+A caller whose merge queue already runs this workflow on the tree it then pushes
+can set `skip-rerun-after-merge-group: true` and name the queue's gate check in
+`merge-group-check-name` (for the example above, `ansible / Ansible checks
+passed`). On a push to the default branch the lint and Molecule jobs are then
+skipped, and the discover job first reads the check runs of the pushed commit
+from the REST API with the workflow's own token. It requires a completed,
+successful check run of that name, made by GitHub Actions, in a check suite of a
+queue branch (`gh-readonly-queue/...`) for that same commit. If there is none,
+or the API cannot be read or understood, the discover job fails, so the plan and
+apply never run. The default, `false`, changes nothing, and a run that does not
+deliver (a pull request, a queue entry, a fork) always runs lint and Molecule.
+The gate job expects lint and Molecule skipped in a skipped run and passed in
+every other. The API read needs no grant beyond `contents: read` on a public
+repository; a private one cannot use this input, because the token cannot read
+the check runs and the discover job refuses.
+
 #### How the plan job loads the host check
 
 The host check is the composite action `ssh-check-hosts`, shared with
