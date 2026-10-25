@@ -414,5 +414,260 @@ class Command(unittest.TestCase):
         self.assertIn("from __future__ import annotations", source)
 
 
+PUSH = "github.event_name == 'push'"
+MAIN = "github.ref == 'refs/heads/main'"
+REQUIRED = (PUSH, MAIN)
+REQUIRED_INPUT = "\n".join(REQUIRED)
+PLAN_IF = "    if: github.event_name == 'push' && github.ref == 'refs/heads/main'\n"
+APPLY_IF = (
+    "    if: >-\n"
+    "      github.event_name == 'push' && github.ref == 'refs/heads/main' &&\n"
+    "      needs.plan.outputs.has_changes != 'false'\n"
+)
+APPLY_IF_WITHOUT_PUSH = "    if: >-\n      github.ref == 'refs/heads/main' &&\n      needs.plan.outputs.has_changes != 'false'\n"
+APPLY_IF_WITHOUT_MAIN = "    if: >-\n      github.event_name == 'push' &&\n      needs.plan.outputs.has_changes != 'false'\n"
+ACTION_YML = HERE / "action.yml"
+
+
+def swapped(text: str, old: str, new: str) -> str:
+    """The text with one `if:` replaced; fails if the case no longer changes the fixture."""
+    assert old in text, "the case no longer changes the fixture"
+    return text.replace(old, new, 1)
+
+
+def required_findings(text, operands=REQUIRED, plan_jobs=("plan",), apply_jobs=("apply",)):
+    return gate.check_required_operands(gate.job_blocks(text), list(plan_jobs), list(apply_jobs), list(operands))
+
+
+class RequiredOperands(unittest.TestCase):
+    run_main = Command.run_main
+
+    def run_with(self, text, *args, operands=REQUIRED_INPUT):
+        return self.run_main(text, "--pairs", "plan:apply", "--required-operands", operands, *args)
+
+    def assert_one_missing(self, found, job, operand):
+        self.assertEqual([(item.code, item.job) for item in found], [("GATE-REQUIRED-OPERAND", job)], found)
+        self.assertIn(f"`{operand}`", found[0].message)
+
+    def test_a_caller_with_both_operands_on_both_jobs_passes(self):
+        self.assertEqual(required_findings(read("gate-pass-operands.yml")), [])
+
+    def test_the_new_passing_fixture_passes_every_other_check(self):
+        status, out = self.run_main(read("gate-pass-operands.yml"), "--pairs", "plan:apply", "--summary-step", SUMMARY)
+        self.assertEqual(status, 0, out)
+
+    def test_an_apply_condition_wrapped_in_an_expression_block_passes(self):
+        text = read("gate-pass-operands.yml")
+        wrapped = swapped(text, APPLY_IF, "    if: ${{ " + PUSH + " && " + MAIN + " && needs.plan.outputs.has_changes != 'false' }}\n")
+        self.assertEqual(required_findings(wrapped), [])
+        plan = swapped(text, PLAN_IF, "    if: ${{ " + PUSH + " && " + MAIN + " }}\n")
+        self.assertEqual(required_findings(plan), [])
+
+    def test_a_plan_condition_with_an_extra_operand_passes(self):
+        text = swapped(read("gate-pass-operands.yml"), PLAN_IF, PLAN_IF.rstrip("\n") + " && github.event.repository.is_template != true\n")
+        self.assertEqual(required_findings(text), [])
+
+    def test_a_plan_condition_ending_in_status_functions_passes(self):
+        text = swapped(read("gate-pass-operands.yml"), PLAN_IF, PLAN_IF.rstrip("\n") + " && !failure() && !cancelled()\n")
+        self.assertEqual(required_findings(text), [])
+
+    def test_an_apply_condition_missing_one_operand_is_named_on_the_apply_job(self):
+        text = read("gate-pass-operands.yml")
+        for what, replacement, operand in (
+            ("the push", APPLY_IF_WITHOUT_PUSH, PUSH),
+            ("the branch", APPLY_IF_WITHOUT_MAIN, MAIN),
+        ):
+            with self.subTest(missing=what):
+                found = required_findings(swapped(text, APPLY_IF, replacement))
+                self.assert_one_missing(found, "apply", operand)
+                self.assertNotIn(f"`{PUSH if operand == MAIN else MAIN}`", found[0].message)
+
+    def test_a_plan_condition_missing_one_operand_is_named_on_the_plan_job(self):
+        text = read("gate-pass-operands.yml")
+        for what, replacement, operand in (
+            ("the push", "    if: " + MAIN + "\n", PUSH),
+            ("the branch", "    if: " + PUSH + "\n", MAIN),
+        ):
+            with self.subTest(missing=what):
+                self.assert_one_missing(required_findings(swapped(text, PLAN_IF, replacement)), "plan", operand)
+
+    def test_a_plan_job_with_no_condition_is_named_once_per_operand(self):
+        found = required_findings(swapped(read("gate-pass-operands.yml"), PLAN_IF, ""))
+        self.assertEqual([(item.code, item.job) for item in found], [("GATE-REQUIRED-OPERAND", "plan")] * 2)
+        for item, operand in zip(found, REQUIRED):
+            self.assertIn(f"`{operand}`", item.message)
+
+    def test_an_apply_job_with_no_condition_is_named_once_per_operand(self):
+        found = required_findings(swapped(read("gate-pass-operands.yml"), APPLY_IF, ""))
+        self.assertEqual([(item.code, item.job) for item in found], [("GATE-REQUIRED-OPERAND", "apply")] * 2)
+        for item, operand in zip(found, REQUIRED):
+            self.assertIn(f"`{operand}`", item.message)
+
+    def test_an_operand_only_inside_a_quoted_string_is_not_an_operand(self):
+        text = read("gate-pass-operands.yml")
+        quoted = PUSH + ' && env.NOTE == "x && ' + MAIN + '"'
+        for job, old, new in (
+            ("plan", PLAN_IF, "    if: " + quoted + "\n"),
+            ("apply", APPLY_IF, "    if: >-\n      " + quoted + " &&\n      needs.plan.outputs.has_changes != 'false'\n"),
+        ):
+            with self.subTest(job=job):
+                self.assert_one_missing(required_findings(swapped(text, old, new), operands=(MAIN,)), job, MAIN)
+
+    def test_an_operand_only_inside_an_or_group_is_not_an_operand(self):
+        text = read("gate-pass-operands.yml")
+        grouped = "(" + MAIN + " || github.ref == 'refs/heads/dev')"
+        apply_found = required_findings(
+            swapped(text, APPLY_IF, "    if: >-\n      " + PUSH + " && " + grouped + " &&\n      needs.plan.outputs.has_changes != 'false'\n")
+        )
+        self.assert_one_missing(apply_found, "apply", MAIN)
+        plan_found = required_findings(swapped(text, PLAN_IF, "    if: " + PUSH + " && " + grouped + "\n"))
+        self.assertEqual({item.code for item in plan_found}, {"GATE-REQUIRED-OPERAND"})
+        self.assertEqual({item.job for item in plan_found}, {"plan"})
+        self.assertTrue(any(f"`{MAIN}`" in item.message for item in plan_found), plan_found)
+
+    def test_a_reworded_operand_is_not_the_operand(self):
+        text = read("gate-pass-operands.yml")
+        dev = "github.ref == 'refs/heads/dev'"
+        self.assert_one_missing(required_findings(swapped(text, PLAN_IF, "    if: " + PUSH + " && " + dev + "\n")), "plan", MAIN)
+        self.assert_one_missing(required_findings(swapped(text, APPLY_IF, APPLY_IF_WITHOUT_MAIN.replace("      " + PUSH, "      " + PUSH + " && " + dev))), "apply", MAIN)
+
+    def test_a_longer_operand_that_contains_the_required_one_is_not_accepted(self):
+        text = read("gate-pass-operands.yml")
+        for longer in ("github.ref == 'refs/heads/main2'", "!(" + MAIN + ")", "(" + MAIN + ")", MAIN + " == true", "x" + MAIN):
+            with self.subTest(longer=longer):
+                found = required_findings(swapped(text, PLAN_IF, "    if: " + PUSH + " && " + longer + "\n"))
+                self.assert_one_missing(found, "plan", MAIN)
+
+    def test_a_shorter_operand_that_the_condition_contains_is_not_accepted(self):
+        found = required_findings(read("gate-pass-operands.yml"), operands=("github.event_name",))
+        self.assertEqual([(item.code, item.job) for item in found], [("GATE-REQUIRED-OPERAND", "plan"), ("GATE-REQUIRED-OPERAND", "apply")])
+
+    def test_whitespace_differences_do_not_change_the_match(self):
+        text = read("gate-pass-operands.yml")
+        spaced = swapped(text, PLAN_IF, "    if: github.event_name   ==\t'push'   &&  github.ref == 'refs/heads/main'  \n")
+        self.assertEqual(required_findings(spaced), [])
+        operands = ("  github.event_name \t== 'push'  ", "github.ref   ==   'refs/heads/main'")
+        self.assertEqual(required_findings(text, operands=[" ".join(o.split()) for o in operands]), [])
+        status, out = self.run_with(text, operands="\r\n".join(operands) + "\r\n")
+        self.assertEqual(status, 0, out)
+
+    def test_a_trailing_or_after_both_operands_is_rejected_on_the_plan_job(self):
+        text = read("gate-pass-operands.yml")
+        tails = (" && github.event.repository.is_template != true || true", " && github.event.repository.is_template != true || false")
+        for tail in tails:
+            with self.subTest(tail=tail):
+                plan_if = PLAN_IF.rstrip("\n") + tail + "\n"
+                changed = swapped(text, PLAN_IF, plan_if)
+                self.assertIn(PUSH, gate.and_operands(gate.condition_of(plan_if.split("if: ", 1)[1])))
+                self.assertIn(MAIN, gate.and_operands(gate.condition_of(plan_if.split("if: ", 1)[1])))
+                found = required_findings(changed)
+                self.assertEqual([(item.code, item.job) for item in found], [("GATE-REQUIRED-OPERAND", "plan")], found)
+                self.assertIn("||", found[0].message)
+
+    def test_an_or_in_the_plan_condition_is_not_the_apply_side_code(self):
+        found = required_findings(swapped(read("gate-pass-operands.yml"), PLAN_IF, PLAN_IF.rstrip("\n") + " || true\n"))
+        self.assertNotIn("GATE-IF-OR", {item.code for item in found})
+        self.assertIn("GATE-REQUIRED-OPERAND", {item.code for item in found})
+
+    def test_an_or_inside_quotes_in_the_plan_condition_is_not_rejected(self):
+        text = swapped(read("gate-pass-operands.yml"), PLAN_IF, PLAN_IF.rstrip("\n") + " && github.actor != 'a||b'\n")
+        self.assertEqual(required_findings(text), [])
+
+    def test_an_or_in_the_apply_condition_is_still_the_apply_side_code(self):
+        text = swapped(
+            read("gate-pass-operands.yml"),
+            "has_changes != 'false'\n    steps:",
+            "has_changes != 'false' || true\n    steps:",
+        )
+        self.assertIn("GATE-IF-OR", codes(findings(text)))
+        self.assertEqual(required_findings(text), [])
+
+    def test_a_job_listed_in_two_pairs_is_named_once_per_operand(self):
+        text = swapped(read("gate-pass-operands.yml"), APPLY_IF, APPLY_IF_WITHOUT_PUSH)
+        found = required_findings(text, plan_jobs=("plan", "plan"), apply_jobs=("apply", "apply"))
+        self.assert_one_missing(found, "apply", PUSH)
+
+    def test_a_job_that_is_not_in_the_workflow_is_left_to_the_missing_job_check(self):
+        text = read("gate-pass-operands.yml")
+        self.assertEqual(required_findings(text, plan_jobs=("nope",), apply_jobs=("nope",)), [])
+        status, out = self.run_main(text, "--pairs", "nope:apply", "--required-operands", REQUIRED_INPUT)
+        self.assertEqual(status, 1)
+        self.assertIn("GATE-NO-JOB nope", out)
+
+    def test_the_input_is_one_operand_per_line_with_blank_lines_ignored(self):
+        self.assertEqual(gate.parse_required_operands(""), [])
+        self.assertEqual(gate.parse_required_operands("  \n\t\r\n \n"), [])
+        self.assertEqual(gate.parse_required_operands(f"\n  {PUSH}  \r\n\n{MAIN}\n"), [PUSH, MAIN])
+        self.assertEqual(gate.parse_required_operands("a ==\t'b'"), ["a == 'b'"])
+
+    def test_a_listed_operand_is_kept_twice_not_deduped(self):
+        self.assertEqual(gate.parse_required_operands(f"{PUSH}\n{PUSH}"), [PUSH, PUSH])
+
+    def test_an_input_line_holding_a_top_level_and_is_unreadable(self):
+        for line in (PUSH + " && " + MAIN, "a &&", "&& a", "a&&b"):
+            with self.subTest(line=line):
+                with self.assertRaises(gate.Unreadable):
+                    gate.parse_required_operands(PUSH + "\n" + line)
+
+    def test_an_and_inside_quotes_or_parentheses_in_an_input_line_is_allowed(self):
+        for line in ("env.X == 'a && b'", "(" + PUSH + " && " + MAIN + ")", 'env.X == "a && b"'):
+            with self.subTest(line=line):
+                self.assertEqual(gate.parse_required_operands(line), [line])
+
+    def test_an_input_line_holding_an_and_fails_the_run_as_unreadable(self):
+        status, out = self.run_with(read("gate-pass-operands.yml"), operands=PUSH + " && " + MAIN)
+        self.assertEqual(status, 1)
+        self.assertIn("::error file=", out)
+        self.assertIn("GATE-UNREADABLE", out)
+        self.assertNotIn("ok:", out)
+
+    def test_a_passing_workflow_with_the_input_exits_zero(self):
+        status, out = self.run_with(read("gate-pass-operands.yml"))
+        self.assertEqual(status, 0, out)
+        self.assertIn("ok:", out)
+
+    def test_a_failing_workflow_with_the_input_names_each_missing_operand(self):
+        status, out = self.run_with(read("gate-fail-required-operand.yml"))
+        self.assertEqual(status, 1)
+        annotations = [line for line in out.splitlines() if line.startswith("::error")]
+        self.assertEqual(len(annotations), 2, out)
+        for annotation, operand in zip(annotations, REQUIRED):
+            self.assertIn("GATE-REQUIRED-OPERAND apply:", annotation)
+            self.assertIn(f"`{operand}`", annotation)
+        self.assertNotIn("ok:", out)
+
+    def test_a_job_listed_in_two_pairs_is_annotated_once_per_operand_by_the_command(self):
+        status, out = self.run_main(
+            read("gate-fail-required-operand.yml"), "--pairs", "plan:apply plan:apply", "--required-operands", REQUIRED_INPUT
+        )
+        self.assertEqual(status, 1)
+        self.assertEqual(out.count("GATE-REQUIRED-OPERAND apply:"), 2, out)
+
+    def test_the_failing_fixture_is_red_only_because_of_the_input(self):
+        status, out = self.run_main(read("gate-fail-required-operand.yml"), "--pairs", "plan:apply", "--summary-step", SUMMARY)
+        self.assertEqual(status, 0, out)
+        self.assertIn("ok:", out)
+
+    def test_an_empty_or_blank_input_switches_the_check_off(self):
+        for operands in ("", "\n", " \t \r\n  \n"):
+            with self.subTest(operands=operands):
+                status, out = self.run_with(read("gate-fail-required-operand.yml"), operands=operands)
+                self.assertEqual(status, 0, out)
+                self.assertIn("ok:", out)
+
+    def test_the_other_checks_still_fail_with_the_input_given(self):
+        status, out = self.run_with(read("gate-fail-or.yml"))
+        self.assertEqual(status, 1)
+        self.assertIn("GATE-IF-OR apply:", out)
+
+    def test_the_action_passes_the_input_only_through_env(self):
+        lines = ACTION_YML.read_text(encoding="utf-8").splitlines()
+        used = [line for line in lines if "inputs." in line]
+        self.assertIn("        REQUIRED_OPERANDS: ${{ inputs.required-operands }}", used)
+        for line in used:
+            self.assertRegex(line, r"^        [A-Z_]+: \$\{\{ inputs\.[a-z-]+ \}\}$")
+        self.assertIn('--required-operands "$REQUIRED_OPERANDS"', "\n".join(lines))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -40,6 +40,15 @@ inputs:
     description: Name of the plan job's step that saves the plan.
     required: false
     default: Save the update plan for the no-change check
+  required-operands:
+    description: >-
+      Operands that the `if:` of every listed plan job and apply job must carry,
+      one per line. Each is matched exactly, after folding whitespace, as one
+      top-level `&&` operand of the `if:`; a plan job's `if:` must also hold no
+      `||` outside quotes. A line holding a top-level `&&` fails the check.
+      Empty switches the check off.
+    required: false
+    default: ''
 
 runs:
   using: composite
@@ -54,9 +63,11 @@ runs:
         SUMMARY_STEP: ${{ inputs.summary-step }}
         PLAN_FILE: ${{ inputs.plan-file }}
         SAVE_STEP: ${{ inputs.save-step }}
+        REQUIRED_OPERANDS: ${{ inputs.required-operands }}
         SCRIPT: ${{ github.action_path }}/check-apply-gate.py
       run: |
         set -eu
         python3 -I "$SCRIPT" --workflow "$WORKFLOW" --pairs "$PAIRS" \
           --verdict-step "$VERDICT_STEP" --summary-step "$SUMMARY_STEP" \
-          --plan-file "$PLAN_FILE" --save-step "$SAVE_STEP"
+          --plan-file "$PLAN_FILE" --save-step "$SAVE_STEP" \
+          --required-operands "$REQUIRED_OPERANDS"
