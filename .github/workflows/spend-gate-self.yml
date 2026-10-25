@@ -1,0 +1,124 @@
+name: Spend gate (self-test)
+
+# This repo tests the action with its own working copy (the local path below),
+# not a tagged one, so a pull request that changes the action is checked by the
+# change itself. It runs on every pull request, with no path filter, so a change
+# elsewhere in the repo cannot skip it. The action is wired into no workflow of
+# this repo yet; this file only exercises it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/spend-gate
+
+jobs:
+  unit-tests:
+    name: Gate unit tests and sabotage
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Includes SabotageTests: the allowlist check is broken in a copy, the PAID
+      # tests must go red there, and the unmodified copy must be green.
+      - name: Run the gate unit tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
+
+  action:
+    name: Action wiring
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A preview with no changes
+        id: free
+        uses: ./.github/actions/spend-gate
+        with:
+          preview-json: preview-no-changes.json
+          working-directory: .github/actions/spend-gate/fixtures
+
+      - name: A preview with no changes reports FREE and a reason
+        env:
+          VERDICT: ${{ steps.free.outputs.verdict }}
+          REASON: ${{ steps.free.outputs.reason }}
+        run: |
+          test "$VERDICT" = FREE
+          test -n "$REASON"
+
+      - name: A firewall rule change
+        id: firewall
+        uses: ./.github/actions/spend-gate
+        with:
+          preview-json: preview-firewall-rule-change.json
+          working-directory: .github/actions/spend-gate/fixtures
+
+      - name: A firewall rule change reports FREE
+        env:
+          VERDICT: ${{ steps.firewall.outputs.verdict }}
+        run: test "$VERDICT" = FREE
+
+      - name: A server create
+        id: paid
+        uses: ./.github/actions/spend-gate
+        with:
+          preview-json: preview-server-create.json
+          working-directory: .github/actions/spend-gate/fixtures
+
+      - name: A server create reports PAID and names the type
+        env:
+          VERDICT: ${{ steps.paid.outputs.verdict }}
+          REASON: ${{ steps.paid.outputs.reason }}
+        run: |
+          test "$VERDICT" = PAID
+          printf '%s\n' "$REASON" | grep -q 'hcloud:index/server:Server'
+
+      - name: A preview that is not JSON
+        id: malformed
+        uses: ./.github/actions/spend-gate
+        with:
+          preview-json: preview-malformed.json
+          working-directory: .github/actions/spend-gate/fixtures
+
+      - name: A preview that is not JSON reports PAID
+        env:
+          VERDICT: ${{ steps.malformed.outputs.verdict }}
+        run: test "$VERDICT" = PAID
+
+      - name: A preview file that does not exist
+        id: missing
+        uses: ./.github/actions/spend-gate
+        with:
+          preview-json: no-such-preview.json
+          working-directory: .github/actions/spend-gate/fixtures
+
+      - name: A missing preview file reports PAID
+        env:
+          VERDICT: ${{ steps.missing.outputs.verdict }}
+        run: test "$VERDICT" = PAID
+
+      - name: A preview that errored
+        id: errored
+        uses: ./.github/actions/spend-gate
+        with:
+          preview-json: preview-error-diagnostic.json
+          working-directory: .github/actions/spend-gate/fixtures
+
+      - name: A preview that errored reports PAID though it lists only the free stack step
+        env:
+          VERDICT: ${{ steps.errored.outputs.verdict }}
+        run: test "$VERDICT" = PAID

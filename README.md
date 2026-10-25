@@ -755,6 +755,35 @@ plan-has-changes run checks the job summary through the runner's own per-step
 summary files, a directory layout that is the runner's and not a documented
 interface: the check fails, rather than passing, if that layout goes.
 
+### `.github/actions/spend-gate`
+
+Decides whether a Pulumi preview could cost money. Reads the same
+`pulumi preview --json` file as `plan-has-changes` and says `FREE` only when
+every resource that changes is of a type on an explicit free list (Hetzner
+networks, subnets, routes, firewalls and their attachments, SSH keys and
+placement groups, plus the stack and its providers). Everything else is `PAID`:
+servers, volumes, load balancers, IPs and buckets, any unknown type, a preview
+that errored, and a preview it cannot read. Rules, the list and its limits:
+[`spend-gate.md`](.github/actions/spend-gate/spend-gate.md). No workflow calls it
+yet. It loads the preview parser from `plan-has-changes` at the same revision, so
+a caller pins this repository once.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `preview-json` | required | Path to the `pulumi preview --json` output. |
+| `working-directory` | `.` | Directory the path is relative to, relative to the workspace root. |
+
+| Output | Meaning |
+| --- | --- |
+| `verdict` | `FREE` or `PAID`. Unset if the step failed: a caller must read an unset verdict as `PAID`. |
+| `reason` | One line saying why, from fixed text and sanitised type names. |
+
+The same line is appended to the job summary. The action gives a verdict only: a
+caller must also treat a failed `pulumi preview` step as `PAID`. This repo's
+`spend-gate-self.yml` runs the unit tests, which include breaking the free-list
+check in a copy and requiring the `PAID` tests to go red, and runs the action over
+a `FREE` and a `PAID` fixture on every pull request.
+
 ### `.github/actions/ssh-check-hosts`
 
 Asks each host, through the restricted SSH route, what an apply of one commit
