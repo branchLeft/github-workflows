@@ -1,0 +1,60 @@
+name: Assert environment gated
+description: >-
+  Fail the step unless a GitHub environment really gates its deploy job: a
+  required-reviewers rule, or an enabled branchleft-reviewer deployment
+  protection rule. Fails closed: any unreadable answer fails the step.
+
+# The rules and their reasons are in assert-environment-gated.md beside this
+# file. The script is run from the revision the caller pinned, via
+# github.action_path, so this file never names a tag of this repo.
+
+inputs:
+  environment:
+    description: >-
+      The name of the environment the deploy job declares. Letters, digits,
+      dot, underscore and hyphen only.
+    required: true
+  github-token:
+    description: >-
+      The token the two API reads use. The run's own token is enough; pass
+      nothing wider.
+    required: false
+    default: ${{ github.token }}
+  repository:
+    description: The repository, as `owner/name`, whose environment is read.
+    required: false
+    default: ${{ github.repository }}
+
+runs:
+  using: composite
+  steps:
+    - id: gate
+      shell: bash
+      env:
+        ENVIRONMENT: ${{ inputs.environment }}
+        REPOSITORY: ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        SCRIPT: ${{ github.action_path }}/assert-environment-gated.py
+      run: |
+        set -eu
+        # Both go into an API path, so neither may be a path: no slash in the
+        # environment name, and no name that is only dots.
+        name_re='^[A-Za-z0-9_][A-Za-z0-9._-]*$'
+        repository_re='^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]*[A-Za-z0-9_-][A-Za-z0-9._-]*$'
+        [[ "$ENVIRONMENT" =~ $name_re ]] || { echo "::error::environment must be a name of letters, digits, dot, underscore and hyphen"; exit 1; }
+        [[ "$REPOSITORY" =~ $repository_re ]] || { echo "::error::repository must be owner/name"; exit 1; }
+        env_json=$(mktemp "${RUNNER_TEMP:-/tmp}/environment.XXXXXX")
+        rules_json=$(mktemp "${RUNNER_TEMP:-/tmp}/rules.XXXXXX")
+        trap 'rm -f "$env_json" "$rules_json"' EXIT
+        # Two reads, both required: a custom deployment protection rule (the
+        # branchleft-reviewer App) is NOT listed in protection_rules, only in
+        # deployment_protection_rules. Any API error fails closed.
+        gh api "repos/${REPOSITORY}/environments/${ENVIRONMENT}" > "$env_json" \
+          || { echo "::error::could not read the ${ENVIRONMENT} environment"; exit 1; }
+        gh api "repos/${REPOSITORY}/environments/${ENVIRONMENT}/deployment_protection_rules" > "$rules_json" \
+          || { echo "::error::could not read the ${ENVIRONMENT} deployment protection rules"; exit 1; }
+        python3 -I "$SCRIPT" --self-test > /dev/null
+        if ! python3 -I "$SCRIPT" "$env_json" "$rules_json"; then
+          echo "::error::the ${ENVIRONMENT} environment has neither a required-reviewer rule nor an enabled branchleft-reviewer deployment protection rule -- the plan-approval gate is not real. Configure it in repo settings before any CI apply."
+          exit 1
+        fi

@@ -784,6 +784,76 @@ caller must also treat a failed `pulumi preview` step as `PAID`. This repo's
 check in a copy and requiring the `PAID` tests to go red, and runs the action over
 a `FREE` and a `PAID` fixture on every pull request.
 
+### `.github/actions/assert-no-hetzner-deletes`
+
+Fails the step if a `pulumi preview --json` plan would destroy or replace a
+protected Hetzner resource (servers, networks, subnets, firewalls, primary IPs),
+and if the Pulumi program no longer declares the constructors the caller's own
+coverage map says it must. It is the one home of the delete guard, so a repository
+that applies a Hetzner stack holds a `uses:` step and a small JSON map, and no copy
+of the script. Rules, the protected list, the map format and the limits:
+[`assert-no-hetzner-deletes.md`](.github/actions/assert-no-hetzner-deletes/assert-no-hetzner-deletes.md).
+Pin it by commit, as for `plan-has-changes` above.
+
+Call it in the apply job, after that job's own preview, so the check reads the
+state `pulumi up` is about to act on:
+
+```yaml
+      - name: Refuse a plan that destroys the estate
+        uses: branchLeft/github-workflows/.github/actions/assert-no-hetzner-deletes@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          preview-json: preview.json
+          program-dir: .
+          coverage-map: ../hetzner-delete-coverage.json
+          working-directory: infra/hosts
+```
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `program-dir` | required | The Pulumi program directory. Its basename must be a key of the coverage map. Always checked. |
+| `coverage-map` | required | The caller's own JSON file: an object from a program directory's basename to the non-empty list of constructors that directory must declare. |
+| `preview-json` | empty | The `pulumi preview --json` output. Omit it for a run that only checks the coverage and the guard's self-test. |
+| `working-directory` | `.` | Directory the three paths are relative to, relative to the workspace root. The action does not read your job's `defaults.run.working-directory`. |
+
+It has no outputs: it fails the step. A plan it refuses is printed in full after
+the error. This repo's `assert-no-hetzner-deletes-self.yml` runs the unit tests,
+which include breaking each control in a copy and requiring its tests to go red,
+and runs the action over a plan with a delete and a plan without one on every pull
+request.
+
+### `.github/actions/assert-environment-gated`
+
+Fails the step unless a GitHub environment really gates its deploy job: a
+required-reviewers rule, or an enabled `branchleft-reviewer` deployment protection
+rule. It reads both endpoints (a custom rule is listed only by the second), and
+any read that fails, a body that is not JSON and an error body all fail the step.
+It is the one home of the check, so a deploy job holds a `uses:` step and no copy
+of the script. What counts as gated and what the action refuses before it makes a
+call:
+[`assert-environment-gated.md`](.github/actions/assert-environment-gated/assert-environment-gated.md).
+
+Make it the first step of the deploy job, after checkout and before any step that
+reads a secret, pinned by commit:
+
+```yaml
+      - name: Refuse to apply through an ungated environment
+        uses: branchLeft/github-workflows/.github/actions/assert-environment-gated@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          environment: production
+```
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `environment` | required | The environment the deploy job declares. Letters, digits, dot, underscore and hyphen; it goes into an API path, so anything else fails the step. |
+| `github-token` | the run's own token | The token the two reads use. The run's own is enough: pass nothing wider. |
+| `repository` | the current repository | `owner/name` whose environment is read. |
+
+It has no outputs: it fails the step. This repo's `assert-environment-gated-self.yml`
+runs the unit tests, which include breaking each control in a copy and requiring its
+tests to go red, and runs the action against a stub `gh` for a required reviewer, a
+reviewer App rule, an ungated environment, unreadable rules and a path as the
+environment name.
+
 ### `.github/actions/ssh-check-hosts`
 
 Asks each host, through the restricted SSH route, what an apply of one commit

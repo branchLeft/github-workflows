@@ -1,0 +1,65 @@
+name: Assert no Hetzner deletes
+description: >-
+  Fail the step if a Pulumi preview would destroy a protected Hetzner resource,
+  or if the program no longer declares what the caller's coverage map says it
+  must. Fails closed: an unreadable preview or map fails the step.
+
+# The rules and their reasons are in assert-no-hetzner-deletes.md beside this
+# file. The script is run from the revision the caller pinned, via
+# github.action_path, so this file never names a tag of this repo.
+
+inputs:
+  program-dir:
+    description: >-
+      The Pulumi program directory, relative to `working-directory`. Its
+      basename must be a key of the coverage map. Always checked, so the
+      coverage check cannot be skipped by leaving an input out.
+    required: true
+  coverage-map:
+    description: >-
+      Path to the caller's own JSON file, relative to `working-directory`: an
+      object from a program directory's basename to the non-empty list of
+      constructors it must declare.
+    required: true
+  preview-json:
+    description: >-
+      Path to the `pulumi preview --json` output, relative to
+      `working-directory`. Omit it for a run that only checks the coverage and
+      the guard's own self-test; give it in the job that applies.
+    required: false
+    default: ''
+  working-directory:
+    description: >-
+      Directory the three paths are relative to, itself relative to the
+      workspace root. The action does not read the job's
+      `defaults.run.working-directory`: omit this input and the paths are read
+      from the workspace root.
+    required: false
+    default: '.'
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PROGRAM_DIR: ${{ inputs.program-dir }}
+        COVERAGE_MAP: ${{ inputs.coverage-map }}
+        PREVIEW_JSON: ${{ inputs.preview-json }}
+        SCRIPT: ${{ github.action_path }}/assert-no-hetzner-deletes.py
+      run: |
+        set -eu
+        if [ -z "$PROGRAM_DIR" ] || [ -z "$COVERAGE_MAP" ]; then
+          echo "::error::program-dir and coverage-map are both required: the coverage check is never skipped"
+          exit 1
+        fi
+        python3 -I "$SCRIPT" --self-test
+        python3 -I "$SCRIPT" --verify-coverage "$PROGRAM_DIR" --coverage-map "$COVERAGE_MAP"
+        if [ -n "$PREVIEW_JSON" ]; then
+          if ! python3 -I "$SCRIPT" "$PREVIEW_JSON"; then
+            echo "--- full plan follows ---"
+            python3 -m json.tool "$PREVIEW_JSON" || true
+            exit 1
+          fi
+        fi

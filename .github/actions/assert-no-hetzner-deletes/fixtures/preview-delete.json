@@ -1,0 +1,43 @@
+{
+  "steps": [
+    {
+      "op": "same",
+      "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+      "oldState": {
+        "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "id": "",
+        "outputs": {}
+      },
+      "newState": {
+        "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack"
+      }
+    },
+    {
+      "op": "delete",
+      "urn": "urn:pulumi:production::example::hcloud:index/server:Server::mail-server",
+      "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+      "oldState": {
+        "urn": "urn:pulumi:production::example::hcloud:index/server:Server::mail-server",
+        "custom": true,
+        "id": "1",
+        "type": "hcloud:index/server:Server",
+        "inputs": {
+          "image": "debian-12",
+          "name": "example-server",
+          "serverType": "cx22"
+        },
+        "parent": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9"
+      }
+    }
+  ],
+  "duration": 1,
+  "changeSummary": {
+    "delete": 1,
+    "same": 1
+  }
+}
