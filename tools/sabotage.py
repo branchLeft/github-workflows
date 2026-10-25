@@ -466,7 +466,7 @@ CASES: list[Case] = [
     ),
     Case(
         "lint runs on a delivery run that asked to skip it",
-        [Edit(GATED, "    needs: [discover]\n    if: needs.discover.outputs.rerun == 'true'\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20", "    needs: [discover]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20")],
+        [Edit(GATED, "    needs: [discover]\n    if: needs.discover.outputs.recheck == 'true'\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20", "    needs: [discover]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20")],
         ["SkipRerunDeclarationTests.test_lint_and_the_shards_run_unless_discover_says_the_merge_queue_already_did"],
     ),
     Case(

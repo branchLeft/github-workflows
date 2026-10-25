@@ -569,7 +569,7 @@ class StructureTests(unittest.TestCase):
                 "APPLY": "${{ needs.apply.result }}",
                 "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
                 "DRY_RUN": "${{ inputs.dry-run }}",
-                "RERUN": "${{ needs.discover.outputs.rerun }}",
+                "RERUN": "${{ needs.discover.outputs.recheck }}",
             }),
             ("discover", "Decide whether this run may reach a host", {
                 "EVENT_NAME": "${{ github.event_name }}",
@@ -889,13 +889,13 @@ class SkipRerunDeclarationTests(unittest.TestCase):
     def test_lint_and_the_shards_run_unless_discover_says_the_merge_queue_already_did(self) -> None:
         for name in ("lint", "shard"):
             with self.subTest(job=name):
-                self.assertEqual(JOBS[name]["if"], "needs.discover.outputs.rerun == 'true'")
+                self.assertEqual(JOBS[name]["if"], "needs.discover.outputs.recheck == 'true'")
 
     def test_the_confirmation_is_a_discover_step_that_runs_only_when_the_rerun_is_skipped(self) -> None:
         step = find_step("discover", "confirm")
         self.assertEqual(step["if"], "steps.context.outputs.rerun == 'false'")
         self.assertIn("confirm", [s.get("id") for s in JOBS["discover"]["steps"]])
-        self.assertEqual(JOBS["discover"]["outputs"]["rerun"], "${{ steps.context.outputs.rerun }}")
+        self.assertEqual(JOBS["discover"]["outputs"]["recheck"], "${{ steps.context.outputs.rerun }}")
 
 
 class RerunDecisionTests(unittest.TestCase):

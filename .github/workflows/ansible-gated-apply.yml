@@ -140,7 +140,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       delivery: ${{ steps.context.outputs.delivery }}
-      rerun: ${{ steps.context.outputs.rerun }}
+      recheck: ${{ steps.context.outputs.rerun }}
       matrix: ${{ steps.shards.outputs.matrix }}
     steps:
       - name: Checkout
@@ -373,7 +373,7 @@ jobs:
   lint:
     name: Lint the Ansible inputs
     needs: [discover]
-    if: needs.discover.outputs.rerun == 'true'
+    if: needs.discover.outputs.recheck == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
@@ -443,7 +443,7 @@ jobs:
   shard:
     name: 'Molecule: ${{ matrix.name }}'
     needs: [discover]
-    if: needs.discover.outputs.rerun == 'true'
+    if: needs.discover.outputs.recheck == 'true'
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
@@ -785,7 +785,7 @@ jobs:
           APPLY: ${{ needs.apply.result }}
           HAS_CHANGES: ${{ needs.plan.outputs.has_changes }}
           DRY_RUN: ${{ inputs.dry-run }}
-          RERUN: ${{ needs.discover.outputs.rerun }}
+          RERUN: ${{ needs.discover.outputs.recheck }}
         run: |
           set -euo pipefail
           problems=0

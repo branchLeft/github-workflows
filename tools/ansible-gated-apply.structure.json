@@ -443,7 +443,7 @@
               "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
               "LINT": "${{ needs.lint.result }}",
               "PLAN": "${{ needs.plan.result }}",
-              "RERUN": "${{ needs.discover.outputs.rerun }}",
+              "RERUN": "${{ needs.discover.outputs.recheck }}",
               "SHARD": "${{ needs.shard.result }}"
             },
             "name": "Require every job to have ended as expected",
@@ -457,7 +457,7 @@
         "outputs": {
           "delivery": "${{ steps.context.outputs.delivery }}",
           "matrix": "${{ steps.shards.outputs.matrix }}",
-          "rerun": "${{ steps.context.outputs.rerun }}"
+          "recheck": "${{ steps.context.outputs.rerun }}"
         },
         "runs-on": "ubuntu-24.04",
         "steps": [
@@ -514,7 +514,7 @@
             "working-directory": "${{ inputs.working-directory }}"
           }
         },
-        "if": "needs.discover.outputs.rerun == 'true'",
+        "if": "needs.discover.outputs.recheck == 'true'",
         "name": "Lint the Ansible inputs",
         "needs": [
           "discover"
@@ -678,7 +678,7 @@
         "env": {
           "ROLE_TEST_RUN_ID": "${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}"
         },
-        "if": "needs.discover.outputs.rerun == 'true'",
+        "if": "needs.discover.outputs.recheck == 'true'",
         "name": "Molecule: ${{ matrix.name }}",
         "needs": [
           "discover"
