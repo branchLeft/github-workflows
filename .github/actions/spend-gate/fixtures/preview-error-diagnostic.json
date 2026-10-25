@@ -1,0 +1,26 @@
+{
+  "steps": [
+    {
+      "op": "create",
+      "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+      "newState": {
+        "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "sourcePosition": "project:///main.yaml#1"
+      },
+      "detailedDiff": null
+    }
+  ],
+  "diagnostics": [
+    {
+      "urn": "urn:pulumi:production::example::pulumi:providers:hcloud::default",
+      "message": "error: pulumi:providers:hcloud resource 'default' has a problem: could not validate provider configuration\n",
+      "severity": "error"
+    }
+  ],
+  "duration": 1,
+  "changeSummary": {
+    "create": 1
+  }
+}

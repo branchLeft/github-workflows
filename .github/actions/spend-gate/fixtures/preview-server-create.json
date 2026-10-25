@@ -1,0 +1,65 @@
+{
+  "steps": [
+    {
+      "op": "create",
+      "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+      "newState": {
+        "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "sourcePosition": "project:///main.yaml#1"
+      },
+      "detailedDiff": null
+    },
+    {
+      "op": "create",
+      "urn": "urn:pulumi:production::example::hcloud:index/server:Server::mx1",
+      "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+      "newState": {
+        "urn": "urn:pulumi:production::example::hcloud:index/server:Server::mx1",
+        "custom": true,
+        "type": "hcloud:index/server:Server",
+        "inputs": {
+          "__defaults": [],
+          "image": "debian-12",
+          "name": "probe-server",
+          "serverType": "cx22"
+        },
+        "parent": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+        "propertyDependencies": {
+          "image": [],
+          "name": [],
+          "serverType": []
+        },
+        "sourcePosition": "project:///main.yaml#1"
+      },
+      "detailedDiff": null
+    },
+    {
+      "op": "create",
+      "urn": "urn:pulumi:production::example::hcloud:index/firewall:Firewall::mailfw",
+      "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+      "newState": {
+        "urn": "urn:pulumi:production::example::hcloud:index/firewall:Firewall::mailfw",
+        "custom": true,
+        "type": "hcloud:index/firewall:Firewall",
+        "inputs": {
+          "__defaults": [],
+          "name": "probe-firewall"
+        },
+        "parent": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+        "propertyDependencies": {
+          "name": []
+        },
+        "sourcePosition": "project:///main.yaml#1"
+      },
+      "detailedDiff": null
+    }
+  ],
+  "duration": 1,
+  "changeSummary": {
+    "create": 3
+  }
+}

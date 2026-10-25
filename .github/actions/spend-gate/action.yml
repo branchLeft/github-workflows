@@ -1,0 +1,46 @@
+name: Spend gate
+description: >-
+  Decide whether a Pulumi preview could cost money. Fails closed: only a
+  preview that parsed and changes nothing but free resource types reports
+  `FREE`; every other outcome is `PAID`.
+
+# The rules and their reasons are in spend-gate.md beside this file.
+# The script is run from the revision the caller pinned, via github.action_path,
+# so this file never names a tag of this repo. It loads plan-has-changes' preview
+# parser from the sibling directory of the same revision.
+
+inputs:
+  preview-json:
+    description: Path to the `pulumi preview --json` output.
+    required: true
+  working-directory:
+    description: >-
+      Directory the path is relative to, itself relative to the workspace root.
+      The action does not read the job's `defaults.run.working-directory`: omit
+      this input and the path is read from the workspace root.
+    required: false
+    default: '.'
+
+outputs:
+  verdict:
+    description: >-
+      `FREE` or `PAID`. Unset if the step failed (the verdict could not be
+      written): a caller must read an unset verdict as `PAID`.
+    value: ${{ steps.decide.outputs.verdict }}
+  reason:
+    description: One line saying why, built from fixed text and sanitised type names.
+    value: ${{ steps.decide.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - id: decide
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        PREVIEW_JSON: ${{ inputs.preview-json }}
+        SCRIPT: ${{ github.action_path }}/spend-gate.py
+      run: |
+        set -eu
+        python3 -I "$SCRIPT" "$PREVIEW_JSON" \
+          --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"

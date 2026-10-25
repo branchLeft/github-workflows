@@ -1,0 +1,68 @@
+{
+  "steps": [
+    {
+      "op": "same",
+      "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+      "oldState": {
+        "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "id": "ID",
+        "outputs": {
+          "k": "v"
+        },
+        "sourcePosition": "project:///main.yaml#1"
+      },
+      "newState": {
+        "urn": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "sourcePosition": "project:///main.yaml#1"
+      },
+      "detailedDiff": null
+    },
+    {
+      "op": "update",
+      "urn": "urn:pulumi:production::example::hcloud:index/server:Server::mx1",
+      "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+      "oldState": {
+        "urn": "urn:pulumi:production::example::hcloud:index/server:Server::mx1",
+        "custom": true,
+        "type": "hcloud:index/server:Server",
+        "inputs": {
+          "name": "mx1",
+          "serverType": "cx22",
+          "image": "debian-12"
+        },
+        "parent": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+        "sourcePosition": "project:///main.yaml#1",
+        "id": "1234"
+      },
+      "newState": {
+        "urn": "urn:pulumi:production::example::hcloud:index/server:Server::mx1",
+        "custom": true,
+        "type": "hcloud:index/server:Server",
+        "inputs": {
+          "name": "mx1",
+          "serverType": "cx42",
+          "image": "debian-12"
+        },
+        "parent": "urn:pulumi:production::example::pulumi:pulumi:Stack::example-production",
+        "provider": "urn:pulumi:production::example::pulumi:providers:hcloud::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+        "sourcePosition": "project:///main.yaml#1"
+      },
+      "detailedDiff": {
+        "serverType": {
+          "kind": "update",
+          "inputDiff": true
+        }
+      }
+    }
+  ],
+  "duration": 1,
+  "changeSummary": {
+    "same": 2,
+    "update": 1
+  }
+}
