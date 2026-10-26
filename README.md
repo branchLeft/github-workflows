@@ -115,6 +115,8 @@ jobs:
       projects_app_key: ${{ secrets.BRANCHLEFT_PROJECTS_APP_KEY }}
 ```
 
+**`runs-on` is optional.** It is a JSON array of runner labels, passed as a string, and it defaults to `'["ubuntu-latest"]'`. A caller that needs its own runner for the job passes it, for example `runs-on: '["self-hosted","macOS","branchleft-workspace"]'`. A caller that passes nothing keeps GitHub-hosted `ubuntu-latest`.
+
 Organisation-level Actions secrets are **not** delivered to a private repo's
 runner on the free plan — measured, with `GITHUB_TOKEN` arriving beside an
 empty organisation secret in the same step. Set both at repository level.

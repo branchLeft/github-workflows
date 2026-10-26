@@ -22,3 +22,6 @@ jobs:
 
       - name: Run the merged-status unit tests
         run: python3 tools/merged-status.py --self-test
+
+      - name: Check the reusable workflow's runner seam
+        run: ./tools/merged-status-workflow.test.sh
