@@ -554,6 +554,9 @@ jobs:
       # empty ref would make the checkout below take the default branch and run
       # unpinned code with the key. So exactly one full commit id must be found,
       # and the path must be free of any file of the caller. Needs actions: read.
+      # A caller pinned to a signed release tag is recorded under the id of the tag
+      # object, not of its commit, so that id is peeled to the commit it points at,
+      # and only a verified tag is accepted.
       - name: Resolve the commit this workflow was called at
         id: pin
         env:
@@ -580,8 +583,34 @@ jobs:
           if [ -e "$GITHUB_WORKSPACE/.gw" ] || [ -L "$GITHUB_WORKSPACE/.gw" ]; then
             fail "The path .gw already exists in the workspace, so the shared actions cannot be checked out into a clean directory."
           fi
-          echo "sha=$pinned" >> "$GITHUB_OUTPUT"
-          echo "The shared actions are taken from commit $pinned, the commit of ${called#* }."
+          commit="$pinned"
+          shared=branchLeft/github-workflows
+          err_file=$(mktemp)
+          trap 'rm -f "$err_file"' EXIT
+          first_line() { head -n 1 "$err_file" | tr -cd 'A-Za-z0-9 ().:_/-' | cut -c1-80; }
+          if tag_json=$(gh api "repos/$shared/git/tags/$pinned" 2> "$err_file"); then
+            fields=$(printf '%s' "$tag_json" | jq -r '
+              def shown: if type == "string" and length > 0 then gsub("[^A-Za-z0-9._-]"; "?") | .[0:41] else "missing" end;
+              [(.object.type | shown), (.object.sha | shown), (.verification.verified | if . == true then "true" elif . == false then "false" else "missing" end)] | @tsv') \
+              || fail "The answer for the tag object $pinned could not be read. Refusing to fall back to the default branch."
+            IFS=$'\t' read -r object_type peeled verified <<< "$fields"
+            [ "$object_type" = commit ] || fail "The run record names the tag object $pinned, which points at an object of type $object_type, not a commit. Refusing to fall back to the default branch."
+            [[ "$peeled" =~ $sha_re ]] || fail "The tag object $pinned points at a commit whose id is not 40 lowercase hex digits (found $peeled). Refusing to fall back to the default branch."
+            [ "$verified" = true ] || fail "The tag object $pinned is not a verified tag (verified: $verified). Refusing to fall back to the default branch."
+            commit="$peeled"
+          elif grep -qxF 'gh: Not Found (HTTP 404)' "$err_file"; then
+            plain=$(gh api "repos/$shared/git/commits/$pinned" --jq .sha 2> "$err_file") \
+              || fail "The id $pinned is neither a tag object nor a commit of $shared (the commit read answered: $(first_line)). Refusing to fall back to the default branch."
+            [ "$plain" = "$pinned" ] || fail "The commit read for $pinned answered a different id. Refusing to fall back to the default branch."
+          else
+            fail "The tag object $pinned could not be read (answered: $(first_line)). Refusing to fall back to the default branch."
+          fi
+          if [ "$commit" = "$pinned" ]; then
+            echo "The shared actions are taken from commit $pinned, the commit of ${called#* }."
+          else
+            echo "The shared actions are taken from commit $commit, the commit tag object $pinned points at (${called#* })."
+          fi
+          echo "sha=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Check out the shared actions at that commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
