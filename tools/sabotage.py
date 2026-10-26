@@ -131,6 +131,16 @@ CASES: list[Case] = [
         [f"{PIN}.test_no_commit_two_commits_or_a_commit_of_another_repository_is_refused_and_never_falls_back"],
     ),
     Case(
+        "pin publishes the tag object instead of the commit it peels to",
+        [Edit(GATED, 'commit="$peeled"', 'commit="$pinned"'), Edit(DRIFT, 'commit="$peeled"', 'commit="$pinned"')],
+        [f"{PIN}.test_a_signed_tag_object_is_peeled_to_its_commit_which_is_published_and_both_are_logged"],
+    ),
+    Case(
+        "pin accepts a tag that is not verified",
+        [Edit(GATED, '[ "$verified" = true ] || fail', '[ -n "$verified" ] || fail'), Edit(DRIFT, '[ "$verified" = true ] || fail', '[ -n "$verified" ] || fail')],
+        [f"{PIN}.test_every_answer_that_is_not_a_verified_tag_of_a_commit_or_a_plain_commit_is_refused_and_publishes_nothing"],
+    ),
+    Case(
         "pin accepts two or more commits",
         [Edit(GATED, '[ "$count" -eq 1 ] ||', '[ "$count" -ge 1 ] ||'), Edit(DRIFT, '[ "$count" -eq 1 ] ||', '[ "$count" -ge 1 ] ||')],
         [f"{PIN}.test_no_commit_two_commits_or_a_commit_of_another_repository_is_refused_and_never_falls_back"],

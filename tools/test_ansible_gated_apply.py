@@ -23,7 +23,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 
@@ -148,14 +148,46 @@ printf '%s\\n' "$GH_HEAD"
 """
 
 
+# Answers by the API path, as `gh api PATH [--jq EXPR]` does: the run record from
+# run.json (exit code in gh.exit), and a tag or a commit of the shared repository
+# from tag.* or commit.* (out, err, exit). On failure, like gh, it prints the
+# response body on stdout and the message on stderr. A tag read with no fixture
+# or an unknown path exits 98, so a test never passes on an answer it did not
+# set. A commit read with no fixture answers as a commit of that id.
 RECORD_GH_STUB = """#!/usr/bin/env bash
 echo "$*" >> "$STUB_DIR/gh.log"
-code=$(cat "$STUB_DIR/gh.exit" 2> /dev/null || echo 0)
-if [ "$code" != 0 ]; then
-  echo "gh: HTTP 403" >&2
-  exit "$code"
+[ "$1" = api ] || exit 98
+case "$2" in
+  repos/*/actions/runs/*)
+    code=$(cat "$STUB_DIR/gh.exit" 2> /dev/null || echo 0)
+    if [ "$code" != 0 ]; then
+      echo "gh: HTTP 403" >&2
+      exit "$code"
+    fi
+    cat "$STUB_DIR/run.json"
+    exit 0
+    ;;
+  repos/*/git/tags/*) kind=tag ;;
+  repos/*/git/commits/*) kind=commit ;;
+  *) exit 98 ;;
+esac
+if [ "$kind" = commit ] && [ ! -f "$STUB_DIR/commit.exit" ]; then
+  if [ "$3" = --jq ]; then
+    printf '%s\\n' "${2##*/}"
+  else
+    printf '{"sha":"%s"}\\n' "${2##*/}"
+  fi
+  exit 0
 fi
-cat "$STUB_DIR/run.json"
+[ -f "$STUB_DIR/$kind.exit" ] || exit 98
+code=$(cat "$STUB_DIR/$kind.exit")
+if [ "$code" = 0 ] && [ "$3" = --jq ]; then
+  jq -r "$4" "$STUB_DIR/$kind.out"
+else
+  cat "$STUB_DIR/$kind.out"
+fi
+cat "$STUB_DIR/$kind.err" >&2
+exit "$code"
 """
 
 
@@ -1787,6 +1819,31 @@ PIN_SOURCES = (
 )
 
 
+class GhReply(NamedTuple):
+    """What the stub gh answers for one read: the body on stdout, the message on stderr, the exit code."""
+
+    out: str
+    err: str = ""
+    code: int = 0
+
+
+TAG_OBJECT_SHA = "c" * 40
+PEELED_SHA = "d" * 40
+SHARED_REPOSITORY = "branchLeft/github-workflows"
+NOT_FOUND = GhReply('{"message":"Not Found","status":"404"}', "gh: Not Found (HTTP 404)", 1)
+
+
+def plain_commit(sha: str = SHA) -> GhReply:
+    return GhReply(json.dumps({"sha": sha, "tree": {"sha": "9" * 40}}))
+
+
+def tag_object(object_type: Any = "commit", sha: Any = PEELED_SHA, verified: Any = True, verification: bool = True) -> GhReply:
+    body: dict[str, Any] = {"sha": TAG_OBJECT_SHA, "object": {"type": object_type, "sha": sha}}
+    if verification:
+        body["verification"] = {"verified": verified, "reason": "valid"}
+    return GhReply(json.dumps(body))
+
+
 class PinTests(unittest.TestCase):
     """The commit the shared actions are taken from: never empty, never the default branch."""
 
@@ -1795,8 +1852,22 @@ class PinTests(unittest.TestCase):
         path.mkdir()
         return path
 
-    def resolve(self, pin: Any, record: Any = None, gh_exit: int = 0, existing: str = "") -> tuple[Sandbox, Result]:
-        """Run a pin step against a run record that holds `record` as its referenced workflows."""
+    def resolve(
+        self,
+        pin: Any,
+        record: Any = None,
+        gh_exit: int = 0,
+        existing: str = "",
+        tag: GhReply | None = None,
+        commit: GhReply | None = None,
+        temp_dir: Path | None = None,
+    ) -> tuple[Sandbox, Result]:
+        """Run a pin step against a run record that holds `record` as its referenced workflows.
+
+        `tag` and `commit` are the answers of the tag read and the commit read. Unless a test sets
+        another, the id is no tag object and is a commit, whatever sha the run record names.
+        A `commit` of None answers as a commit of the id asked for.
+        """
         sandbox = Sandbox(self, gh_stub=RECORD_GH_STUB)
         ws = self.workspace(sandbox)
         if existing == "directory":
@@ -1808,9 +1879,18 @@ class PinTests(unittest.TestCase):
         body: dict[str, Any] = {"id": 1} if record is None else {"id": 1, "referenced_workflows": record}
         (sandbox.stubs / "run.json").write_text(json.dumps(body))
         (sandbox.stubs / "gh.exit").write_text(f"{gh_exit}\n")
+        for kind, reply in (("tag", tag or NOT_FOUND), ("commit", commit)):
+            if reply is None:
+                continue
+            (sandbox.stubs / f"{kind}.out").write_text(reply.out)
+            (sandbox.stubs / f"{kind}.err").write_text(reply.err)
+            (sandbox.stubs / f"{kind}.exit").write_text(f"{reply.code}\n")
         step = pin()
         values = {"GH_TOKEN": "TOKEN_FOR_TEST", "REPO": "org/repo", "RUN_ID": "12345", "CALLED_WORKFLOW": step["env"]["CALLED_WORKFLOW"]}
-        return sandbox, sandbox.run(step, values, {"GITHUB_WORKSPACE": str(ws)})
+        extra = {"GITHUB_WORKSPACE": str(ws)}
+        if temp_dir is not None:
+            extra["TMPDIR"] = str(temp_dir)
+        return sandbox, sandbox.run(step, values, extra)
 
     def entry(self, workflow: str, sha: str, repo: str = "branchLeft/github-workflows", ref: str = "refs/tags/v1.2.3") -> dict[str, str]:
         return {"path": f"{repo}/.github/workflows/{workflow}@v1.2.3", "ref": ref, "sha": sha}
@@ -1824,7 +1904,10 @@ class PinTests(unittest.TestCase):
                     self.assertEqual(result.code, 0, result.log)
                     self.assertEqual(result.outputs, {"sha": sha})
                     self.assertIn(sha, result.log)
-                    self.assertEqual((sandbox.stubs / "gh.log").read_text().strip(), "api repos/org/repo/actions/runs/12345")
+                    self.assertEqual(
+                        (sandbox.stubs / "gh.log").read_text().splitlines()[0],
+                        "api repos/org/repo/actions/runs/12345",
+                    )
 
     def test_the_same_workflow_called_twice_at_one_commit_passes(self) -> None:
         for label, pin, _ in PIN_SOURCES:
@@ -1885,6 +1968,126 @@ class PinTests(unittest.TestCase):
                     self.assertNotEqual(result.code, 0)
                     self.assertEqual(result.outputs, {})
                     self.assertIn(".gw already exists", result.log)
+
+    def reads(self, sandbox: Sandbox) -> list[str]:
+        """The calls the step made, without the run record read."""
+        return [line for line in (sandbox.stubs / "gh.log").read_text().splitlines() if "/actions/runs/" not in line]
+
+    def called_workflow(self, pin: Any) -> str:
+        return pin()["env"]["CALLED_WORKFLOW"].rsplit("/", 1)[1]
+
+    def test_a_signed_tag_object_is_peeled_to_its_commit_which_is_published_and_both_are_logged(self) -> None:
+        for label, pin, _ in PIN_SOURCES:
+            with self.subTest(file=label):
+                sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), TAG_OBJECT_SHA)], tag=tag_object())
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs, {"sha": PEELED_SHA})
+                self.assertIn(f"commit {PEELED_SHA}, the commit tag object {TAG_OBJECT_SHA} points at", result.log)
+                self.assertEqual(self.reads(sandbox), [f"api repos/{SHARED_REPOSITORY}/git/tags/{TAG_OBJECT_SHA}"])
+
+    def test_a_plain_commit_is_published_after_the_tag_read_found_nothing_and_the_commit_read_answered(self) -> None:
+        for label, pin, _ in PIN_SOURCES:
+            with self.subTest(file=label):
+                sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA)])
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs, {"sha": SHA})
+                self.assertNotIn("tag object", result.log)
+                self.assertEqual(
+                    self.reads(sandbox),
+                    [f"api repos/{SHARED_REPOSITORY}/git/tags/{SHA}", f"api repos/{SHARED_REPOSITORY}/git/commits/{SHA} --jq .sha"],
+                )
+
+    def test_every_answer_that_is_not_a_verified_tag_of_a_commit_or_a_plain_commit_is_refused_and_publishes_nothing(self) -> None:
+        cases: dict[str, tuple[GhReply, GhReply | None, str]] = {
+            "an unverified tag": (tag_object(verified=False), None, "not a verified tag (verified: false)"),
+            "a tag with no verification": (tag_object(verification=False), None, "(verified: missing)"),
+            "a verified flag that is the text true": (tag_object(verified="true"), None, "(verified: missing)"),
+            "a verified flag that is the number one": (tag_object(verified=1), None, "(verified: missing)"),
+            "a tag pointing at a tag": (tag_object(object_type="tag"), None, "of type tag, not a commit"),
+            "a tag pointing at a tree": (tag_object(object_type="tree"), None, "of type tree, not a commit"),
+            "a tag pointing at a blob": (tag_object(object_type="blob"), None, "of type blob, not a commit"),
+            "a tag with no object type": (tag_object(object_type=None), None, "of type missing"),
+            "a tag with a type that is not text": (tag_object(object_type=["commit"]), None, "of type missing"),
+            "a tag with an empty type": (tag_object(object_type=""), None, "of type missing"),
+            "a short commit id": (tag_object(sha="d" * 39), None, f"(found {'d' * 39})"),
+            "a long commit id": (tag_object(sha="d" * 41), None, f"(found {'d' * 41})"),
+            "an upper-case commit id": (tag_object(sha="D" * 40), None, f"(found {'D' * 40})"),
+            "a commit id that is missing": (tag_object(sha=None), None, "(found missing)"),
+            "a commit id that is a number": (tag_object(sha=7), None, "(found missing)"),
+            "a commit id that is very long": (tag_object(sha="d" * 500), None, "(found " + "d" * 41 + ")"),
+            "an answer that is not JSON": (GhReply("<html>oops</html>"), None, "could not be read"),
+            "an answer that is an empty object": (GhReply("{}"), None, "of type missing"),
+            "an answer whose object is text": (GhReply('{"object": "x"}'), None, "could not be read"),
+            "a forbidden tag read": (GhReply('{"message":"Forbidden"}', "gh: Forbidden (HTTP 403)", 1), None, "answered: gh: Forbidden (HTTP 403)"),
+            "a failing tag read": (GhReply("", "gh: Server Error (HTTP 500)", 1), None, "answered: gh: Server Error (HTTP 500)"),
+            "a tag read that never reached GitHub": (GhReply("", "error connecting to api.github.com", 1), None, "answered: error connecting"),
+            "a tag read that fails with no message": (GhReply("", "", 1), None, "answered: )"),
+            "a tag read whose message only mentions a 404": (GhReply("", "gh: HTTP 404 was seen (HTTP 502)", 1), None, "answered: gh: HTTP 404 was seen"),
+            "neither a tag object nor a commit": (NOT_FOUND, NOT_FOUND, "neither a tag object nor a commit"),
+            "a forbidden commit read": (NOT_FOUND, GhReply("", "gh: Forbidden (HTTP 403)", 1), "answered: gh: Forbidden (HTTP 403)"),
+            "a failing commit read": (NOT_FOUND, GhReply("", "gh: Server Error (HTTP 500)", 1), "answered: gh: Server Error (HTTP 500)"),
+            "a commit read of another id": (NOT_FOUND, plain_commit(OTHER_SHA), "answered a different id"),
+            "a commit read with no id": (NOT_FOUND, GhReply("{}"), "answered a different id"),
+            "a commit read that is not JSON": (NOT_FOUND, GhReply("not json"), "answered a different id"),
+        }
+        for label, pin, _ in PIN_SOURCES:
+            for name, (tag, commit, finding) in cases.items():
+                with self.subTest(file=label, case=name):
+                    sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA)], tag=tag, commit=commit)
+                    self.assertNotEqual(result.code, 0, f"{name} was accepted: {result.log}")
+                    self.assertEqual(result.outputs, {})
+                    self.assertIn(finding, result.log)
+                    self.assertIn("Refusing to fall back to the default branch.", result.log)
+                    self.assertEqual(result.log.count("::error::"), 1)
+
+    def test_a_tag_read_that_fails_for_any_reason_but_a_404_never_reaches_the_commit_read(self) -> None:
+        for label, pin, _ in PIN_SOURCES:
+            for stderr in ("gh: Forbidden (HTTP 403)", "gh: Server Error (HTTP 500)", "error connecting to api.github.com", ""):
+                with self.subTest(file=label, stderr=stderr):
+                    sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA)], tag=GhReply("", stderr, 1))
+                    self.assertNotEqual(result.code, 0)
+                    self.assertEqual(self.reads(sandbox), [f"api repos/{SHARED_REPOSITORY}/git/tags/{SHA}"])
+
+    def test_a_tag_that_peels_to_a_commit_is_never_checked_as_a_plain_commit_and_the_shared_repository_is_read_not_the_callers(self) -> None:
+        for label, pin, _ in PIN_SOURCES:
+            with self.subTest(file=label):
+                sandbox, _ = self.resolve(pin, [self.entry(self.called_workflow(pin), TAG_OBJECT_SHA)], tag=tag_object(verified=False))
+                for call in self.reads(sandbox):
+                    self.assertTrue(call.startswith(f"api repos/{SHARED_REPOSITORY}/git/tags/"), call)
+                self.assertEqual(len(self.reads(sandbox)), 1)
+
+    def test_text_the_api_or_gh_sends_back_cannot_add_a_workflow_command_or_a_second_line_to_the_message(self) -> None:
+        hostile = "x\n::error::injected\n::set-output name=sha::" + OTHER_SHA
+        cases = {
+            "a type": (tag_object(object_type=hostile), None),
+            "a commit id": (tag_object(sha=hostile), None),
+            "a tag read message": (GhReply("", "gh: Forbidden (HTTP 403)\n" + hostile, 1), None),
+            "a first line of tag read message": (GhReply("", hostile, 1), None),
+            "a commit read message": (NOT_FOUND, GhReply("", hostile, 1)),
+        }
+        for label, pin, _ in PIN_SOURCES:
+            for name, (tag, commit) in cases.items():
+                with self.subTest(file=label, case=name):
+                    _, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA)], tag=tag, commit=commit)
+                    self.assertNotEqual(result.code, 0)
+                    self.assertEqual(result.outputs, {})
+                    self.assertEqual(result.log.count("::error::"), 1, result.log)
+                    self.assertNotIn("\n::", result.log)
+
+    def test_the_scratch_file_for_the_error_text_is_removed_on_success_and_on_failure(self) -> None:
+        answers = (
+            ("peeled", {"tag": tag_object()}),
+            ("plain", {}),
+            ("refused", {"tag": tag_object(verified=False)}),
+            ("unreadable", {"tag": GhReply("", "gh: Server Error (HTTP 500)", 1)}),
+        )
+        for label, pin, _ in PIN_SOURCES:
+            for name, answer in answers:
+                with self.subTest(file=label, answer=name):
+                    scratch = Path(tempfile.mkdtemp(prefix="pin-temp-"))
+                    self.addCleanup(shutil.rmtree, scratch, True)
+                    self.resolve(pin, [self.entry(self.called_workflow(pin), SHA)], temp_dir=scratch, **answer)
+                    self.assertEqual(list(scratch.iterdir()), [])
 
     def test_each_workflow_names_its_own_file_as_the_one_it_looks_for(self) -> None:
         self.assertEqual(
