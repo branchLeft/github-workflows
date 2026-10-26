@@ -443,10 +443,11 @@
               "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
               "LINT": "${{ needs.lint.result }}",
               "PLAN": "${{ needs.plan.result }}",
+              "RERUN": "${{ needs.discover.outputs.recheck }}",
               "SHARD": "${{ needs.shard.result }}"
             },
             "name": "Require every job to have ended as expected",
-            "run-sha256": "a4c47ad519d0778184cbcc167ed1277a1421ce2b19d9e6bd3f49aa4a5f04543c"
+            "run-sha256": "c56d9e59022af7b036bfe32bb08cb960c85c157d7fb7afe23805dece08589d18"
           }
         ],
         "timeout-minutes": 5
@@ -455,7 +456,8 @@
         "name": "Discover the Ansible checks",
         "outputs": {
           "delivery": "${{ steps.context.outputs.delivery }}",
-          "matrix": "${{ steps.shards.outputs.matrix }}"
+          "matrix": "${{ steps.shards.outputs.matrix }}",
+          "recheck": "${{ steps.context.outputs.rerun }}"
         },
         "runs-on": "ubuntu-24.04",
         "steps": [
@@ -474,11 +476,24 @@
               "EVENT_NAME": "${{ github.event_name }}",
               "IS_FORK": "${{ github.event.repository.fork }}",
               "REF": "${{ github.ref }}",
+              "SKIP_RERUN": "${{ inputs.skip-rerun-after-merge-group }}",
               "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
             },
             "id": "context",
             "name": "Decide whether this run may reach a host",
-            "run-sha256": "4dcefd4c3b12dc07da08d9e38a6356e227b56b9c332259a46a886c7ad0dfd92e"
+            "run-sha256": "ac0a547a2248a20fc89ad0daee8018e43d4ffdf0298f5530c0c21f8c93a47d1b"
+          },
+          {
+            "env": {
+              "CHECK_NAME": "${{ inputs.merge-group-check-name }}",
+              "GH_TOKEN": "${{ github.token }}",
+              "REPO": "${{ github.repository }}",
+              "SHA": "${{ github.sha }}"
+            },
+            "id": "confirm",
+            "if": "steps.context.outputs.rerun == 'false'",
+            "name": "Confirm the merge queue passed this commit",
+            "run-sha256": "327c4ff538e0b046a487ac771965a6d606cd14178766350a468beb4488c3a5ac"
           },
           {
             "env": {
@@ -499,6 +514,7 @@
             "working-directory": "${{ inputs.working-directory }}"
           }
         },
+        "if": "needs.discover.outputs.recheck == 'true'",
         "name": "Lint the Ansible inputs",
         "needs": [
           "discover"
@@ -565,7 +581,7 @@
         "timeout-minutes": 20
       },
       "plan": {
-        "if": "needs.discover.outputs.delivery == 'true'",
+        "if": "${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}",
         "name": "Plan the apply (check mode on each host)",
         "needs": [
           "discover",
@@ -662,6 +678,7 @@
         "env": {
           "ROLE_TEST_RUN_ID": "${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}"
         },
+        "if": "needs.discover.outputs.recheck == 'true'",
         "name": "Molecule: ${{ matrix.name }}",
         "needs": [
           "discover"
@@ -747,6 +764,12 @@
             "required": false,
             "type": "number"
           },
+          "merge-group-check-name": {
+            "default": "",
+            "description": "With skip-rerun-after-merge-group, the name of the check run the caller's merge queue run publishes for this gate, as GitHub shows it (caller job name, then ' / ', then 'Ansible checks passed'). Required then; ignored otherwise.",
+            "required": false,
+            "type": "string"
+          },
           "plan-timeout-minutes": {
             "default": 90,
             "description": "The plan job is stopped after this many minutes.",
@@ -764,6 +787,12 @@
             "description": "Globs, one per line, relative to ansible-directory, of the directories that each hold a Molecule scenario at molecule/default.",
             "required": false,
             "type": "string"
+          },
+          "skip-rerun-after-merge-group": {
+            "default": false,
+            "description": "For a caller whose merge queue already runs these same checks on the tree that is then pushed. On a push to the default branch, skip the lint and Molecule jobs and, before anything reaches a host, require that the check named by merge-group-check-name passed for the pushed commit in a merge queue run; the discover job fails if it did not, or if that cannot be read. Every other run is unchanged. The default, false, keeps lint and Molecule on every run.",
+            "required": false,
+            "type": "boolean"
           },
           "working-directory": {
             "default": ".",

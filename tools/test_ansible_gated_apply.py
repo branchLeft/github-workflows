@@ -540,7 +540,10 @@ class StructureTests(unittest.TestCase):
         self.assertFalse(job["concurrency"]["cancel-in-progress"])
 
     def test_the_plan_job_runs_only_for_delivery(self) -> None:
-        self.assertEqual(JOBS["plan"]["if"], "needs.discover.outputs.delivery == 'true'")
+        self.assertEqual(
+            " ".join(str(JOBS["plan"]["if"]).split()),
+            "${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}",
+        )
         self.assertNotIn("environment", JOBS["plan"])
 
     def test_each_key_is_read_by_one_job_only(self) -> None:
@@ -566,6 +569,23 @@ class StructureTests(unittest.TestCase):
                 "APPLY": "${{ needs.apply.result }}",
                 "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
                 "DRY_RUN": "${{ inputs.dry-run }}",
+                "RERUN": "${{ needs.discover.outputs.recheck }}",
+            }),
+            ("discover", "Decide whether this run may reach a host", {
+                "EVENT_NAME": "${{ github.event_name }}",
+                "REF": "${{ github.ref }}",
+                "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
+                "IS_FORK": "${{ github.event.repository.fork }}",
+                "ENVIRONMENT": "${{ inputs.environment }}",
+                "WORKING_DIRECTORY": "${{ inputs.working-directory }}",
+                "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}",
+                "SKIP_RERUN": "${{ inputs.skip-rerun-after-merge-group }}",
+            }),
+            ("discover", "Confirm the merge queue", {
+                "GH_TOKEN": "${{ github.token }}",
+                "REPO": "${{ github.repository }}",
+                "SHA": "${{ github.sha }}",
+                "CHECK_NAME": "${{ inputs.merge-group-check-name }}",
             }),
             ("plan", "Refuse outside a push", {
                 "EVENT_NAME": "${{ github.event_name }}",
@@ -829,6 +849,7 @@ def discover_env(**changes: str) -> dict[str, str]:
         "ENVIRONMENT": "production",
         "WORKING_DIRECTORY": ".",
         "ANSIBLE_DIRECTORY": "ansible",
+        "SKIP_RERUN": "false",
     }
     values.update(changes)
     return values
@@ -856,6 +877,185 @@ class DiscoverTests(unittest.TestCase):
         for label, changes in cases.items():
             with self.subTest(case=label):
                 self.assertEqual(self.decide(**changes), "false")
+
+
+class SkipRerunDeclarationTests(unittest.TestCase):
+    def test_the_inputs_default_to_todays_behaviour(self) -> None:
+        inputs = DOC[True]["workflow_call"]["inputs"]
+        self.assertEqual(inputs["skip-rerun-after-merge-group"]["type"], "boolean")
+        self.assertIs(inputs["skip-rerun-after-merge-group"]["default"], False)
+        self.assertEqual(inputs["merge-group-check-name"]["default"], "")
+
+    def test_lint_and_the_shards_run_unless_discover_says_the_merge_queue_already_did(self) -> None:
+        for name in ("lint", "shard"):
+            with self.subTest(job=name):
+                self.assertEqual(JOBS[name]["if"], "needs.discover.outputs.recheck == 'true'")
+
+    def test_the_confirmation_is_a_discover_step_that_runs_only_when_the_rerun_is_skipped(self) -> None:
+        step = find_step("discover", "confirm")
+        self.assertEqual(step["if"], "steps.context.outputs.rerun == 'false'")
+        self.assertIn("confirm", [s.get("id") for s in JOBS["discover"]["steps"]])
+        self.assertEqual(JOBS["discover"]["outputs"]["recheck"], "${{ steps.context.outputs.rerun }}")
+
+
+class RerunDecisionTests(unittest.TestCase):
+    def rerun(self, **changes: str) -> str:
+        result = Sandbox(self).run(find_step("discover", "context"), discover_env(**changes))
+        self.assertEqual(result.code, 0, result.log)
+        return result.outputs.get("rerun", "<missing>")
+
+    def test_a_delivery_run_that_asks_to_skip_does_not_rerun(self) -> None:
+        self.assertEqual(self.rerun(SKIP_RERUN="true"), "false")
+
+    def test_a_delivery_run_that_does_not_ask_reruns(self) -> None:
+        self.assertEqual(self.rerun(), "true")
+
+    def test_a_run_that_does_not_deliver_always_reruns_whatever_it_asks(self) -> None:
+        for changes in ({"EVENT_NAME": "pull_request"}, {"EVENT_NAME": "merge_group"}, {"REF": "refs/heads/feature"}, {"IS_FORK": "true"}):
+            with self.subTest(changes=changes):
+                self.assertEqual(self.rerun(SKIP_RERUN="true", **changes), "true")
+
+
+MERGE_GROUP_NAME = "ansible / Ansible checks passed"
+QUEUE_BRANCH = "gh-readonly-queue/main/pr-7-" + "c" * 40
+
+# Answers the two reads the confirmation makes from files in the stub directory:
+# the check runs of the commit, and the check suite of each run. A read with no
+# file fails, as an API error does.
+CONFIRM_GH_STUB = """#!/usr/bin/env bash
+echo "$*" >> "$STUB_DIR/gh.log"
+case "$*" in
+  *"/check-runs"*) file="$STUB_DIR/runs.json" ;;
+  *"/check-suites/"*) file="$STUB_DIR/suite-$(basename "${@: -1}").json" ;;
+  *) exit 2 ;;
+esac
+if [ ! -f "$file" ]; then
+  echo "gh: HTTP 403" >&2
+  exit 1
+fi
+cat "$file"
+"""
+
+
+def check_run(**changes: object) -> dict[str, object]:
+    run: dict[str, object] = {
+        "name": MERGE_GROUP_NAME,
+        "status": "completed",
+        "conclusion": "success",
+        "head_sha": SHA,
+        "app": {"slug": "github-actions"},
+        "check_suite": {"id": 501},
+    }
+    run.update(changes)
+    return run
+
+
+class ConfirmMergeGroupTests(unittest.TestCase):
+    """The refusal: delivery without lint and Molecule needs proof that the merge queue passed this commit."""
+
+    def confirm(
+        self,
+        runs: list[dict[str, object]] | None = None,
+        suites: dict[int, dict[str, object]] | None = None,
+        raw_runs: str | None = None,
+        **changes: str,
+    ) -> Result:
+        sandbox = Sandbox(self, gh_stub=CONFIRM_GH_STUB)
+        if raw_runs is not None:
+            sandbox.stubs.joinpath("runs.json").write_text(raw_runs)
+        elif runs is not None:
+            sandbox.stubs.joinpath("runs.json").write_text(json.dumps({"total_count": len(runs), "check_runs": runs}))
+        for suite_id, suite in (suites if suites is not None else {501: {"head_branch": QUEUE_BRANCH, "head_sha": SHA}}).items():
+            sandbox.stubs.joinpath(f"suite-{suite_id}.json").write_text(json.dumps(suite))
+        values = {
+            "GH_TOKEN": "TOKEN_FOR_TEST",
+            "REPO": "org/repo",
+            "SHA": SHA,
+            "CHECK_NAME": MERGE_GROUP_NAME,
+        }
+        values.update(changes)
+        return sandbox.run(find_step("discover", "confirm"), values)
+
+    def refused(self, result: Result, fragment: str) -> None:
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn(fragment, result.log)
+
+    def test_a_passing_merge_queue_check_for_the_commit_lets_the_delivery_continue(self) -> None:
+        result = self.confirm([check_run()])
+        self.assertEqual(result.code, 0, result.log)
+
+    def test_the_read_names_the_commit_and_the_check_and_the_token_stays_out_of_the_log(self) -> None:
+        sandbox = Sandbox(self, gh_stub=CONFIRM_GH_STUB)
+        sandbox.stubs.joinpath("runs.json").write_text(json.dumps({"check_runs": [check_run()]}))
+        sandbox.stubs.joinpath("suite-501.json").write_text(json.dumps({"head_branch": QUEUE_BRANCH, "head_sha": SHA}))
+        values = {"GH_TOKEN": "TOKEN_FOR_TEST", "REPO": "org/repo", "SHA": SHA, "CHECK_NAME": MERGE_GROUP_NAME}
+        result = sandbox.run(find_step("discover", "confirm"), values)
+        self.assertEqual(result.code, 0, result.log)
+        calls = (sandbox.stubs / "gh.log").read_text()
+        self.assertIn(f"repos/org/repo/commits/{SHA}/check-runs", calls)
+        self.assertIn(f"check_name={MERGE_GROUP_NAME}", calls)
+        self.assertNotIn("TOKEN_FOR_TEST", result.log)
+
+    def test_a_commit_with_no_check_runs_is_refused(self) -> None:
+        self.refused(self.confirm([]), "No passing")
+
+    def test_a_check_that_failed_or_is_unfinished_or_was_skipped_is_refused(self) -> None:
+        cases = (
+            {"conclusion": "failure"},
+            {"conclusion": "cancelled"},
+            {"conclusion": "skipped"},
+            {"conclusion": None, "status": "in_progress"},
+            {"status": "queued", "conclusion": None},
+        )
+        for changes in cases:
+            with self.subTest(changes=changes):
+                self.refused(self.confirm([check_run(**changes)]), "No passing")
+
+    def test_a_check_of_another_name_is_refused(self) -> None:
+        self.refused(self.confirm([check_run(name="ansible / Lint the Ansible inputs")]), "No passing")
+
+    def test_a_check_run_made_by_another_app_is_refused(self) -> None:
+        self.refused(self.confirm([check_run(app={"slug": "some-other-app"})]), "No passing")
+        self.refused(self.confirm([check_run(app=None)]), "No passing")
+
+    def test_a_check_run_for_another_commit_is_refused(self) -> None:
+        self.refused(self.confirm([check_run(head_sha=OTHER_SHA)]), "No passing")
+
+    def test_a_passing_check_that_is_not_from_a_merge_queue_run_is_refused(self) -> None:
+        for suite in (
+            {"head_branch": "main", "head_sha": SHA},
+            {"head_branch": "feature", "head_sha": SHA},
+            {"head_branch": None, "head_sha": SHA},
+            {"head_branch": QUEUE_BRANCH, "head_sha": OTHER_SHA},
+        ):
+            with self.subTest(suite=suite):
+                self.refused(self.confirm([check_run()], suites={501: suite}), "merge queue")
+
+    def test_a_passing_merge_queue_run_is_found_among_other_checks(self) -> None:
+        runs = [check_run(conclusion="failure", check_suite={"id": 502}), check_run(check_suite={"id": 503}), check_run(check_suite={"id": 501})]
+        suites = {
+            502: {"head_branch": QUEUE_BRANCH, "head_sha": SHA},
+            503: {"head_branch": "main", "head_sha": SHA},
+            501: {"head_branch": QUEUE_BRANCH, "head_sha": SHA},
+        }
+        self.assertEqual(self.confirm(runs, suites=suites).code, 0)
+
+    def test_when_the_checks_cannot_be_read_it_cannot_tell_and_refuses(self) -> None:
+        self.refused(self.confirm(None), "could not be read")
+
+    def test_an_answer_that_is_not_json_or_has_no_check_runs_is_refused(self) -> None:
+        for raw in ("", "not json", "{}", '{"check_runs": null}', "[]"):
+            with self.subTest(raw=raw):
+                self.assertNotEqual(self.confirm(raw_runs=raw).code, 0)
+
+    def test_when_the_suite_cannot_be_read_it_refuses(self) -> None:
+        self.refused(self.confirm([check_run()], suites={}), "could not be read")
+
+    def test_an_empty_check_name_or_a_commit_that_is_not_forty_hex_digits_is_refused(self) -> None:
+        self.refused(self.confirm([check_run()], CHECK_NAME=""), "check-name")
+        for sha in ("main", "A" * 40, "a" * 39, ""):
+            with self.subTest(sha=sha):
+                self.assertNotEqual(self.confirm([check_run()], SHA=sha).code, 0)
 
 
 class PlanGuardTests(unittest.TestCase):
@@ -1499,6 +1699,7 @@ def gate_env(**changes: str) -> dict[str, str]:
         "APPLY": "skipped",
         "HAS_CHANGES": "",
         "DRY_RUN": "false",
+        "RERUN": "true",
     }
     values.update(changes)
     return values
@@ -1534,6 +1735,19 @@ class GateTests(unittest.TestCase):
 
     def test_an_unknown_delivery_answer_is_red(self) -> None:
         self.assertNotEqual(self.gate(DELIVERY=""), 0)
+
+    def test_a_delivery_run_that_skipped_the_rerun_needs_lint_and_the_shards_skipped(self) -> None:
+        skipped = {"DELIVERY": "true", "RERUN": "false", "LINT": "skipped", "SHARD": "skipped", "PLAN": "success", "HAS_CHANGES": "true", "APPLY": "success"}
+        self.assertEqual(self.gate(**skipped), 0)
+        self.assertNotEqual(self.gate(**{**skipped, "LINT": "success"}), 0)
+        self.assertNotEqual(self.gate(**{**skipped, "SHARD": "success"}), 0)
+        self.assertNotEqual(self.gate(**{**skipped, "LINT": "failure"}), 0)
+        self.assertNotEqual(self.gate(**{**skipped, "DISCOVER": "failure"}), 0)
+
+    def test_a_run_that_reruns_still_needs_lint_and_the_shards_to_have_passed(self) -> None:
+        self.assertNotEqual(self.gate(RERUN="true", LINT="skipped"), 0)
+        self.assertNotEqual(self.gate(RERUN="true", SHARD="skipped"), 0)
+        self.assertNotEqual(self.gate(RERUN=""), 0)
 
 
 class SshOptionTests(unittest.TestCase):

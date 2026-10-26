@@ -51,6 +51,7 @@ AL = "AlertTests"
 PG = "PlanGuardTests"
 AG = "ApplyGuardTests"
 HM = "HeadMovedTests"
+CF = "ConfirmMergeGroupTests"
 
 CASES: list[Case] = [
     Case(
@@ -407,6 +408,81 @@ CASES: list[Case] = [
         "apply gate: empty known-hosts refusal no longer refused",
         [Edit(GATED, '[ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."', ":")],
         [f"{A}.test_the_known_hosts_secret_must_be_present"],
+    ),
+    Case(
+        "confirm accepts a check run of any app",
+        [Edit(GATED, ' and .app.slug == "github-actions")', ')')],
+        [f"{CF}.test_a_check_run_made_by_another_app_is_refused"],
+    ),
+    Case(
+        "confirm accepts a passing check from a suite that is not a merge queue run",
+        [Edit(GATED, '(.head_branch // "" | startswith("gh-readonly-queue/")) and .head_sha == $sha', '.head_sha == $sha')],
+        [f"{CF}.test_a_passing_check_that_is_not_from_a_merge_queue_run_is_refused"],
+    ),
+    Case(
+        "confirm accepts a queue suite of another commit",
+        [Edit(GATED, ' and .head_sha == $sha\' > /dev/null; then', '\' > /dev/null; then')],
+        [f"{CF}.test_a_passing_check_that_is_not_from_a_merge_queue_run_is_refused"],
+    ),
+    Case(
+        "confirm accepts a check that did not succeed",
+        [Edit(GATED, '.conclusion == "success" and .head_sha', '.head_sha')],
+        [f"{CF}.test_a_check_that_failed_or_is_unfinished_or_was_skipped_is_refused"],
+    ),
+    Case(
+        "confirm accepts a check of another name",
+        [Edit(GATED, 'select(.name == $name and .status', 'select(.status')],
+        [f"{CF}.test_a_check_of_another_name_is_refused"],
+    ),
+    Case(
+        "confirm accepts a check run of another commit",
+        [Edit(GATED, ' and .head_sha == $sha and .app.slug', ' and .app.slug')],
+        [f"{CF}.test_a_check_run_for_another_commit_is_refused"],
+    ),
+    Case(
+        "confirm passes when the checks cannot be read",
+        [Edit(GATED, 'fail "The check runs of the commit could not be read, so nothing shows the merge queue passed it. Refusing."', 'runs=\'{"check_runs": []}\'')],
+        [f"{CF}.test_when_the_checks_cannot_be_read_it_cannot_tell_and_refuses"],
+    ),
+    Case(
+        "confirm falls through to success when nothing matched",
+        [Edit(GATED, '          fail "No passing \'$CHECK_NAME\'', '          exit 0; fail "No passing \'$CHECK_NAME\'')],
+        [f"{CF}.test_a_commit_with_no_check_runs_is_refused"],
+    ),
+    Case(
+        "confirm step never runs",
+        [Edit(GATED, "        if: steps.context.outputs.rerun == 'false'\n", "        if: steps.context.outputs.rerun == 'never'\n")],
+        ["SkipRerunDeclarationTests.test_the_confirmation_is_a_discover_step_that_runs_only_when_the_rerun_is_skipped"],
+    ),
+    Case(
+        "rerun skipped on a run that does not deliver",
+        [Edit(GATED, 'if [ "$delivery" = true ] && [ "$SKIP_RERUN" = true ]; then', 'if [ "$SKIP_RERUN" = true ]; then')],
+        ["RerunDecisionTests.test_a_run_that_does_not_deliver_always_reruns_whatever_it_asks"],
+    ),
+    Case(
+        "skip input defaults to on",
+        [Edit(GATED, "        type: boolean\n        required: false\n        default: false\n      merge-group-check-name:", "        type: boolean\n        required: false\n        default: true\n      merge-group-check-name:")],
+        ["SkipRerunDeclarationTests.test_the_inputs_default_to_todays_behaviour"],
+    ),
+    Case(
+        "lint runs on a delivery run that asked to skip it",
+        [Edit(GATED, "    needs: [discover]\n    if: needs.discover.outputs.recheck == 'true'\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20", "    needs: [discover]\n    runs-on: ubuntu-24.04\n    timeout-minutes: 20")],
+        ["SkipRerunDeclarationTests.test_lint_and_the_shards_run_unless_discover_says_the_merge_queue_already_did"],
+    ),
+    Case(
+        "gate accepts lint that ran when it was to be skipped",
+        [Edit(GATED, 'expect lint "$LINT" skipped', 'expect lint "$LINT" "$LINT"')],
+        ["GateTests.test_a_delivery_run_that_skipped_the_rerun_needs_lint_and_the_shards_skipped"],
+    ),
+    Case(
+        "gate accepts skipped lint when it was to run",
+        [Edit(GATED, 'expect lint "$LINT" success', 'expect lint "$LINT" "$LINT"')],
+        ["GateTests.test_a_run_that_reruns_still_needs_lint_and_the_shards_to_have_passed"],
+    ),
+    Case(
+        "plan runs after a failed lint",
+        [Edit(GATED, "!cancelled() && !failure() && needs.discover", "!cancelled() && needs.discover")],
+        [f"{S}.test_the_plan_job_runs_only_for_delivery"],
     ),
 ]
 
