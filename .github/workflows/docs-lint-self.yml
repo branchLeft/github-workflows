@@ -23,6 +23,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Run the pinned-ref resolver tests
+        run: ./tools/resolve-pinned-ref.test.sh
+
       - name: Run docs-lint unit tests
         run: ./tools/docs-lint.test.sh
 
