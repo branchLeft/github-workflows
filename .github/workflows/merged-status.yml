@@ -28,6 +28,8 @@ name: merged-status (reusable)
 #         projects-app-id: ${{ vars.BRANCHLEFT_PROJECTS_APP_ID }}
 #       secrets:
 #         projects_app_key: ${{ secrets.BRANCHLEFT_PROJECTS_APP_KEY }}
+#
+# Optional `runs-on` input: a JSON array string, default ["ubuntu-latest"].
 
 on:
   workflow_call:
@@ -138,6 +140,9 @@ jobs:
           MERGED_STATUS_REPO_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Removes the App key and the installation token on any exit,
+          # including a failure partway through, on a persistent runner.
+          trap 'rm -f key.pem token.json installations.json' EXIT
 
           if [ -z "${APP_ID:-}" ]; then echo "::error::no App id supplied"; exit 1; fi
           if [ -z "${APP_KEY:-}" ]; then echo "::error::no App key supplied"; exit 1; fi

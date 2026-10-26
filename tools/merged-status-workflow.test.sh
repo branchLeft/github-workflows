@@ -60,5 +60,20 @@ else
   echo "FAIL exactly one job-level runs-on: found $job_runs_on"
 fi
 
+# The mint step writes the App key and the installation token into the
+# workspace. The trap removes them on failure too, so it must be in that step
+# and set before the key is written.
+trap_want="          trap 'rm -f key.pem token.json installations.json' EXIT"
+assert_line "mint step clears its secrets on any exit" "$trap_want"
+trap_line=$(grep -nxF -e "$trap_want" "$WF" | cut -d: -f1)
+key_line=$(grep -nF -e '> key.pem' "$WF" | cut -d: -f1)
+if [ -n "$trap_line" ] && [ -n "$key_line" ] && [ "$trap_line" -lt "$key_line" ]; then
+  PASS=$((PASS + 1))
+  echo "ok   secrets trap is set before the key is written"
+else
+  FAIL=$((FAIL + 1))
+  echo "FAIL secrets trap is set before the key is written: trap line '${trap_line:-none}', key line '${key_line:-none}'"
+fi
+
 echo "merged-status workflow seam: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
