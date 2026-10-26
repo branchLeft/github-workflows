@@ -1,0 +1,122 @@
+name: Assert no Hetzner deletes (self-test)
+
+# This repo tests the action with its own working copy (the local path below),
+# not a tagged one, so a pull request that changes the action is checked by the
+# change itself. It runs on every pull request, with no path filter, so a change
+# elsewhere in the repo cannot skip it. The action is wired into no workflow of
+# this repo; this file only exercises it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/assert-no-hetzner-deletes
+  FIXTURES: .github/actions/assert-no-hetzner-deletes/fixtures
+
+jobs:
+  unit-tests:
+    name: Guard unit tests and sabotage
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Includes SabotageTests: each control is broken in a copy, its tests must
+      # go red there, and the unmodified copy must be green.
+      - name: Run the guard unit tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
+
+  action:
+    name: Action wiring
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A plan with no delete
+        uses: ./.github/actions/assert-no-hetzner-deletes
+        with:
+          preview-json: preview-no-delete.json
+          program-dir: programs/mail
+          coverage-map: coverage-map.json
+          working-directory: .github/actions/assert-no-hetzner-deletes/fixtures
+
+      - name: A plan with a delete
+        id: deleting
+        continue-on-error: true
+        uses: ./.github/actions/assert-no-hetzner-deletes
+        with:
+          preview-json: preview-delete.json
+          program-dir: programs/mail
+          coverage-map: coverage-map.json
+          working-directory: .github/actions/assert-no-hetzner-deletes/fixtures
+
+      - name: A plan with a delete fails the step
+        env:
+          OUTCOME: ${{ steps.deleting.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: A program that no longer declares what the map says
+        id: stale
+        continue-on-error: true
+        uses: ./.github/actions/assert-no-hetzner-deletes
+        with:
+          preview-json: preview-no-delete.json
+          program-dir: programs-stale/mail
+          coverage-map: coverage-map.json
+          working-directory: .github/actions/assert-no-hetzner-deletes/fixtures
+
+      - name: Stale coverage fails the step though the plan is clean
+        env:
+          OUTCOME: ${{ steps.stale.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: A preview file that does not exist
+        id: missing
+        continue-on-error: true
+        uses: ./.github/actions/assert-no-hetzner-deletes
+        with:
+          preview-json: no-such-preview.json
+          program-dir: programs/mail
+          coverage-map: coverage-map.json
+          working-directory: .github/actions/assert-no-hetzner-deletes/fixtures
+
+      - name: A missing preview fails the step
+        env:
+          OUTCOME: ${{ steps.missing.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: A coverage map that does not exist
+        id: nomap
+        continue-on-error: true
+        uses: ./.github/actions/assert-no-hetzner-deletes
+        with:
+          preview-json: preview-no-delete.json
+          program-dir: programs/mail
+          coverage-map: no-such-map.json
+          working-directory: .github/actions/assert-no-hetzner-deletes/fixtures
+
+      - name: A missing coverage map fails the step
+        env:
+          OUTCOME: ${{ steps.nomap.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: No preview, coverage only
+        uses: ./.github/actions/assert-no-hetzner-deletes
+        with:
+          program-dir: programs/mail
+          coverage-map: coverage-map.json
+          working-directory: .github/actions/assert-no-hetzner-deletes/fixtures

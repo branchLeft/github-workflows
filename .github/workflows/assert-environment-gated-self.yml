@@ -1,0 +1,122 @@
+name: Assert environment gated (self-test)
+
+# This repo tests the action with its own working copy (the local path below),
+# not a tagged one, so a pull request that changes the action is checked by the
+# change itself. It runs on every pull request, with no path filter, so a change
+# elsewhere in the repo cannot skip it. The action is wired into no workflow of
+# this repo; this file only exercises it, against a stub `gh` first on the path
+# that answers from the fixtures, so no environment of this repo is read.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/assert-environment-gated
+  FIXTURES: .github/actions/assert-environment-gated/fixtures
+
+jobs:
+  unit-tests:
+    name: Guard unit tests and sabotage
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Includes the Sabotage class: each control is broken in a copy, its tests
+      # must go red there, and the unmodified copy must be green.
+      - name: Run the guard unit tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
+
+  action:
+    name: Action wiring
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Put a stub gh first on the path
+        run: |
+          stub_dir="$RUNNER_TEMP/stub-gh"
+          mkdir -p "$stub_dir"
+          cp "$FIXTURES/stub-gh.sh" "$stub_dir/gh"
+          chmod +x "$stub_dir/gh"
+          echo "$stub_dir" >> "$GITHUB_PATH"
+
+      - name: Answer as an environment with a required reviewer
+        run: |
+          echo "STUB_ENV=$GITHUB_WORKSPACE/$FIXTURES/environment-reviewer.json" >> "$GITHUB_ENV"
+          echo "STUB_RULES=$GITHUB_WORKSPACE/$FIXTURES/rules-none.json" >> "$GITHUB_ENV"
+
+      - name: A required reviewer
+        uses: ./.github/actions/assert-environment-gated
+        with:
+          environment: production
+
+      - name: Answer as an environment with the reviewer App rule only
+        run: |
+          echo "STUB_ENV=$GITHUB_WORKSPACE/$FIXTURES/environment-none.json" >> "$GITHUB_ENV"
+          echo "STUB_RULES=$GITHUB_WORKSPACE/$FIXTURES/rules-app.json" >> "$GITHUB_ENV"
+
+      - name: An enabled reviewer App rule
+        uses: ./.github/actions/assert-environment-gated
+        with:
+          environment: production
+
+      - name: Answer as an environment that gates nothing
+        run: |
+          echo "STUB_ENV=$GITHUB_WORKSPACE/$FIXTURES/environment-none.json" >> "$GITHUB_ENV"
+          echo "STUB_RULES=$GITHUB_WORKSPACE/$FIXTURES/rules-none.json" >> "$GITHUB_ENV"
+
+      - name: An ungated environment
+        id: ungated
+        continue-on-error: true
+        uses: ./.github/actions/assert-environment-gated
+        with:
+          environment: production
+
+      - name: An ungated environment fails the step
+        env:
+          OUTCOME: ${{ steps.ungated.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: Answer as an environment whose rules cannot be read
+        run: |
+          echo "STUB_ENV=$GITHUB_WORKSPACE/$FIXTURES/environment-reviewer.json" >> "$GITHUB_ENV"
+          echo "STUB_RULES=$GITHUB_WORKSPACE/$FIXTURES/unreadable.txt" >> "$GITHUB_ENV"
+
+      - name: Rules that cannot be read
+        id: unreadable
+        continue-on-error: true
+        uses: ./.github/actions/assert-environment-gated
+        with:
+          environment: production
+
+      - name: Unreadable rules fail the step though a reviewer is present
+        env:
+          OUTCOME: ${{ steps.unreadable.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: An environment name that is a path
+        id: path
+        continue-on-error: true
+        uses: ./.github/actions/assert-environment-gated
+        with:
+          environment: production/../x
+
+      - name: A path as the environment name fails the step
+        env:
+          OUTCOME: ${{ steps.path.outcome }}
+        run: test "$OUTCOME" = failure
