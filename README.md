@@ -115,6 +115,13 @@ jobs:
       projects_app_key: ${{ secrets.BRANCHLEFT_PROJECTS_APP_KEY }}
 ```
 
+**`runs-on` is optional** and defaults to `"ubuntu-latest"`, so an existing
+caller changes nothing. It is JSON text, because a workflow input cannot be an
+array: a caller on a self-hosted runner passes
+`runs-on: '["self-hosted","macOS","branchleft-workspace"]'` (a label string
+needs its own quotes inside the value, `'"ubuntu-latest"'`). The job needs
+`git`, `curl`, `openssl` and `python3` on that runner.
+
 Organisation-level Actions secrets are **not** delivered to a private repo's
 runner on the free plan — measured, with `GITHUB_TOKEN` arriving beside an
 empty organisation secret in the same step. Set both at repository level.

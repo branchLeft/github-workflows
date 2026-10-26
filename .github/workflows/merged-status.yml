@@ -52,6 +52,10 @@ on:
         description: "Report what would be written and write nothing"
         type: boolean
         default: false
+      runs-on:
+        description: "The runner the job asks for, as JSON: a label string or an array of labels"
+        type: string
+        default: '"ubuntu-latest"'
     secrets:
       projects_app_key:
         description: "PEM private key of the GitHub App named by projects-app-id"
@@ -70,7 +74,9 @@ permissions:
 jobs:
   merged-status:
     name: Write the board status
-    runs-on: ubuntu-latest
+    # A JSON string, because a workflow input cannot be an array. The default
+    # keeps every existing caller on the hosted runner it has always used.
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 10
     steps:
       - name: Check out the caller
