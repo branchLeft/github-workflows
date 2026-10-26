@@ -405,6 +405,49 @@ def check_pair(jobs: dict[str, list[str]], plan: str, apply: str, verdict: str, 
     return findings
 
 
+def parse_required_operands(raw: str) -> list[str]:
+    """The operands the input names, one per line, whitespace folded, blank lines
+    dropped. An empty value gives none, which switches the check off.
+
+    Raises:
+        Unreadable: a line holds a top-level `&&`, so it names two operands.
+    """
+    operands = []
+    for line in raw.splitlines():
+        operand = " ".join(line.split())
+        if not operand:
+            continue
+        if len(and_operands(operand)) > 1:
+            raise Unreadable(f"required operand `{operand}` holds a top-level `&&`; give one operand per line")
+        operands.append(operand)
+    return operands
+
+
+def check_required_operands(
+    jobs: dict[str, list[str]], plan_jobs: list[str], apply_jobs: list[str], operands: list[str]
+) -> list[Finding]:
+    """Each listed job's `if:` must carry every operand as one of its top-level `&&`
+    operands, and a plan job's `if:` must hold no `||` outside quotes: a trailing
+    `|| true` leaves the operands matching while the condition is always true. A job
+    not in the workflow is left to the missing-job check."""
+    findings = []
+    plan_names = list(dict.fromkeys(name for name in plan_jobs if name in jobs))
+    for name in dict.fromkeys(plan_names + [name for name in apply_jobs if name in jobs]):
+        raw = field(jobs[name], "if")
+        condition = condition_of(raw) if raw is not None else None
+        present = and_operands(condition) if condition is not None else []
+        for operand in operands:
+            if operand in present:
+                continue
+            reason = "the job has no `if:`, so it lacks" if condition is None else "the `if:` has no top-level `&&` operand that is exactly"
+            findings.append(Finding("GATE-REQUIRED-OPERAND", name, f"{reason} the required operand `{operand}`"))
+        if name in plan_names and condition is not None and "||" in _outside_quotes(condition):
+            findings.append(
+                Finding("GATE-REQUIRED-OPERAND", name, "an `||` outside quotes is not allowed in a plan job's `if:`; it can make the whole condition true")
+            )
+    return findings
+
+
 def parse_pairs(pairs: str) -> list[tuple[str, str]]:
     result = []
     for token in pairs.split():
@@ -425,6 +468,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--summary-step", default=None)
     parser.add_argument("--plan-file", required=True, help="the path --save-plan writes, as the workflow spells it")
     parser.add_argument("--save-step", default=DEFAULT_SAVE_STEP, help="name of the step that saves the plan")
+    parser.add_argument("--required-operands", default="", help="one operand per line that every listed job's `if:` must carry; empty switches the check off")
     args = parser.parse_args(argv[1:])
     try:
         with open(args.workflow, encoding="utf-8") as handle:
@@ -432,8 +476,11 @@ def main(argv: list[str]) -> int:
         jobs = job_blocks(text)
         found: list[Finding] = []
         pairs = parse_pairs(args.pairs)
+        operands = parse_required_operands(args.required_operands)
         for plan, apply in pairs:
             found += check_pair(jobs, plan, apply, args.verdict_step, args.summary_step or None)
+        if operands:
+            found += check_required_operands(jobs, [plan for plan, _ in pairs], [apply for _, apply in pairs], operands)
         plan_jobs = sorted({plan for plan, _ in pairs if plan in jobs})
         found += check_plan_file(jobs, plan_jobs, args.plan_file, args.save_step)
         found += check_experimental(text)

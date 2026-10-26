@@ -102,6 +102,35 @@ jobs:
           pairs: plan:apply
           plan-file: preview-plan.json
 
+      - name: A caller that names the required operands and keeps them passes
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-pass-operands.yml
+          pairs: plan:apply
+          plan-file: preview-plan.json
+          required-operands: |
+            github.event_name == 'push'
+            github.ref == 'refs/heads/main'
+
+      - name: A caller that drops both operands fails the step
+        id: required_operand
+        continue-on-error: true
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-fail-required-operand.yml
+          pairs: plan:apply
+          plan-file: preview-plan.json
+          required-operands: |
+            github.event_name == 'push'
+            github.ref == 'refs/heads/main'
+
+      - name: The same caller without the input still passes (control)
+        uses: ./.github/actions/check-apply-gate
+        with:
+          workflow: .github/actions/check-apply-gate/fixtures/gate-fail-required-operand.yml
+          pairs: plan:apply
+          plan-file: preview-plan.json
+
       - name: Every broken caller fails the step, and none passes
         env:
           BROKEN: ${{ steps.broken.outcome }}
@@ -109,9 +138,11 @@ jobs:
           PLAN_READ: ${{ steps.plan_read.outcome }}
           OTHER_PLAN: ${{ steps.other_plan.outcome }}
           MISSING: ${{ steps.missing.outcome }}
+          REQUIRED_OPERAND: ${{ steps.required_operand.outcome }}
         run: |
           test "$BROKEN" = failure
           test "$WRONG_STEP" = failure
           test "$PLAN_READ" = failure
           test "$OTHER_PLAN" = failure
           test "$MISSING" = failure
+          test "$REQUIRED_OPERAND" = failure
