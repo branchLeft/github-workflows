@@ -22,12 +22,14 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, NamedTuple
 
 import yaml
 
 import run_workflow_steps
+import ssh_jump_proof
 
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = Path(os.environ.get("ANSIBLE_GATED_APPLY_WORKFLOW", REPO / ".github/workflows/ansible-gated-apply.yml"))
@@ -39,6 +41,7 @@ HOST_TWO = "deploy@host-two"
 DRIFT_WORKFLOW = Path(os.environ.get("ANSIBLE_DRIFT_CHECK_WORKFLOW", REPO / ".github/workflows/ansible-drift-check.yml"))
 ACTION = Path(os.environ.get("SSH_CHECK_HOSTS_ACTION", REPO / ".github/actions/ssh-check-hosts/action.yml"))
 ACTION_USES = "./.gw/.github/actions/ssh-check-hosts"
+JUMP_SELF_WORKFLOW = REPO / ".github/workflows/ssh-jump-self.yml"
 
 DOC: dict[Any, Any] = yaml.safe_load(WORKFLOW.read_text())
 JOBS: dict[str, dict[str, Any]] = DOC["jobs"]
@@ -433,6 +436,7 @@ def snapshot_text() -> str:
         "drift": structure(DRIFT_DOC),
         "action": action_structure(ACTION_DOC),
         "action-self": structure(yaml.safe_load(ACTION_SELF_WORKFLOW.read_text())),
+        "jump-self": structure(yaml.safe_load(JUMP_SELF_WORKFLOW.read_text())),
     }
     return json.dumps(every, indent=2, sort_keys=True) + "\n"
 
@@ -2165,6 +2169,145 @@ class SshJumpTests(unittest.TestCase):
     def test_the_alias_of_the_hop_is_not_a_name_the_hosts_input_can_hold(self) -> None:
         result = Sandbox(self).run(action_step("validate"), composite_validate_env(HOSTS=f"deploy@{JUMP_ALIAS}\n"))
         self.assertNotEqual(result.code, 0, "a target named like the alias would select the hop stanza")
+
+
+PROOF_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPROOFKEYPROOFKEYPROOFKEYPROOFKEYPROOFKEYPROOF"
+
+
+class SshJumpProofLineTests(unittest.TestCase):
+    """The authorized_keys line the proof installs on the gateway, which the README gives the operator."""
+
+    def line(self, host: str = "10.0.0.5", port: int = 22, key: str = PROOF_PUBLIC_KEY) -> str:
+        return ssh_jump_proof.gateway_authorized_keys_line(host, port, key)
+
+    def test_the_line_is_restrict_then_port_forwarding_one_permitopen_and_a_forced_command(self) -> None:
+        self.assertEqual(
+            self.line(),
+            f'restrict,port-forwarding,permitopen="10.0.0.5:22",command="/usr/sbin/nologin" {PROOF_PUBLIC_KEY}',
+        )
+
+    def test_permitopen_is_exactly_one_destination_with_no_wildcard_and_no_list(self) -> None:
+        options = self.line().split(" ", 1)[0]
+        found = re.findall(r'permitopen="([^"]*)"', options)
+        self.assertEqual(found, ["10.0.0.5:22"])
+        self.assertNotIn("*", found[0])
+        self.assertNotIn(",", found[0])
+        self.assertEqual(options.count("permitopen"), 1)
+
+    def test_the_line_carries_a_forced_command_unless_the_caller_asks_for_none(self) -> None:
+        self.assertIn('command="/usr/sbin/nologin"', self.line())
+        bare = ssh_jump_proof.gateway_authorized_keys_line("10.0.0.5", 22, PROOF_PUBLIC_KEY, forced_command=None)
+        self.assertNotIn("command=", bare)
+
+    def test_a_wildcard_a_list_or_an_injected_option_is_refused_before_it_reaches_the_line(self) -> None:
+        key = PROOF_PUBLIC_KEY
+        refused: dict[str, Callable[[], str]] = {
+            "a wildcard host": lambda: self.line(host="*"),
+            "a pattern host": lambda: self.line(host="10.0.0.*"),
+            "two hosts": lambda: self.line(host="10.0.0.5,10.0.0.6"),
+            "a quote in the host": lambda: self.line(host='10.0.0.5",permitopen="*:*'),
+            "a space in the host": lambda: self.line(host="10.0.0.5 extra"),
+            "port zero": lambda: self.line(port=0),
+            "a port above the range": lambda: self.line(port=65536),
+            "a second line in the key": lambda: self.line(key=key + "\nrestrict ssh-ed25519 AAAA"),
+            "an option in the key": lambda: self.line(key='permitopen="*:*" ' + key),
+        }
+        for label, build in refused.items():
+            with self.subTest(case=label), self.assertRaises(ssh_jump_proof.InvalidLineInput):
+                build()
+
+    def test_the_target_line_forces_the_one_command_and_restricts_the_key(self) -> None:
+        line = ssh_jump_proof.target_authorized_keys_line(Path("/x/run.sh"), PROOF_PUBLIC_KEY)
+        self.assertEqual(line, f'restrict,command="/x/run.sh" {PROOF_PUBLIC_KEY}')
+
+    def test_the_documented_account_has_no_shell_and_a_forced_command_and_only_the_control_runs_commands(self) -> None:
+        documented = ssh_jump_proof.GATEWAY_ACCOUNTS[0]
+        self.assertEqual(documented.name, ssh_jump_proof.JUMP_USER)
+        self.assertEqual((documented.shell, documented.has_forced_command, documented.runs_commands), (ssh_jump_proof.NO_SHELL, True, False))
+        runners = [account.name for account in ssh_jump_proof.GATEWAY_ACCOUNTS if account.runs_commands]
+        self.assertEqual(runners, [ssh_jump_proof.CONTROL_USER])
+        control = ssh_jump_proof.GATEWAY_ACCOUNTS[-1]
+        self.assertEqual((control.shell, control.has_forced_command), (ssh_jump_proof.LOGIN_SHELL, False))
+
+
+class SshJumpProofLogTests(unittest.TestCase):
+    """What the proof reads out of an sshd log at DEBUG1."""
+
+    LOG = "\n".join(
+        [
+            'Connection from 127.0.0.1 port 50000 on 127.0.0.2 port 22 rdomain ""',
+            "debug1: userauth_pubkey: publickey test pkalg ssh-ed25519 pkblob ED25519 SHA256:aaa/bbb+ccc [preauth]",
+            "debug1: userauth_pubkey: publickey test pkalg ssh-ed25519 pkblob ED25519 SHA256:zzz [preauth]",
+            "Accepted publickey for proofjump from 127.0.0.1 port 50000 ssh2: ED25519 SHA256:aaa/bbb+ccc",
+            "debug1: server_request_direct_tcpip: originator 127.0.0.1 port 65535, target 127.0.0.3 port 22",
+            "debug1: server_request_direct_tcpip: originator 127.0.0.1 port 65535, target 127.0.0.3 port 2222",
+            "Received request from 127.0.0.1 port 50000 to connect to host 127.0.0.3 port 2222, but the request was denied.",
+            'Connection from 127.0.0.1 port 50002 on 127.0.0.2 port 22 rdomain ""',
+        ]
+    )
+
+    def test_accepted_logins_give_user_source_and_fingerprint(self) -> None:
+        self.assertEqual(
+            ssh_jump_proof.accepted_logins(self.LOG),
+            [ssh_jump_proof.Accepted("proofjump", "127.0.0.1", "SHA256:aaa/bbb+ccc")],
+        )
+
+    def test_offered_fingerprints_include_a_key_that_was_not_accepted(self) -> None:
+        self.assertEqual(ssh_jump_proof.offered_fingerprints(self.LOG), {"SHA256:aaa/bbb+ccc", "SHA256:zzz"})
+
+    def test_a_forward_is_permitted_only_when_it_was_requested_and_not_denied(self) -> None:
+        self.assertEqual(ssh_jump_proof.requested_forwards(self.LOG), [ssh_jump_proof.Endpoint("127.0.0.3", 22), ssh_jump_proof.Endpoint("127.0.0.3", 2222)])
+        self.assertEqual(ssh_jump_proof.denied_forwards(self.LOG), [ssh_jump_proof.Endpoint("127.0.0.3", 2222)])
+        self.assertEqual(ssh_jump_proof.permitted_forwards(self.LOG), [ssh_jump_proof.Endpoint("127.0.0.3", 22)])
+
+    def test_connections_are_counted_from_the_connection_lines(self) -> None:
+        self.assertEqual(ssh_jump_proof.count_connections(self.LOG), 2)
+        self.assertEqual(ssh_jump_proof.count_connections(""), 0)
+
+    def test_outputs_and_recorded_ssh_calls_are_parsed_even_when_a_call_holds_a_double_dash_argument(self) -> None:
+        self.assertEqual(ssh_jump_proof.parse_outputs("a=1\nb=x=y\nnoise\n"), {"a": "1", "b": "x=y"})
+        recorded = f"-T\n--\nuser@host\n{ssh_jump_proof.CALL_END}\n-F\ncfg\n{ssh_jump_proof.CALL_END}\n"
+        self.assertEqual(ssh_jump_proof.parse_ssh_calls(recorded), [["-T", "--", "user@host"], ["-F", "cfg"]])
+
+
+class SshJumpProofFixtureTests(unittest.TestCase):
+    """The proof runs the action's own steps, and its stand-in target answers in the form the action accepts."""
+
+    def test_the_proof_loads_the_run_text_of_the_action_unchanged(self) -> None:
+        defaults, steps = ssh_jump_proof.load_action(ACTION)
+        self.assertEqual([step.step_id for step in steps], ["validate", "check", "report"])
+        self.assertEqual([step.script for step in steps], [step["run"] for step in ACTION_STEPS])
+        self.assertEqual((defaults["jump-host"], defaults["jump-key"]), ("", ""))
+
+    def test_the_stand_in_target_prints_a_summary_line_the_report_step_reads_as_clean(self) -> None:
+        report_text = action_step("report")["run"]
+        found = re.search(r"(?m)^\s*re='([^']+)'$", report_text)
+        assert found is not None
+        with tempfile.TemporaryDirectory() as directory:
+            script = Path(directory) / "target.sh"
+            script.write_text(ssh_jump_proof.TARGET_COMMAND)
+            printed = subprocess.run(["sh", str(script)], env={"SSH_ORIGINAL_COMMAND": SHA}, capture_output=True, text=True, check=True).stdout
+        match = re.fullmatch(found.group(1), printed.rstrip("\n"))
+        self.assertIsNotNone(match, printed)
+        assert match is not None
+        self.assertEqual((match.group(1), match.group(2), match.group(4), match.group(5)), ("unchanged", "0", SHA, "0"))
+
+    def test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter(self) -> None:
+        doc: dict[Any, Any] = yaml.safe_load(JUMP_SELF_WORKFLOW.read_text())
+        self.assertEqual(doc[True], {"pull_request": None, "push": {"branches": ["main"]}})
+        self.assertEqual(doc["permissions"], {"contents": "read"})
+        self.assertEqual(list(doc["jobs"]), ["jump-proof"])
+        job = doc["jobs"]["jump-proof"]
+        self.assertEqual(job["runs-on"], "ubuntu-latest")
+        self.assertIn("timeout-minutes", job)
+        runs = [step.get("run", "") for step in job["steps"]]
+        self.assertIn("python3 tools/ssh_jump_proof.py", runs)
+        text = JUMP_SELF_WORKFLOW.read_text()
+        self.assertNotIn("secrets.", text)
+        self.assertNotIn("continue-on-error", text)
+        for target, rest in re.findall(r"(?m)^\s*(?:- )?uses:\s*(\S+)(.*)$", text):
+            self.assertRegex(target, r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
+            self.assertRegex(rest, r"^\s+# v\d")
 
 
 def git(*args: str, cwd: Path) -> str:

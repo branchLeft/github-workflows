@@ -840,6 +840,44 @@
       "contents": "read"
     }
   },
+  "jump-self": {
+    "jobs": {
+      "jump-proof": {
+        "name": "Jump hop on real sshd",
+        "runs-on": "ubuntu-latest",
+        "steps": [
+          {
+            "name": "Checkout",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "name": "Install the SSH server and stop the system one",
+            "run-sha256": "27097ec9ca9ddc15a27fba57cdb6a326314b061bc2634da10dfab69dfc3c6372"
+          },
+          {
+            "name": "Prove the jump path and its lock, printing each observation",
+            "run-sha256": "17bf4a0a67a03557403002e74c6a1e4672d99c71a724f123d9b79024a375ae42"
+          }
+        ],
+        "timeout-minutes": 10
+      }
+    },
+    "name": "SSH jump (self-test)",
+    "on": {
+      "pull_request": null,
+      "push": {
+        "branches": [
+          "main"
+        ]
+      }
+    },
+    "permissions": {
+      "contents": "read"
+    }
+  },
   "self": {
     "jobs": {
       "gated-apply": {
