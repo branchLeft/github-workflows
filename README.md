@@ -962,12 +962,20 @@ jump host (OpenSSH `ProxyJump`). With both empty, the default, nothing changes: 
   named hosts only, one `permitopen` for each:
 
   ```text
-  AUTHORIZED_KEYS_LINE_PLACEHOLDER
-  restrict,port-forwarding,permitopen="HOST:22" ssh-ed25519 AAAA... jump-key
+  restrict,port-forwarding,permitopen="HOST_ONE:22",permitopen="HOST_TWO:22",command="/usr/sbin/nologin" ssh-ed25519 AAAA... jump-key
   ```
 
-  A `permitopen` name is matched as written, so it names each host exactly as the
-  `hosts` lines spell it.
+  `restrict` switches every feature of the key off; `port-forwarding` with the
+  `permitopen` options switches back on only a connection to those destinations;
+  `command="/usr/sbin/nologin"` makes the key run nothing, whatever it asks for.
+  The account's login shell is `/usr/sbin/nologin` as well, and the SSH server
+  must allow TCP forwarding for the account (`AllowTcpForwarding`, which is `yes`
+  unless the operator changed it). `restrict` alone does not stop a command: a key
+  with it, on an account with a login shell, ran `id`. The proof (below) shows
+  that the forced command and the login shell each stop a command alone, so a
+  mistake in one still leaves the other. A `permitopen` name is matched as
+  written, so it names each host exactly as the `hosts` lines spell it: another
+  spelling of the same address is refused.
 
 The jump host is one input. It is today a public edge host of the platform, and a
 dedicated gateway host can replace it by changing the one input, `jump-host`, and
@@ -977,3 +985,32 @@ the action.
 The self-test is `.github/workflows/ssh-check-hosts-self.yml`: it runs the action on a
 real runner against the stand-in host in the fixture, with `fail-on-changes` both
 ways, on every pull request.
+
+The jump is proved on real SSH servers by `.github/workflows/ssh-jump-self.yml`, on
+every pull request and on main. It runs `tools/ssh_jump_proof.py`, which starts a
+gateway and a target `sshd` on two loopback addresses, each on port 22 with
+throwaway keys and accounts that it removes at its end, and runs the `validate`,
+`check` and `report` steps of this action as they are written, with the real `ssh`.
+It prints each observation and asserts that:
+
+- with the jump set, the outer `ssh` runs with `ClearAllForwardings=yes`, the
+  gateway carries one connection, to the target on port 22, and the report step
+  reads the answer as a normal result;
+- the gateway is offered the jump key and accepts only it, the target is offered
+  the check key and accepts only it, and each key is refused by the other server;
+- the jump key, restricted as above, opens its one destination (the target's banner
+  arrives) and is refused with `administratively prohibited` for the same host on
+  another port, another host, the gateway itself and two other spellings of the
+  target's address;
+- the jump key runs no command and gets no shell on the gateway (a marker file is
+  not made), against a control account that has a login shell and no forced
+  command, where the same command does run;
+- a different host key for the gateway, no line for the gateway, and a different
+  host key for the target each end in `unreachable`, and the target accepts no key.
+
+It cannot show which route a connection took by its source address, because on
+loopback both routes give the same one; the gateway's log of the forward, the run
+with no jump (which leaves the gateway untouched) and the failed hops (which leave
+the target with no connection) carry that proof instead. The unit tests of the proof's
+authorized_keys line and log readers run with the rest of
+`tools/test_ansible_gated_apply.py`, and `tools/sabotage.py` breaks each of them.
