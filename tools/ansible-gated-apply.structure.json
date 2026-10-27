@@ -387,7 +387,7 @@
           "group": "ansible-apply-${{ github.repository }}-${{ inputs.environment }}"
         },
         "environment": "${{ inputs.environment }}",
-        "if": "needs.discover.outputs.delivery == 'true' && needs.plan.result == 'success' && needs.plan.outputs.has_changes != 'false' && inputs.dry-run == false && inputs.environment != ''",
+        "if": "!cancelled() && !failure() && needs.discover.outputs.delivery == 'true' && needs.plan.result == 'success' && needs.plan.outputs.has_changes != 'false' && inputs.dry-run == false && inputs.environment != ''",
         "name": "Apply the planned commit (after approval)",
         "needs": [
           "discover",

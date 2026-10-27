@@ -500,6 +500,11 @@ CASES: list[Case] = [
         [f"{S}.test_the_plan_job_runs_only_for_delivery"],
     ),
     Case(
+        "apply has no leading status function, so a skipped lint skips it",
+        [Edit(GATED, "      !cancelled() && !failure()\n      && needs.discover.outputs.delivery", "      needs.discover.outputs.delivery")],
+        [f"{S}.test_the_apply_job_leads_with_a_status_function_so_a_skipped_lint_does_not_skip_it"],
+    ),
+    Case(
         "jump hop stanza drops StrictHostKeyChecking",
         [Edit(ACTION, "                printf '  StrictHostKeyChecking yes\\n'\n", "")],
         [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones", f"{SJ}.test_the_config_file_is_exactly_one_stanza_for_the_hop"],

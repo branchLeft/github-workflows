@@ -659,8 +659,11 @@ jobs:
   apply:
     name: Apply the planned commit (after approval)
     needs: [discover, plan]
+    # lint and shard are skipped when the merge queue already ran them; an implicit
+    # success() would then skip this job, so the condition names the statuses.
     if: >-
-      needs.discover.outputs.delivery == 'true'
+      !cancelled() && !failure()
+      && needs.discover.outputs.delivery == 'true'
       && needs.plan.result == 'success'
       && needs.plan.outputs.has_changes != 'false'
       && inputs.dry-run == false
