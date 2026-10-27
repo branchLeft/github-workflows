@@ -54,6 +54,8 @@ PG = "PlanGuardTests"
 AG = "ApplyGuardTests"
 CF = "ConfirmMergeGroupTests"
 SJ = "SshJumpTests"
+AJ = "ApplyJumpTests"
+SO = "SshOptionTests"
 SP = "SshJumpProofLineTests"
 SL = "SshJumpProofLogTests"
 SF = "SshJumpProofFixtureTests"
@@ -643,6 +645,137 @@ CASES: list[Case] = [
         "jump self-test workflow does not run the proof",
         [Edit(JUMP_SELF, "run: python3 tools/ssh_jump_proof.py", "run: python3 tools/ssh_jump_proof.py --help")],
         [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
+    ),
+    # The jump in the gated apply and the drift check (ws#2625). Cases a, b and c
+    # are the three the brief names; the rest are the other controls of the
+    # apply step's copy of the hop.
+    Case(
+        "apply jump hop stanza drops StrictHostKeyChecking",
+        [Edit(GATED, "                printf '  StrictHostKeyChecking yes\\n'\n", "")],
+        [
+            f"{AJ}.test_the_hop_has_its_own_strict_options_in_the_apply_too",
+            f"{AJ}.test_the_stanza_the_destination_pattern_and_the_trap_in_the_apply_step_equal_the_actions",
+            f"{AJ}.test_the_apply_step_writes_the_same_config_and_key_as_the_action_for_the_same_jump",
+        ],
+    ),
+    Case(
+        "apply jump hop uses the apply key",
+        [Edit(GATED, "printf '  IdentityFile %s\\n' \"$work/jump_id\"", "printf '  IdentityFile %s\\n' \"$work/id\"")],
+        [
+            f"{AJ}.test_the_apply_key_is_never_offered_to_the_gateway_and_the_jump_key_never_to_a_target",
+            f"{AJ}.test_the_apply_step_writes_the_same_config_and_key_as_the_action_for_the_same_jump",
+        ],
+    ),
+    Case(
+        "apply trap leaves the jump key and config behind",
+        [Edit(GATED, "            trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work/jump_id\" \"$work/jump_config\"' EXIT\n", "")],
+        [f"{AJ}.test_the_keys_and_the_config_are_private_while_ssh_runs_and_removed_on_every_way_out"],
+    ),
+    Case(
+        "apply jump key and config written with the runner umask",
+        [Edit(GATED, "              umask 077\n              printf '%s\\n' \"$JUMP_KEY\"", "              printf '%s\\n' \"$JUMP_KEY\"")],
+        [f"{AJ}.test_the_keys_and_the_config_are_private_while_ssh_runs_and_removed_on_every_way_out"],
+    ),
+    Case(
+        "apply jump call drops the proxy jump option",
+        [Edit(GATED, "ssh_args+=(-F \"$work/jump_config\" -o ProxyJump=jump_hop)", "ssh_args+=(-F \"$work/jump_config\")")],
+        [f"{AJ}.test_a_jump_adds_the_config_file_and_the_proxy_jump_option_after_the_unchanged_options"],
+    ),
+    Case(
+        "apply jump host without a jump key is accepted",
+        [Edit(GATED, "            [ -n \"$JUMP_KEY\" ] || fail \"ssh_jump_host is set but ssh_jump_key is empty: a jump needs both or neither.\"\n", "")],
+        [f"{AJ}.test_only_one_of_the_two_secrets_fails_before_any_file_or_host_and_names_the_missing_one"],
+    ),
+    Case(
+        "apply jump key without a jump host is accepted",
+        [Edit(GATED, "            [ -n \"$JUMP_HOST\" ] || fail \"ssh_jump_key is set but ssh_jump_host is empty: a jump needs both or neither.\"\n", "")],
+        [f"{AJ}.test_only_one_of_the_two_secrets_fails_before_any_file_or_host_and_names_the_missing_one"],
+    ),
+    Case(
+        "apply jump host with a second line is accepted",
+        [Edit(GATED, "            case \"$JUMP_HOST\" in *$'\\n'*) fail \"ssh_jump_host is not of the form user@host.\" ;; esac\n", "")],
+        [f"{AJ}.test_a_malformed_jump_host_fails_before_any_file_or_host_and_is_never_echoed"],
+    ),
+    Case(
+        "apply jump host form is not checked",
+        [Edit(GATED, "printf '%s' \"$JUMP_HOST\" | grep -Eq \"$destination_pattern\"", "printf '%s' \"$JUMP_HOST\" | grep -Eq '.'")],
+        [f"{AJ}.test_a_malformed_jump_host_fails_before_any_file_or_host_and_is_never_echoed"],
+    ),
+    Case(
+        "apply jump host echoed in its refusal",
+        [Edit(GATED, "fail \"ssh_jump_host is not of the form user@host.\"", "fail \"ssh_jump_host $JUMP_HOST is not of the form user@host.\"", 2)],
+        [f"{AJ}.test_a_malformed_jump_host_fails_before_any_file_or_host_and_is_never_echoed"],
+    ),
+    Case(
+        "apply destination pattern allows an underscore",
+        [Edit(GATED, "@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'\n", "@[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$'\n")],
+        [
+            f"{AJ}.test_the_stanza_the_destination_pattern_and_the_trap_in_the_apply_step_equal_the_actions",
+            f"{AJ}.test_a_malformed_jump_host_fails_before_any_file_or_host_and_is_never_echoed",
+        ],
+    ),
+    Case(
+        "apply jump set when no jump is given",
+        [Edit(GATED, "          if [ -n \"$JUMP_HOST\" ]; then\n            # ssh gives", "          if true; then\n            # ssh gives")],
+        [
+            f"{AJ}.test_with_no_jump_the_ssh_argv_the_files_and_the_removals_are_exactly_what_they_were",
+            f"{SO}.test_the_plan_and_apply_calls_pass_the_same_exact_ssh_options",
+        ],
+    ),
+    Case(
+        "apply jump hop stanza drops ClearAllForwardings",
+        [Edit(GATED, "                printf '  ClearAllForwardings yes\\n'\n", "")],
+        [f"{AJ}.test_the_hop_has_its_own_strict_options_in_the_apply_too"],
+    ),
+    Case(
+        "apply jump hop stanza drops IdentitiesOnly",
+        [Edit(GATED, "                printf '  IdentitiesOnly yes\\n'\n", "")],
+        [f"{AJ}.test_the_hop_has_its_own_strict_options_in_the_apply_too"],
+    ),
+    Case(
+        "apply ssh error text reaches the job log",
+        [Edit(GATED, '-- "$dest" "$SHA" < /dev/null 2> /dev/null)', '-- "$dest" "$SHA" < /dev/null)')],
+        [f"{AJ}.test_the_jump_host_and_keys_reach_neither_the_log_nor_the_summary_of_a_successful_apply"],
+    ),
+    Case(
+        "apply guard step reads the jump host",
+        [Edit(GATED, "          PLANNED_DIGEST: ${{ needs.plan.outputs.hosts_digest }}\n", "          PLANNED_DIGEST: ${{ needs.plan.outputs.hosts_digest }}\n          JUMP_HOST: ${{ secrets.ssh_jump_host }}\n")],
+        [
+            f"{S}.test_the_apply_guard_step_and_the_steps_before_the_action_hold_no_jump_secret",
+            f"{S}.test_the_jump_secrets_are_read_by_the_plan_jobs_action_step_and_the_apply_step_only",
+            f"{S}.test_each_expression_that_feeds_a_gate_or_apply_step_comes_from_its_expected_source",
+        ],
+    ),
+    Case(
+        "plan job does not pass the jump host",
+        [Edit(GATED, "          jump-host: ${{ secrets.ssh_jump_host }}\n", "")],
+        [f"{S}.test_the_plan_job_calls_the_action_from_the_checkout_and_passes_the_plan_inputs"],
+    ),
+    Case(
+        "plan job passes the jump key to the check key input",
+        [Edit(GATED, "          check-key: ${{ secrets.ssh_check_key }}\n", "          check-key: ${{ secrets.ssh_jump_key }}\n")],
+        [
+            f"{S}.test_the_plan_job_calls_the_action_from_the_checkout_and_passes_the_plan_inputs",
+            f"{S}.test_each_key_is_read_by_one_job_only",
+        ],
+    ),
+    Case(
+        "drift job does not pass the jump key",
+        [Edit(DRIFT, "          jump-key: ${{ secrets.ssh_jump_key }}\n", "")],
+        [f"{S}.test_the_drift_workflow_is_two_jobs_and_the_key_job_never_applies"],
+    ),
+    Case(
+        "drift jump secrets declared as required",
+        [Edit(DRIFT, "          line goes in ssh_known_hosts.\n        required: false\n", "          line goes in ssh_known_hosts.\n        required: true\n")],
+        [
+            f"{S}.test_both_workflows_declare_the_two_jump_secrets_as_optional_and_say_both_or_neither",
+            f"{S}.test_the_drift_workflow_takes_the_declared_inputs_and_three_required_secrets_and_no_apply_key",
+        ],
+    ),
+    Case(
+        "gated jump key secret not declared",
+        [Edit(GATED, "      ssh_jump_key:\n", "      ssh_jump_key_unused:\n")],
+        [f"{S}.test_both_workflows_declare_the_two_jump_secrets_as_optional_and_say_both_or_neither"],
     ),
 ]
 

@@ -49,6 +49,19 @@ on:
       ssh_known_hosts:
         description: The known_hosts lines of the hosts. Pass it from a repository secret.
         required: true
+      ssh_jump_host:
+        description: >-
+          Optional: pass from a secret; both or neither with ssh_jump_key. A
+          user@host, in the form ssh_hosts takes, that every host is reached
+          through (ssh ProxyJump), for hosts with no public address. Its host-key
+          line goes in ssh_known_hosts.
+        required: false
+      ssh_jump_key:
+        description: >-
+          Optional: pass from a secret; both or neither with ssh_jump_host. The
+          private key for the jump host and nothing else, never the check key.
+          The jump host restricts it to port 22 of the listed hosts.
+        required: false
 
 permissions:
   contents: read
@@ -203,6 +216,8 @@ jobs:
           hosts: ${{ secrets.ssh_hosts }}
           known-hosts: ${{ secrets.ssh_known_hosts }}
           check-key: ${{ secrets.ssh_check_key }}
+          jump-host: ${{ secrets.ssh_jump_host }}
+          jump-key: ${{ secrets.ssh_jump_key }}
           sha: ${{ github.sha }}
           host-timeout: ${{ inputs.host-timeout-minutes }}
           total-timeout: ${{ steps.guard.outputs.budget }}

@@ -346,6 +346,18 @@ Any failure stops the job before the key is read.
 | `ssh_known_hosts` | the caller | The hosts' public keys in `known_hosts` form. Host key checking is on and the global file is not read. |
 | `ssh_check_key` | the caller | Private key of the plan job. On the host it may run the forced command in check mode only. |
 | `ssh_apply_key` | not passed: an environment secret | Private key of the apply job. It is read because the apply job runs in the environment, so a job that has not passed the approval cannot read it. |
+| `ssh_jump_host` | the caller, optional | A `user@host` that every host is reached through. Both or neither with `ssh_jump_key`. Its host-key line goes in `ssh_known_hosts`. |
+| `ssh_jump_key` | the caller, optional | Private key for the jump host and nothing else, never the check key or the apply key. Both or neither with `ssh_jump_host`. |
+
+A caller may pass the two jump secrets to reach hosts that have no public address
+through a gateway host; the gateway host is only this input. The plan job hands both
+to the `ssh-check-hosts` action and the apply step reaches each host through the
+same jump, with the same strict options on every hop. One without the other fails
+before any host is contacted and names the one that is missing; with neither,
+nothing changes. What the host operator provides on the gateway is in "Reaching a
+private host through a jump host" under `ssh-check-hosts` below, not restated here.
+The jump host is not part of the digest that ties the apply to the plan: the digest
+binds the target hosts, which strict host-key checking pins.
 
 #### Setup the owner does once per repository
 
@@ -555,9 +567,11 @@ jobs:
 | `host-timeout-minutes` | 65 | One host call is stopped after this long. A whole number from 1. |
 | `check-timeout-minutes` | 90 | Bound of the check job, from 10 to 350 (GitHub ends a job at 360). The hosts are asked one after another and share this time less five minutes: a call is stopped at the smaller of `host-timeout-minutes` and what is left, and a host reached after that is not asked and is judged `no-answer`. So a run of hung hosts ends red with an outcome and opens the issue; it does not wait for the job bound. |
 
-All three secrets are required and are the same secrets as the plan job's:
-`ssh_hosts`, `ssh_known_hosts` and `ssh_check_key`. There is no input for a host
-or a key, and no dry run.
+Three secrets are required and are the same secrets as the plan job's:
+`ssh_hosts`, `ssh_known_hosts` and `ssh_check_key`. Two more are optional, both or
+neither: `ssh_jump_host` and `ssh_jump_key`, which reach hosts that have no public
+address through a gateway host (see "Reaching a private host through a jump host"
+under `ssh-check-hosts` below). There is no input for a host or a key, and no dry run.
 
 #### What a red run means, and how to clear it
 
