@@ -569,13 +569,35 @@ class StructureTests(unittest.TestCase):
         condition = " ".join(str(job["if"]).split())
         self.assertEqual(
             condition,
-            "needs.discover.outputs.delivery == 'true' "
+            "!cancelled() && !failure() "
+            "&& needs.discover.outputs.delivery == 'true' "
             "&& needs.plan.result == 'success' "
             "&& needs.plan.outputs.has_changes != 'false' "
             "&& inputs.dry-run == false "
             "&& inputs.environment != ''",
         )
         self.assertFalse(job["concurrency"]["cancel-in-progress"])
+
+    def test_the_apply_job_leads_with_a_status_function_so_a_skipped_lint_does_not_skip_it(self) -> None:
+        # The merge queue skips lint and shard, and plan still succeeds. Without a
+        # status function in the condition, GitHub's implicit success() reads the
+        # skipped jobs as failed and skips apply. The status function must come
+        # first, and the five clauses that gate apply must all remain.
+        condition = " ".join(str(JOBS["apply"]["if"]).split())
+        first = condition.split("&&")[0].strip()
+        self.assertIn(
+            first,
+            ("!cancelled()", "always()"),
+            f"the apply job's condition has no leading status function (!cancelled() or always()); it starts with {first!r}",
+        )
+        for named in (
+            "needs.discover.outputs.delivery",
+            "needs.plan.result == 'success'",
+            "has_changes",
+            "inputs.dry-run",
+            "inputs.environment",
+        ):
+            self.assertIn(named, condition)
 
     def test_the_plan_job_runs_only_for_delivery(self) -> None:
         self.assertEqual(
