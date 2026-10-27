@@ -28,6 +28,8 @@ name: merged-status (reusable)
 #         projects-app-id: ${{ vars.BRANCHLEFT_PROJECTS_APP_ID }}
 #       secrets:
 #         projects_app_key: ${{ secrets.BRANCHLEFT_PROJECTS_APP_KEY }}
+#
+# Optional `runs-on` input: a JSON array string, default ["ubuntu-latest"].
 
 on:
   workflow_call:
@@ -52,6 +54,10 @@ on:
         description: "Report what would be written and write nothing"
         type: boolean
         default: false
+      runs-on:
+        description: "Runner labels for the job, as a JSON array string; the default is GitHub-hosted ubuntu-latest"
+        type: string
+        default: '["ubuntu-latest"]'
     secrets:
       projects_app_key:
         description: "PEM private key of the GitHub App named by projects-app-id"
@@ -70,7 +76,9 @@ permissions:
 jobs:
   merged-status:
     name: Write the board status
-    runs-on: ubuntu-latest
+    # The caller picks the runner. A caller that passes nothing keeps
+    # GitHub-hosted ubuntu-latest, so existing pins behave as before.
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     timeout-minutes: 10
     steps:
       - name: Check out the caller
@@ -132,6 +140,9 @@ jobs:
           MERGED_STATUS_REPO_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # Removes the App key and the installation token on any exit,
+          # including a failure partway through, on a persistent runner.
+          trap 'rm -f key.pem token.json installations.json' EXIT
 
           if [ -z "${APP_ID:-}" ]; then echo "::error::no App id supplied"; exit 1; fi
           if [ -z "${APP_KEY:-}" ]; then echo "::error::no App key supplied"; exit 1; fi
