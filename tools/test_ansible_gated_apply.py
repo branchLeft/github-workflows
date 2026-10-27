@@ -2177,26 +2177,26 @@ PROOF_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPROOFKEYPROOFKEYPROOFKE
 class SshJumpProofLineTests(unittest.TestCase):
     """The authorized_keys line the proof installs on the gateway, which the README gives the operator."""
 
-    def line(self, host: str = "10.0.0.5", port: int = 22, key: str = PROOF_PUBLIC_KEY) -> str:
+    def line(self, host: str = "192.0.2.5", port: int = 22, key: str = PROOF_PUBLIC_KEY) -> str:
         return ssh_jump_proof.gateway_authorized_keys_line(host, port, key)
 
     def test_the_line_is_restrict_then_port_forwarding_one_permitopen_and_a_forced_command(self) -> None:
         self.assertEqual(
             self.line(),
-            f'restrict,port-forwarding,permitopen="10.0.0.5:22",command="/usr/sbin/nologin" {PROOF_PUBLIC_KEY}',
+            f'restrict,port-forwarding,permitopen="192.0.2.5:22",command="/usr/sbin/nologin" {PROOF_PUBLIC_KEY}',
         )
 
     def test_permitopen_is_exactly_one_destination_with_no_wildcard_and_no_list(self) -> None:
         options = self.line().split(" ", 1)[0]
         found = re.findall(r'permitopen="([^"]*)"', options)
-        self.assertEqual(found, ["10.0.0.5:22"])
+        self.assertEqual(found, ["192.0.2.5:22"])
         self.assertNotIn("*", found[0])
         self.assertNotIn(",", found[0])
         self.assertEqual(options.count("permitopen"), 1)
 
     def test_the_line_carries_a_forced_command_unless_the_caller_asks_for_none(self) -> None:
         self.assertIn('command="/usr/sbin/nologin"', self.line())
-        bare = ssh_jump_proof.gateway_authorized_keys_line("10.0.0.5", 22, PROOF_PUBLIC_KEY, forced_command=None)
+        bare = ssh_jump_proof.gateway_authorized_keys_line("192.0.2.5", 22, PROOF_PUBLIC_KEY, forced_command=None)
         self.assertNotIn("command=", bare)
 
     def test_a_wildcard_a_list_or_an_injected_option_is_refused_before_it_reaches_the_line(self) -> None:
@@ -2204,9 +2204,9 @@ class SshJumpProofLineTests(unittest.TestCase):
         refused: dict[str, Callable[[], str]] = {
             "a wildcard host": lambda: self.line(host="*"),
             "a pattern host": lambda: self.line(host="10.0.0.*"),
-            "two hosts": lambda: self.line(host="10.0.0.5,10.0.0.6"),
-            "a quote in the host": lambda: self.line(host='10.0.0.5",permitopen="*:*'),
-            "a space in the host": lambda: self.line(host="10.0.0.5 extra"),
+            "two hosts": lambda: self.line(host="192.0.2.5,192.0.2.6"),
+            "a quote in the host": lambda: self.line(host='192.0.2.5",permitopen="*:*'),
+            "a space in the host": lambda: self.line(host="192.0.2.5 extra"),
             "port zero": lambda: self.line(port=0),
             "a port above the range": lambda: self.line(port=65536),
             "a second line in the key": lambda: self.line(key=key + "\nrestrict ssh-ed25519 AAAA"),
