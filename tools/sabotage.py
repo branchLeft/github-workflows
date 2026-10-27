@@ -52,6 +52,7 @@ PG = "PlanGuardTests"
 AG = "ApplyGuardTests"
 HM = "HeadMovedTests"
 CF = "ConfirmMergeGroupTests"
+SJ = "SshJumpTests"
 
 CASES: list[Case] = [
     Case(
@@ -493,6 +494,91 @@ CASES: list[Case] = [
         "plan runs after a failed lint",
         [Edit(GATED, "!cancelled() && !failure() && needs.discover", "!cancelled() && needs.discover")],
         [f"{S}.test_the_plan_job_runs_only_for_delivery"],
+    ),
+    Case(
+        "jump hop stanza drops StrictHostKeyChecking",
+        [Edit(ACTION, "                printf '  StrictHostKeyChecking yes\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones", f"{SJ}.test_the_config_file_is_exactly_one_stanza_for_the_hop"],
+    ),
+    Case(
+        "jump hop stanza drops IdentitiesOnly",
+        [Edit(ACTION, "                printf '  IdentitiesOnly yes\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
+    ),
+    Case(
+        "jump hop stanza drops BatchMode",
+        [Edit(ACTION, "                printf '  BatchMode yes\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
+    ),
+    Case(
+        "jump hop stanza reads the global known hosts",
+        [Edit(ACTION, "                printf '  GlobalKnownHostsFile /dev/null\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
+    ),
+    Case(
+        "jump hop stanza drops ClearAllForwardings",
+        [Edit(ACTION, "                printf '  ClearAllForwardings yes\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
+    ),
+    Case(
+        "jump hop uses the check key",
+        [Edit(ACTION, "printf '  IdentityFile %s\\n' \"$plan_dir/jump_id\"", "printf '  IdentityFile %s\\n' \"$plan_dir/id\"")],
+        [f"{SJ}.test_the_check_key_is_never_offered_to_the_gateway_and_the_jump_key_never_to_a_target"],
+    ),
+    Case(
+        "jump host without a jump key passes validation",
+        [Edit(ACTION, "          [ -n \"$JUMP_KEY\" ] || fail \"jump-host is set but jump-key is empty: a jump needs both or neither.\"\n", "")],
+        [f"{SJ}.test_only_one_of_the_two_inputs_fails_the_validate_step_and_names_the_missing_one"],
+    ),
+    Case(
+        "jump key without a jump host passes validation",
+        [Edit(ACTION, "          [ -n \"$JUMP_HOST\" ] || fail \"jump-key is set but jump-host is empty: a jump needs both or neither.\"\n", "")],
+        [f"{SJ}.test_only_one_of_the_two_inputs_fails_the_validate_step_and_names_the_missing_one"],
+    ),
+    Case(
+        "jump host with a second line passes validation",
+        [Edit(ACTION, "          case \"$JUMP_HOST\" in *$'\\n'*) fail \"jump-host is not of the form user@host.\" ;; esac\n", "")],
+        [f"{SJ}.test_a_malformed_jump_host_fails_the_validate_step_and_is_never_echoed"],
+    ),
+    Case(
+        "jump host form is not checked",
+        [Edit(ACTION, "printf '%s' \"$JUMP_HOST\" | grep -Eq \"$destination_pattern\"", "printf '%s' \"$JUMP_HOST\" | grep -Eq '.'")],
+        [f"{SJ}.test_a_malformed_jump_host_fails_the_validate_step_and_is_never_echoed"],
+    ),
+    Case(
+        "host names may hold an underscore",
+        [Edit(ACTION, "@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'\n", "@[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$'\n")],
+        [f"{SJ}.test_the_alias_of_the_hop_is_not_a_name_the_hosts_input_can_hold"],
+    ),
+    Case(
+        "trap leaves the jump key and config behind",
+        [Edit(ACTION, "            trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir/jump_id\" \"$plan_dir/jump_config\"' EXIT\n", "")],
+        [f"{SJ}.test_the_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out"],
+    ),
+    Case(
+        "jump key and config written with the runner umask",
+        [Edit(ACTION, "              umask 077\n              printf '%s\\n' \"$JUMP_KEY\"", "              printf '%s\\n' \"$JUMP_KEY\"")],
+        [f"{SJ}.test_the_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out"],
+    ),
+    Case(
+        "jump hop configured when no jump is set",
+        [Edit(ACTION, "          if [ -n \"$JUMP_HOST\" ]; then\n            # ssh gives", "          if true; then\n            # ssh gives")],
+        [f"{SJ}.test_with_no_jump_the_ssh_argv_the_files_and_the_removals_are_exactly_what_they_were"],
+    ),
+    Case(
+        "jump call drops the proxy jump option",
+        [Edit(ACTION, "ssh_args+=(-F \"$plan_dir/jump_config\" -o ProxyJump=jump_hop)", "ssh_args+=(-F \"$plan_dir/jump_config\")")],
+        [f"{SJ}.test_a_jump_adds_the_config_file_and_the_proxy_jump_option_after_the_unchanged_options"],
+    ),
+    Case(
+        "jump host left in the text of a host",
+        [Edit(ACTION, "                    if (jd != \"\") { s = mark(mark(s, jd, \"\\002\"), jh, \"\\002\") }\n", "")],
+        [f"{SJ}.test_the_jump_host_is_replaced_in_a_host_text_that_reaches_the_summary"],
+    ),
+    Case(
+        "a failing jump is not unreachable",
+        [Edit(ACTION, "elif [ \"$rc\" = 255 ]; then\n            note=\"the SSH connection failed (exit 255)\"", "elif [ \"$rc\" = 254 ]; then\n            note=\"the SSH connection failed (exit 255)\"")],
+        [f"{SJ}.test_a_failing_jump_is_reported_as_unreachable_and_no_name_reaches_any_output"],
     ),
 ]
 
