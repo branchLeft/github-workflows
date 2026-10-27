@@ -895,6 +895,8 @@ job loads the host check"), and it takes the secrets as inputs.
 | `hosts` | required | One `user@host` per line, from a secret. Each line is checked against a pattern; a duplicate or more than 50 hosts is refused. |
 | `known-hosts` | empty | The known_hosts lines, from a secret. Empty only in a dry run. |
 | `check-key` | empty | The private key of the check route, from a secret. Empty only in a dry run. |
+| `jump-host` | empty | A `user@host`, in the form `hosts` takes, from a secret. Set, every host is reached through this one host (see "Reaching a private host through a jump host"). Needs `jump-key`: one without the other fails the validate step, naming the one that is missing. Its host-key line goes in `known-hosts`. |
+| `jump-key` | empty | The private key for the jump host and nothing else, from a secret. Never the check key or the apply key. |
 | `sha` | required | The commit to ask about, 40 lowercase hex digits. |
 | `dry-run` | `false` | `true` replaces the SSH call with `dry-run-stub`. |
 | `dry-run-stub` | empty | With `dry-run`, the executable, relative to `working-directory`, that stands in for a host. |
@@ -925,6 +927,52 @@ exit status):
 | 255, the SSH call failed | `unreachable` | red | red |
 | not one summary line for this commit | `no-answer` | red | red |
 | any of the above with a diff that matched a secret pattern or is too large | `withheld` | red | red |
+
+#### Reaching a private host through a jump host
+
+Some hosts have private addresses only, so the runner cannot reach them directly.
+With `jump-host` and `jump-key` set, the action opens each connection through the
+jump host (OpenSSH `ProxyJump`). With both empty, the default, nothing changes: the
+`ssh` call, the files written and every output are what they are without a jump.
+
+- **Both or neither.** `jump-host` without `jump-key` fails the validate step with
+  a message that names `jump-key`; `jump-key` without `jump-host` names
+  `jump-host`. Neither message holds a value. `jump-host` must be one line of the
+  same `user@host` form as a `hosts` line, which is also what keeps anything else
+  out of the ssh config file it is written into. With `dry-run`, the same checks
+  run, and no key or config file is written and `ssh` is not called.
+- **How the jump works.** OpenSSH gives a jump hop none of the options on the
+  command line. So the action writes one stanza to a config file under
+  `RUNNER_TEMP` and passes it with `-F`: the jump key as its only `IdentityFile`
+  with `IdentitiesOnly yes`, `BatchMode yes`, `StrictHostKeyChecking yes`, the same
+  `known_hosts` file with `GlobalKnownHostsFile /dev/null`, `ConnectTimeout 30`,
+  `ServerAliveInterval 30`, `ForwardAgent no` and `ClearAllForwardings yes`. The
+  call to the target keeps every option it has without a jump, `ClearAllForwardings
+  yes` included, and adds `-F` and `-o ProxyJump=jump_hop`. The check key is never
+  offered to the jump host and the jump key is never offered to a target. The
+  jump host's host-key line goes in `known-hosts`, which already holds one line per
+  host, and both hops check it strictly. The key file and the config file are
+  created private (`umask 077`) and removed on every way out of the step. The jump
+  host name stays out of the job log, and a failed jump is the same `unreachable`
+  outcome as any dropped connection, with no name in the summary.
+- **What the host operator provides on the jump host.** This action does not
+  provision it. The operator creates a dedicated account, with no shell, whose
+  `authorized_keys` holds the jump key and nothing else, and a key that is used for
+  nothing else. The line is restricted to opening a connection to port 22 of the
+  named hosts only, one `permitopen` for each:
+
+  ```text
+  AUTHORIZED_KEYS_LINE_PLACEHOLDER
+  restrict,port-forwarding,permitopen="HOST:22" ssh-ed25519 AAAA... jump-key
+  ```
+
+  A `permitopen` name is matched as written, so it names each host exactly as the
+  `hosts` lines spell it.
+
+The jump host is one input. It is today a public edge host of the platform, and a
+dedicated gateway host can replace it by changing the one input, `jump-host`, and
+the one key, `jump-key` (and its host-key line in `known-hosts`), with no change to
+the action.
 
 The self-test is `.github/workflows/ssh-check-hosts-self.yml`: it runs the action on a
 real runner against the stand-in host in the fixture, with `fail-on-changes` both
