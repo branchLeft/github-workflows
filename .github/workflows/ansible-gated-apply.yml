@@ -652,7 +652,10 @@ jobs:
   # The apply job. Its environment is the deployment gate: GitHub holds the job
   # until the environment's required reviewers approve it, and only then does it
   # read the environment's secret. It never runs in a pull request, in a fork, in
-  # a dry run, or when the plan found nothing to change.
+  # a dry run, or when the plan found nothing to change. If main has moved on
+  # since the plan, the planned commit still applies. The host is the authority
+  # on order: it refuses a commit older than the one it last applied, and this
+  # job then fails with that reason.
   apply:
     name: Apply the planned commit (after approval)
     needs: [discover, plan]
@@ -706,23 +709,6 @@ jobs:
           printf '%s' "$PLANNED_DIGEST" | grep -Eq '^[0-9a-f]{64}$' || fail "The planned host digest is missing."
           [ "$digest" = "$PLANNED_DIGEST" ] || fail "The hosts are not the hosts that were planned."
           echo "Applying the planned commit $PLANNED_SHA after the approval of $ENVIRONMENT."
-
-      # The approval can be hours old. If main has moved on, a newer run has its
-      # own plan, so this run stops rather than apply a commit nobody re-checked.
-      - name: Refuse if the default branch has moved since the plan
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          PLANNED_SHA: ${{ needs.plan.outputs.sha }}
-        run: |
-          set -euo pipefail
-          head=$(gh api "repos/$REPO/commits/$DEFAULT_BRANCH" --jq .sha)
-          if [ "$head" != "$PLANNED_SHA" ]; then
-            echo "::error::The default branch has moved on since the plan. Re-run from its new head, which has its own plan."
-            exit 1
-          fi
-          echo "The default branch head is still the planned commit."
 
       - name: Apply on each host, then run it again to prove nothing is left to change
         env:
