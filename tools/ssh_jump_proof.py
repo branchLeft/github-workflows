@@ -1,13 +1,8 @@
-"""Proof, on real sshd instances, that the jump hop of the ssh-check-hosts action works and its lock holds.
-
-It starts a gateway sshd on 127.0.0.2 and a target sshd on 127.0.0.3, both on port 22 because the
-action's inputs are user@host with no port. It runs the `validate`, `check` and `report` steps of
-.github/actions/ssh-check-hosts/action.yml as they are written, with the real ssh, and asserts what
-the two servers logged. It needs root, so it runs itself again under sudo, and it removes every
-process, user and file it made on every way out. Every observation is printed. Exit status 0 means
-every assertion held, 1 that one failed, 2 that the proof could not be set up.
-
-Run it as `python3 tools/ssh_jump_proof.py`. Stdlib and PyYAML only.
+"""Proof, on real sshd, that the ssh-check-hosts jump hop works and its lock holds.
+Gateway sshd on 127.0.0.2, target on 127.0.0.3, both port 22 (the action's inputs carry no port).
+Runs the action's validate, check and report steps as written, with real ssh, and asserts both logs.
+Needs root: re-runs itself under sudo, and removes every process, user and file it made on any exit.
+Exit: 0 every assertion held, 1 one failed, 2 setup failed. Run: python3 tools/ssh_jump_proof.py
 """
 
 from __future__ import annotations
