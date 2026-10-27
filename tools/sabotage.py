@@ -22,6 +22,8 @@ TESTS = "tools/test_ansible_gated_apply.py"
 ACTION = ".github/actions/ssh-check-hosts/action.yml"
 GATED = ".github/workflows/ansible-gated-apply.yml"
 DRIFT = ".github/workflows/ansible-drift-check.yml"
+PROOF = "tools/ssh_jump_proof.py"
+JUMP_SELF = ".github/workflows/ssh-jump-self.yml"
 
 
 @dataclass
@@ -53,6 +55,9 @@ AG = "ApplyGuardTests"
 HM = "HeadMovedTests"
 CF = "ConfirmMergeGroupTests"
 SJ = "SshJumpTests"
+SP = "SshJumpProofLineTests"
+SL = "SshJumpProofLogTests"
+SF = "SshJumpProofFixtureTests"
 
 CASES: list[Case] = [
     Case(
@@ -579,6 +584,61 @@ CASES: list[Case] = [
         "a failing jump is not unreachable",
         [Edit(ACTION, "elif [ \"$rc\" = 255 ]; then\n            note=\"the SSH connection failed (exit 255)\"", "elif [ \"$rc\" = 254 ]; then\n            note=\"the SSH connection failed (exit 255)\"")],
         [f"{SJ}.test_a_failing_jump_is_reported_as_unreachable_and_no_name_reaches_any_output"],
+    ),
+    Case(
+        "jump proof line permits any destination",
+        [Edit(PROOF, "\"port-forwarding\", f'permitopen=\"{target_address}:{port}\"'", "\"port-forwarding\", 'permitopen=\"*:*\"'")],
+        [f"{SP}.test_the_line_is_restrict_then_port_forwarding_one_permitopen_and_a_forced_command", f"{SP}.test_permitopen_is_exactly_one_destination_with_no_wildcard_and_no_list"],
+    ),
+    Case(
+        "jump proof line drops the forced command",
+        [Edit(PROOF, "    if forced_command is not None:", "    if forced_command is None:")],
+        [f"{SP}.test_the_line_carries_a_forced_command_unless_the_caller_asks_for_none"],
+    ),
+    Case(
+        "jump proof line accepts a wildcard or a list as the host",
+        [Edit(PROOF, "ADDRESS_PATTERN = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9.-]*$\")", "ADDRESS_PATTERN = re.compile(r\"^[A-Za-z0-9*][A-Za-z0-9.*,-]*$\")")],
+        [f"{SP}.test_a_wildcard_a_list_or_an_injected_option_is_refused_before_it_reaches_the_line"],
+    ),
+    Case(
+        "jump proof line accepts a port out of range",
+        [Edit(PROOF, "    if not 1 <= port <= 65535:", "    if not 0 <= port <= 70000:")],
+        [f"{SP}.test_a_wildcard_a_list_or_an_injected_option_is_refused_before_it_reaches_the_line"],
+    ),
+    Case(
+        "jump proof counts a denied forward as permitted",
+        [Edit(PROOF, "    remaining.subtract(Counter(denied_forwards(log)))\n", "")],
+        [f"{SL}.test_a_forward_is_permitted_only_when_it_was_requested_and_not_denied"],
+    ),
+    Case(
+        "jump proof gives the documented gateway account a login shell and no forced command",
+        [Edit(PROOF, "GatewayAccount(JUMP_USER, NO_SHELL, True, False,", "GatewayAccount(JUMP_USER, LOGIN_SHELL, False, False,")],
+        [f"{SP}.test_the_documented_account_has_no_shell_and_a_forced_command_and_only_the_control_runs_commands"],
+    ),
+    Case(
+        "jump proof target line is not restricted",
+        [Edit(PROOF, "return f'restrict,command=\"{command_path}\" {public_key}'", "return f'command=\"{command_path}\" {public_key}'")],
+        [f"{SP}.test_the_target_line_forces_the_one_command_and_restricts_the_key"],
+    ),
+    Case(
+        "jump proof stand-in target answers in a form the report step rejects",
+        [Edit(PROOF, "playbook=site.yml changed=0", "playbook=site.yml changed=x")],
+        [f"{SF}.test_the_stand_in_target_prints_a_summary_line_the_report_step_reads_as_clean"],
+    ),
+    Case(
+        "jump self-test workflow gains a path filter",
+        [Edit(JUMP_SELF, "  pull_request:\n  push:", "  pull_request:\n    paths: ['tools/**']\n  push:")],
+        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
+    ),
+    Case(
+        "jump self-test workflow job loses its timeout",
+        [Edit(JUMP_SELF, "    timeout-minutes: 10\n", "")],
+        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
+    ),
+    Case(
+        "jump self-test workflow does not run the proof",
+        [Edit(JUMP_SELF, "run: python3 tools/ssh_jump_proof.py", "run: python3 tools/ssh_jump_proof.py --help")],
+        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
     ),
 ]
 
