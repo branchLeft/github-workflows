@@ -345,6 +345,8 @@ def composite_validate_env(**changes: str) -> dict[str, str]:
         "FAIL_ON_CHANGES": "false",
         "HOST_TIMEOUT_MINUTES": "65",
         "TOTAL_TIMEOUT_MINUTES": "",
+        "JUMP_HOST": "",
+        "JUMP_KEY": "",
     }
     values.update(changes)
     return values
@@ -692,6 +694,8 @@ class StructureTests(unittest.TestCase):
                 "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
                 "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
                 "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
+                "JUMP_HOST": "${{ inputs.jump-host }}",
+                "JUMP_KEY": "${{ inputs.jump-key }}",
             },
             "check": {
                 "HOSTS": "${{ inputs.hosts }}",
@@ -703,6 +707,8 @@ class StructureTests(unittest.TestCase):
                 "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
                 "SSH_KEY": "${{ inputs.check-key }}",
                 "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
+                "JUMP_HOST": "${{ inputs.jump-host }}",
+                "JUMP_KEY": "${{ inputs.jump-key }}",
             },
             "report": {
                 "SHA": "${{ inputs.sha }}",
@@ -710,6 +716,7 @@ class StructureTests(unittest.TestCase):
                 "DRY_RUN": "${{ inputs.dry-run }}",
                 "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
                 "SSH_KEY": "${{ inputs.check-key }}",
+                "JUMP_HOST": "${{ inputs.jump-host }}",
             },
         }
         for step_id, expected in cases.items():
@@ -793,7 +800,7 @@ class StructureTests(unittest.TestCase):
         inputs = ACTION_DOC["inputs"]
         self.assertEqual(
             set(inputs),
-            {"hosts", "known-hosts", "check-key", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes"},
+            {"hosts", "known-hosts", "check-key", "jump-host", "jump-key", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes"},
         )
         self.assertEqual(inputs["fail-on-changes"]["default"], "false")
         self.assertEqual(inputs["total-timeout"]["default"], "")
@@ -1195,6 +1202,8 @@ def check_env(**changes: str) -> dict[str, str]:
         "TOTAL_TIMEOUT_MINUTES": "",
         "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
         "KNOWN_HOSTS": "host-one ssh-ed25519 PUBLIC",
+        "JUMP_HOST": "",
+        "JUMP_KEY": "",
     }
     values.update(changes)
     return values
@@ -1207,6 +1216,7 @@ def report_env(**changes: str) -> dict[str, str]:
         "DRY_RUN": "false",
         "FAIL_ON_CHANGES": "false",
         "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
+        "JUMP_HOST": "",
     }
     values.update(changes)
     return values
@@ -1805,6 +1815,356 @@ class SshOptionTests(unittest.TestCase):
             self.assertEqual(len(known_hosts), 1, call)
             self.assertTrue(known_hosts[0].endswith("/known_hosts"), call)
             self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA))
+
+
+# Records, at the moment of each call, the mode and content of every file the
+# step has made in the plan directory and the config the call was told to read,
+# so a test sees what ssh would have seen. The rest is the ordinary stand-in.
+JUMP_SSH_STUB = """#!/usr/bin/env bash
+set -eu
+cat > /dev/null
+dest="${@: -2:1}"
+sha="${@: -1}"
+echo "$*" >> "$STUB_DIR/ssh.log"
+arguments=("$@")
+plan=""
+for index in "${!arguments[@]}"; do
+  case "${arguments[$index]}" in
+    -i) plan=$(dirname "${arguments[$((index + 1))]}") ;;
+    -F) cp "${arguments[$((index + 1))]}" "$STUB_DIR/config.copy" ;;
+  esac
+done
+for name in id known_hosts jump_id jump_config; do
+  if [ -e "$plan/$name" ]; then
+    echo "$(ls -ld "$plan/$name" | cut -c1-10) $name" >> "$STUB_DIR/files.log"
+    cp "$plan/$name" "$STUB_DIR/$name.copy"
+  fi
+done
+count_file="$STUB_DIR/$dest.count"
+n=$(( $(cat "$count_file" 2> /dev/null || echo 0) + 1 ))
+echo "$n" > "$count_file"
+base="$STUB_DIR/$dest"
+if [ -f "$base.$n.rc" ]; then
+  base="$base.$n"
+fi
+sed "s/@SHA@/$sha/g" "$base.out"
+sed "s/@SHA@/$sha/g" "$base.err" >&2
+exit "$(cat "$base.rc")"
+"""
+
+JUMP_HOST = "hop@gateway.example"
+JUMP_KEY = "FAKE_JUMP_KEY_BODY_LINE_ONE_9876543210"
+CHECK_KEY = "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789"
+JUMP_ALIAS = "jump_hop"
+
+
+def jump_config(plan: Path, extra: str = "") -> str:
+    """The exact text the action writes for the hop, given the plan directory."""
+    return (
+        f"Host {JUMP_ALIAS}\n"
+        "  HostName gateway.example\n"
+        "  User hop\n"
+        f"  IdentityFile {plan}/jump_id\n"
+        "  IdentitiesOnly yes\n"
+        "  BatchMode yes\n"
+        "  StrictHostKeyChecking yes\n"
+        f"  UserKnownHostsFile {plan}/known_hosts\n"
+        "  GlobalKnownHostsFile /dev/null\n"
+        "  ConnectTimeout 30\n"
+        "  ServerAliveInterval 30\n"
+        "  ForwardAgent no\n"
+        "  ClearAllForwardings yes\n"
+        f"{extra}"
+    )
+
+
+class SshJumpTests(unittest.TestCase):
+    """The optional jump hop: its argv, its config, its keys, its refusals and its silence."""
+
+    def sandbox(self) -> Sandbox:
+        sandbox = Sandbox(self)
+        sandbox.stub("ssh", JUMP_SSH_STUB)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        sandbox.host(HOST_TWO, 0, CLEAN)
+        return sandbox
+
+    def jump_check(self, sandbox: Sandbox, **changes: str) -> Result:
+        values = {"JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY, **changes}
+        return sandbox.run(action_step("check"), check_env(**values))
+
+    def validate(self, **changes: str) -> Result:
+        values = {"JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY, **changes}
+        return Sandbox(self).run(action_step("validate"), composite_validate_env(**values))
+
+    def seen(self, sandbox: Sandbox, name: str) -> str:
+        return (sandbox.stubs / name).read_text()
+
+    def test_a_jump_adds_the_config_file_and_the_proxy_jump_option_after_the_unchanged_options(self) -> None:
+        sandbox = self.sandbox()
+        result = self.jump_check(sandbox)
+        self.assertEqual(result.code, 0, result.log)
+        calls = sandbox.ssh_log()
+        self.assertEqual(len(calls), 2)
+        plan = sandbox.temp / "ansible-plan"
+        for call, dest in zip(calls, (HOST_ONE, HOST_TWO)):
+            tokens = call.split(" ")
+            self.assertEqual(tokens[tokens.index("-F") + 1], f"{plan}/jump_config", call)
+            tokens[tokens.index("-F") + 1] = "CONFIG"
+            named = ssh_call_with_paths_named(" ".join(tokens))
+            plain = expected_ssh_call(dest, SHA)
+            self.assertEqual(named, plain[:-3] + ["-F", "CONFIG", "-o", f"ProxyJump={JUMP_ALIAS}"] + plain[-3:], call)
+
+    def test_the_config_file_is_exactly_one_stanza_for_the_hop(self) -> None:
+        sandbox = self.sandbox()
+        self.assertEqual(self.jump_check(sandbox).code, 0)
+        self.assertEqual(self.seen(sandbox, "config.copy"), jump_config(sandbox.temp / "ansible-plan"))
+
+    def test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones(self) -> None:
+        sandbox = self.sandbox()
+        self.assertEqual(self.jump_check(sandbox).code, 0)
+        lines = {line.strip() for line in self.seen(sandbox, "config.copy").splitlines()}
+        plan = sandbox.temp / "ansible-plan"
+        for option in (
+            "IdentitiesOnly yes",
+            "BatchMode yes",
+            "StrictHostKeyChecking yes",
+            f"UserKnownHostsFile {plan}/known_hosts",
+            "GlobalKnownHostsFile /dev/null",
+            "ConnectTimeout 30",
+            "ServerAliveInterval 30",
+            "ForwardAgent no",
+            "ClearAllForwardings yes",
+            f"IdentityFile {plan}/jump_id",
+        ):
+            with self.subTest(option=option):
+                self.assertIn(option, lines, f"the hop stanza lacks {option!r}")
+
+    def test_the_check_key_is_never_offered_to_the_gateway_and_the_jump_key_never_to_a_target(self) -> None:
+        sandbox = self.sandbox()
+        self.assertEqual(self.jump_check(sandbox).code, 0)
+        plan = sandbox.temp / "ansible-plan"
+        config = self.seen(sandbox, "config.copy")
+        identities = re.findall(r"(?m)^\s*IdentityFile (\S+)$", config)
+        self.assertEqual(identities, [f"{plan}/jump_id"], "the hop names the jump key file and no other")
+        self.assertNotIn(f"{plan}/id\n", config)
+        self.assertNotIn(CHECK_KEY, config)
+        self.assertEqual(self.seen(sandbox, "jump_id.copy"), JUMP_KEY + "\n")
+        self.assertEqual(self.seen(sandbox, "id.copy"), CHECK_KEY + "\n")
+        for call in sandbox.ssh_log():
+            tokens = call.split(" ")
+            self.assertEqual(tokens.count("-i"), 1, call)
+            self.assertEqual(tokens[tokens.index("-i") + 1], f"{plan}/id", call)
+            self.assertNotIn("jump_id", call)
+            self.assertNotIn(JUMP_KEY, call)
+        self.assertNotIn(CHECK_KEY, self.seen(sandbox, "jump_id.copy"))
+
+    def test_only_one_of_the_two_inputs_fails_the_validate_step_and_names_the_missing_one(self) -> None:
+        only_host = self.validate(JUMP_KEY="")
+        self.assertNotEqual(only_host.code, 0)
+        self.assertIn("::error::jump-host is set but jump-key is empty", only_host.log)
+        only_key = self.validate(JUMP_HOST="")
+        self.assertNotEqual(only_key.code, 0)
+        self.assertIn("::error::jump-key is set but jump-host is empty", only_key.log)
+        for result in (only_host, only_key):
+            self.assertNotIn(JUMP_HOST, result.log)
+            self.assertNotIn(JUMP_KEY, result.log)
+            self.assertNotIn("hosts_digest", result.outputs)
+        self.assertEqual(self.validate().code, 0)
+        self.assertEqual(self.validate(JUMP_HOST="", JUMP_KEY="").code, 0)
+
+    def test_a_dry_run_still_needs_both_or_neither(self) -> None:
+        stub = {"DRY_RUN": "true", "DRY_RUN_STUB": "stub/host.sh"}
+        self.assertNotEqual(self.validate(JUMP_KEY="", **stub).code, 0)
+        self.assertNotEqual(self.validate(JUMP_HOST="", **stub).code, 0)
+        self.assertEqual(self.validate(**stub).code, 0)
+
+    def test_a_malformed_jump_host_fails_the_validate_step_and_is_never_echoed(self) -> None:
+        malformed = [
+            "gateway.example",
+            "@gateway.example",
+            "hop@",
+            "hop",
+            "Hop@gateway.example",
+            "1hop@gateway.example",
+            "-hop@gateway.example",
+            "hop@@gateway.example",
+            "hop@gate@way.example",
+            "a" * 33 + "@gateway.example",
+            "hop@" + "a" * 254,
+            "hop@-gateway.example",
+            "hop@gateway.example-",
+            "hop@gateway.example.",
+            "hop@.gateway.example",
+            "hop@gateway_example",
+            "hop@gateway.example:2222",
+            "hop@[::1]",
+            "hop@gateway.example/",
+            "hop@gateway.example#",
+            "hop@gateway.example;id",
+            "hop@gateway.example&id",
+            "hop@gateway.example|id",
+            "hop@$(id)",
+            "hop@`id`",
+            "hop@gateway.example,other@elsewhere.example",
+            "hop@gateway.example'",
+            'hop@gateway.example"',
+            "hop@gateway.example\\",
+            "hop@gateway.example%h",
+            "hop@gateway.example*",
+            "ho p@gateway.example",
+            "hop@gate way.example",
+            " hop@gateway.example",
+            "hop@gateway.example ",
+            "hop@gateway.example\t",
+            "hop@gateway.example\r",
+            "hop@gateway.example\n",
+            "\nhop@gateway.example",
+            "hop@gateway.example\nHost *",
+            "hop@gateway.example\n  ProxyCommand touch /tmp/pwned",
+            "hop@gateway.example\nhop@second.example",
+            "hop@gateway.example\n  IdentityFile /root/.ssh/id_ed25519",
+            "hop@gateway.example trailing",
+            "-oProxyCommand=x@h",
+            "-oProxyCommand=touch@pwned",
+            "hop@gateway.example -oProxyCommand=x",
+            "hop\n  Host *@gateway.example",
+        ]
+        for value in malformed:
+            with self.subTest(jump_host=repr(value)):
+                result = self.validate(JUMP_HOST=value)
+                self.assertNotEqual(result.code, 0)
+                self.assertRegex(result.log, r"::error::.*jump-host")
+                for line in value.splitlines():
+                    if line.strip():
+                        self.assertNotIn(line.strip(), result.log)
+
+    def test_a_well_formed_jump_host_passes_in_the_same_forms_the_hosts_input_allows(self) -> None:
+        for value in ("hop@gateway.example", "a@b", "_svc-1@Gateway.EXAMPLE", "a" * 32 + "@" + "b" * 63 + ".example"):
+            with self.subTest(jump_host=value):
+                self.assertEqual(self.validate(JUMP_HOST=value).code, 0)
+
+    def test_the_jump_host_is_checked_with_the_regular_expression_of_the_hosts_input(self) -> None:
+        validate_text = action_step("validate")["run"]
+        patterns = re.findall(r"'(\^\[a-z_\][^']*)'", validate_text)
+        self.assertEqual(len(patterns), 1, "one home for the user@host expression")
+        self.assertRegex(validate_text, r'grep -Eq "\$destination_pattern"')
+        self.assertEqual(validate_text.count("$destination_pattern"), 2)
+
+    def test_the_jump_inputs_default_to_empty_and_their_descriptions_say_where_the_host_key_goes(self) -> None:
+        inputs = ACTION_DOC["inputs"]
+        for name in ("jump-host", "jump-key"):
+            self.assertEqual(inputs[name]["default"], "", name)
+            self.assertIs(inputs[name]["required"], False, name)
+        self.assertIn("known-hosts", inputs["jump-host"]["description"])
+        self.assertIn("pass it from a secret", inputs["jump-key"]["description"].lower())
+        self.assertIn("pass it from a secret", inputs["jump-host"]["description"].lower())
+
+    def test_with_no_jump_the_ssh_argv_the_files_and_the_removals_are_exactly_what_they_were(self) -> None:
+        sandbox = self.sandbox()
+        sandbox.stub("rm", RM_STUB)
+        result = sandbox.run(action_step("check"), check_env())
+        self.assertEqual(result.code, 0, result.log)
+        for call, dest in zip(sandbox.ssh_log(), (HOST_ONE, HOST_TWO)):
+            self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA))
+            self.assertNotIn("-F", call.split(" "))
+            self.assertNotIn("ProxyJump", call)
+        self.assertEqual(set(self.seen(sandbox, "files.log").splitlines()), {"-rw------- id", "-rw------- known_hosts"})
+        self.assertFalse((sandbox.stubs / "config.copy").exists())
+        self.assertFalse((sandbox.stubs / "jump_id.copy").exists())
+        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["id", "known_hosts"])
+        self.assertEqual(sorted(path.name for path in (sandbox.temp / "ansible-plan").iterdir() if not path.suffix), [])
+
+    def test_the_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out(self) -> None:
+        def broken_date(sandbox: Sandbox) -> None:
+            sandbox.stub("date", "#!/usr/bin/env bash\nexit 1\n")
+
+        def dropped(sandbox: Sandbox) -> None:
+            sandbox.host(HOST_ONE, 255, "", "ssh: connect to host gateway.example port 22: refused\n")
+
+        cases = {
+            "every host answered": (None, 0, True),
+            "the jump dropped the connection": (dropped, 0, True),
+            "the step stopped on a failing command after the files were written": (broken_date, 1, False),
+        }
+        for name, (prepare, code, asked) in cases.items():
+            with self.subTest(case=name):
+                sandbox = self.sandbox()
+                sandbox.stub("rm", RM_STUB)
+                if prepare:
+                    prepare(sandbox)
+                result = self.jump_check(sandbox)
+                self.assertEqual(result.code, code, result.log)
+                if asked:
+                    modes = set(self.seen(sandbox, "files.log").splitlines())
+                    self.assertEqual(
+                        modes,
+                        {f"-rw------- {name}" for name in ("id", "known_hosts", "jump_id", "jump_config")},
+                    )
+                removed = sandbox.removals()
+                self.assertEqual(sorted(line.split("/")[-1] for line in removed), ["id", "jump_config", "jump_id", "known_hosts"], removed)
+                self.assertTrue(all(line.startswith("-rw-------") for line in removed), removed)
+                for leftover in ("id", "known_hosts", "jump_id", "jump_config"):
+                    self.assertFalse((sandbox.temp / "ansible-plan" / leftover).exists(), leftover)
+
+    def test_a_dry_run_with_a_jump_writes_no_key_and_no_config_and_never_calls_ssh(self) -> None:
+        sandbox = self.sandbox()
+        values = check_env(
+            DRY_RUN="true",
+            DRY_RUN_STUB="stub/host.sh",
+            WORKING_DIRECTORY=".github/fixtures/ansible-gated-apply",
+            HOSTS="ci@first-stub-host\n",
+            SSH_KEY="",
+            KNOWN_HOSTS="",
+            JUMP_HOST=JUMP_HOST,
+            JUMP_KEY=JUMP_KEY,
+        )
+        sandbox.stub("rm", RM_STUB)
+        result = sandbox.run(action_step("check"), values)
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(sandbox.ssh_log(), [])
+        self.assertEqual(sandbox.removals(), [])
+        self.assertEqual([path.name for path in (sandbox.temp / "ansible-plan").iterdir() if not path.suffix], [])
+
+    def test_a_failing_jump_is_reported_as_unreachable_and_no_name_reaches_any_output(self) -> None:
+        refusal = f"ssh_exchange_identification: Connection closed by {JUMP_HOST} (gateway.example) while reaching host-one\n"
+        sandbox = self.sandbox()
+        sandbox.host(HOST_ONE, 255, "", refusal)
+        sandbox.host(HOST_TWO, 255, "", refusal)
+        checked = self.jump_check(sandbox)
+        self.assertEqual(checked.code, 0, checked.log)
+        result = sandbox.run(action_step("report"), report_env(JUMP_HOST=JUMP_HOST, FAIL_ON_CHANGES="true"))
+        self.assertNotEqual(result.code, 0)
+        self.assertEqual(result.outputs["outcome"], "unreachable")
+        self.assertEqual(result.outputs["detail"], "unreachable (2)")
+        self.assertIn("| host 1 | unreachable | the SSH connection failed (exit 255) |", result.summary)
+        everything = checked.log + result.log + result.summary + self.seen(sandbox, "../github-output")
+        for name in ("hop", "gateway", JUMP_HOST, "host-one", "host-two", JUMP_KEY, CHECK_KEY):
+            self.assertNotIn(name, everything, name)
+
+    def test_the_jump_host_is_replaced_in_a_host_text_that_reaches_the_summary(self) -> None:
+        sandbox = self.sandbox()
+        sandbox.host(HOST_TWO, 11, WOULD_CHANGE, f"warning: relayed by {JUMP_HOST} and gateway.example\n+greeting = NEW\n")
+        self.assertEqual(self.jump_check(sandbox).code, 0)
+        result = sandbox.run(action_step("report"), report_env(JUMP_HOST=JUMP_HOST))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertIn("+greeting = NEW", result.summary)
+        self.assertIn("relayed by the jump host and the jump host", result.summary)
+        for name in ("gateway", JUMP_HOST):
+            self.assertNotIn(name, result.summary + result.log)
+
+    def test_no_step_of_a_jump_run_prints_the_jump_host(self) -> None:
+        sandbox = self.sandbox()
+        validated = self.validate()
+        checked = self.jump_check(sandbox)
+        reported = sandbox.run(action_step("report"), report_env(JUMP_HOST=JUMP_HOST))
+        for result in (validated, checked, reported):
+            self.assertEqual(result.code, 0, result.log)
+            for name in ("gateway", "hop@", JUMP_KEY):
+                self.assertNotIn(name, result.log + result.summary)
+
+    def test_the_alias_of_the_hop_is_not_a_name_the_hosts_input_can_hold(self) -> None:
+        result = Sandbox(self).run(action_step("validate"), composite_validate_env(HOSTS=f"deploy@{JUMP_ALIAS}\n"))
+        self.assertNotEqual(result.code, 0, "a target named like the alias would select the hop stanza")
 
 
 def git(*args: str, cwd: Path) -> str:

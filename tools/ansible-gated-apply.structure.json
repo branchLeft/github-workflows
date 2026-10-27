@@ -36,6 +36,16 @@
         "description": "The hosts to check, one user@host per line. Pass it from a secret so the job log masks the names.",
         "required": true
       },
+      "jump-host": {
+        "default": "",
+        "description": "Empty (the default) reaches every host directly. A user@host, in the form the hosts input takes, reaches every host through that one host (ssh ProxyJump) and needs jump-key too. Pass it from a secret so the job log masks the name. Its host-key line goes in known-hosts, which already holds one line per host.",
+        "required": false
+      },
+      "jump-key": {
+        "default": "",
+        "description": "The private key for the jump host only, never the check key or the apply key. The jump host restricts it to opening a connection to port 22 of the listed hosts. Pass it from a secret. A jump needs jump-host and jump-key both, or neither.",
+        "required": false
+      },
       "known-hosts": {
         "default": "",
         "description": "The known_hosts lines of the hosts. Pass it from a secret. Empty only in a dry run.",
@@ -84,12 +94,14 @@
             "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
             "HOSTS": "${{ inputs.hosts }}",
             "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+            "JUMP_HOST": "${{ inputs.jump-host }}",
+            "JUMP_KEY": "${{ inputs.jump-key }}",
             "SHA": "${{ inputs.sha }}",
             "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}"
           },
           "id": "validate",
           "name": "Validate the host list and the inputs",
-          "run-sha256": "ea6291e51db2d2697e8d1f3a4d5da843c2d9de61ba02fba1d720f78477c31a04",
+          "run-sha256": "5a208092eeec4e23a6ce16ed9b44aff34e51f26b9392d1f0fbc195a3bb661a56",
           "shell": "bash"
         },
         {
@@ -98,6 +110,8 @@
             "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
             "HOSTS": "${{ inputs.hosts }}",
             "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+            "JUMP_HOST": "${{ inputs.jump-host }}",
+            "JUMP_KEY": "${{ inputs.jump-key }}",
             "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
             "SHA": "${{ inputs.sha }}",
             "SSH_KEY": "${{ inputs.check-key }}",
@@ -106,7 +120,7 @@
           },
           "id": "check",
           "name": "Check every host in check mode",
-          "run-sha256": "dca09aa50750af6fc8bcd89bb6e6ec3ee16d5a7e728a8dca4aa077db2d4a4bc6",
+          "run-sha256": "0012f828be9e3d1025a5c393ac2628d2ed922eeb2728cfd4fddb18d363fa9165",
           "shell": "bash"
         },
         {
@@ -114,12 +128,13 @@
             "DRY_RUN": "${{ inputs.dry-run }}",
             "ENVIRONMENT": "${{ inputs.environment }}",
             "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
+            "JUMP_HOST": "${{ inputs.jump-host }}",
             "SHA": "${{ inputs.sha }}",
             "SSH_KEY": "${{ inputs.check-key }}"
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "77cca2659cf525bf6353051997731ac67a6b9957ebaec89b82d52de0ec79cf4f",
+          "run-sha256": "28cbbf40f14d4b9b6802bedc1ac7d555e03a0abfaa827da71ab8bc954e6c9126",
           "shell": "bash"
         }
       ],

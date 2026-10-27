@@ -30,6 +30,23 @@ inputs:
       command in check mode. Pass it from a secret. Empty only in a dry run.
     required: false
     default: ''
+  jump-host:
+    description: >-
+      Empty (the default) reaches every host directly. A user@host, in the form
+      the hosts input takes, reaches every host through that one host (ssh
+      ProxyJump) and needs jump-key too. Pass it from a secret so the job log
+      masks the name. Its host-key line goes in known-hosts, which already holds
+      one line per host.
+    required: false
+    default: ''
+  jump-key:
+    description: >-
+      The private key for the jump host only, never the check key or the apply
+      key. The jump host restricts it to opening a connection to port 22 of the
+      listed hosts. Pass it from a secret. A jump needs jump-host and jump-key
+      both, or neither.
+    required: false
+    default: ''
   sha:
     description: The commit to ask about, 40 lowercase hex digits.
     required: true
@@ -107,6 +124,8 @@ runs:
         FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
         HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout }}
         TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
+        JUMP_HOST: ${{ inputs.jump-host }}
+        JUMP_KEY: ${{ inputs.jump-key }}
       run: |
         set -euo pipefail
         fail() {
@@ -115,6 +134,7 @@ runs:
         }
         sha_re='^[0-9a-f]{40}$'
         minutes_re='^[1-9][0-9]{0,3}$'
+        destination_pattern='^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'
         [[ "$SHA" =~ $sha_re ]] || fail "The commit is not 40 lowercase hex digits."
         case "$DRY_RUN" in true | false) ;; *) fail "dry-run must be true or false." ;; esac
         case "$FAIL_ON_CHANGES" in true | false) ;; *) fail "fail-on-changes must be true or false." ;; esac
@@ -125,6 +145,16 @@ runs:
         if [ "$DRY_RUN" = true ]; then
           [ -n "$DRY_RUN_STUB" ] || fail "dry-run needs dry-run-stub."
         fi
+        # A jump needs a host and a key, or neither. The host goes into an ssh
+        # config file, so it is held to the form of a hosts line and to one line:
+        # grep judges each line alone and would pass a good line with more after it.
+        if [ -n "$JUMP_HOST" ] || [ -n "$JUMP_KEY" ]; then
+          [ -n "$JUMP_HOST" ] || fail "jump-key is set but jump-host is empty: a jump needs both or neither."
+          [ -n "$JUMP_KEY" ] || fail "jump-host is set but jump-key is empty: a jump needs both or neither."
+          case "$JUMP_HOST" in *$'\n'*) fail "jump-host is not of the form user@host." ;; esac
+          printf '%s' "$JUMP_HOST" | grep -Eq "$destination_pattern" \
+            || fail "jump-host is not of the form user@host."
+        fi
         # One validated destination per line. The apply job rebuilds the list
         # from the same secret and must find the same digest, so it never
         # reaches a host that was not planned. The names are not a job output
@@ -133,7 +163,7 @@ runs:
         count=0
         while IFS= read -r dest; do
           [ -n "$dest" ] || continue
-          printf '%s' "$dest" | grep -Eq '^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$' \
+          printf '%s' "$dest" | grep -Eq "$destination_pattern" \
             || fail "A hosts line is not of the form user@host."
           case " $list " in *" $dest "*) fail "A host is listed twice." ;; esac
           list="${list:+$list }$dest"
@@ -158,6 +188,8 @@ runs:
         TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
         SSH_KEY: ${{ inputs.check-key }}
         KNOWN_HOSTS: ${{ inputs.known-hosts }}
+        JUMP_HOST: ${{ inputs.jump-host }}
+        JUMP_KEY: ${{ inputs.jump-key }}
       run: |
         set -euo pipefail
         fail() {
@@ -183,6 +215,35 @@ runs:
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$plan_dir/known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
             -o ForwardAgent=no -o ClearAllForwardings=yes)
+          if [ -n "$JUMP_HOST" ]; then
+            # ssh gives a jump hop none of the options on the command line, so the
+            # hop is a stanza of its own with its own key and strict options. The
+            # alias holds an underscore, which no validated host name can, so no
+            # target can select the stanza. User and host were validated as one
+            # line of the hosts form before they are written here. The trap is set
+            # again, with the jump files, before either file exists.
+            trap 'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir/jump_id" "$plan_dir/jump_config"' EXIT
+            (
+              umask 077
+              printf '%s\n' "$JUMP_KEY" > "$plan_dir/jump_id"
+              {
+                printf 'Host jump_hop\n'
+                printf '  HostName %s\n' "${JUMP_HOST#*@}"
+                printf '  User %s\n' "${JUMP_HOST%%@*}"
+                printf '  IdentityFile %s\n' "$plan_dir/jump_id"
+                printf '  IdentitiesOnly yes\n'
+                printf '  BatchMode yes\n'
+                printf '  StrictHostKeyChecking yes\n'
+                printf '  UserKnownHostsFile %s\n' "$plan_dir/known_hosts"
+                printf '  GlobalKnownHostsFile /dev/null\n'
+                printf '  ConnectTimeout 30\n'
+                printf '  ServerAliveInterval 30\n'
+                printf '  ForwardAgent no\n'
+                printf '  ClearAllForwardings yes\n'
+              } > "$plan_dir/jump_config"
+            )
+            ssh_args+=(-F "$plan_dir/jump_config" -o ProxyJump=jump_hop)
+          fi
         fi
         # Every call takes its input from /dev/null. The loop reads the host list
         # from its own standard input, and a call that reads standard input
@@ -234,6 +295,7 @@ runs:
         DRY_RUN: ${{ inputs.dry-run }}
         FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
         SSH_KEY: ${{ inputs.check-key }}
+        JUMP_HOST: ${{ inputs.jump-host }}
       run: |
         set -euo pipefail
         export LC_ALL=C
@@ -328,19 +390,26 @@ runs:
             fi
           fi
 
-          # The diff: control characters removed, the host name replaced.
+          # The diff: control characters removed, the host name and the jump host replaced.
           cleaned="$base.clean"
           if [ "$rc" = 255 ]; then
             : > "$cleaned"
           else
             tr -d '\000-\010\013\014\016-\037\177' < "$base.err" \
-              | awk -v d="$dest" -v h="$hostpart" -v label="host $((10#$n))" '
-                  function mark(s, needle,    out, i) {
+              | awk -v d="$dest" -v h="$hostpart" -v label="host $((10#$n))" -v jd="$JUMP_HOST" -v jh="${JUMP_HOST#*@}" '
+                  function mark(s, needle, token,    out, i) {
                     out = ""
-                    while ((i = index(s, needle)) > 0) { out = out substr(s, 1, i - 1) "\001"; s = substr(s, i + length(needle)) }
+                    while ((i = index(s, needle)) > 0) { out = out substr(s, 1, i - 1) token; s = substr(s, i + length(needle)) }
                     return out s
                   }
-                  { s = mark(mark($0, d), h); gsub(/\001/, label, s); print s }' > "$cleaned"
+                  {
+                    s = $0
+                    if (jd != "") { s = mark(mark(s, jd, "\002"), jh, "\002") }
+                    s = mark(mark(s, d, "\001"), h, "\001")
+                    gsub(/\001/, label, s)
+                    gsub(/\002/, "the jump host", s)
+                    print s
+                  }' > "$cleaned"
           fi
           size=$(wc -c < "$cleaned" | tr -d ' ')
           total_bytes=$((total_bytes + size))
