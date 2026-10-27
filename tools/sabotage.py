@@ -22,6 +22,8 @@ TESTS = "tools/test_ansible_gated_apply.py"
 ACTION = ".github/actions/ssh-check-hosts/action.yml"
 GATED = ".github/workflows/ansible-gated-apply.yml"
 DRIFT = ".github/workflows/ansible-drift-check.yml"
+PROOF = "tools/ssh_jump_proof.py"
+JUMP_SELF = ".github/workflows/ssh-jump-self.yml"
 
 
 @dataclass
@@ -51,6 +53,10 @@ AL = "AlertTests"
 PG = "PlanGuardTests"
 AG = "ApplyGuardTests"
 CF = "ConfirmMergeGroupTests"
+SJ = "SshJumpTests"
+SP = "SshJumpProofLineTests"
+SL = "SshJumpProofLogTests"
+SF = "SshJumpProofFixtureTests"
 
 CASES: list[Case] = [
     Case(
@@ -492,6 +498,146 @@ CASES: list[Case] = [
         "plan runs after a failed lint",
         [Edit(GATED, "!cancelled() && !failure() && needs.discover", "!cancelled() && needs.discover")],
         [f"{S}.test_the_plan_job_runs_only_for_delivery"],
+    ),
+    Case(
+        "jump hop stanza drops StrictHostKeyChecking",
+        [Edit(ACTION, "                printf '  StrictHostKeyChecking yes\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones", f"{SJ}.test_the_config_file_is_exactly_one_stanza_for_the_hop"],
+    ),
+    Case(
+        "jump hop stanza drops IdentitiesOnly",
+        [Edit(ACTION, "                printf '  IdentitiesOnly yes\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
+    ),
+    Case(
+        "jump hop stanza drops BatchMode",
+        [Edit(ACTION, "                printf '  BatchMode yes\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
+    ),
+    Case(
+        "jump hop stanza reads the global known hosts",
+        [Edit(ACTION, "                printf '  GlobalKnownHostsFile /dev/null\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
+    ),
+    Case(
+        "jump hop stanza drops ClearAllForwardings",
+        [Edit(ACTION, "                printf '  ClearAllForwardings yes\\n'\n", "")],
+        [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
+    ),
+    Case(
+        "jump hop uses the check key",
+        [Edit(ACTION, "printf '  IdentityFile %s\\n' \"$plan_dir/jump_id\"", "printf '  IdentityFile %s\\n' \"$plan_dir/id\"")],
+        [f"{SJ}.test_the_check_key_is_never_offered_to_the_gateway_and_the_jump_key_never_to_a_target"],
+    ),
+    Case(
+        "jump host without a jump key passes validation",
+        [Edit(ACTION, "          [ -n \"$JUMP_KEY\" ] || fail \"jump-host is set but jump-key is empty: a jump needs both or neither.\"\n", "")],
+        [f"{SJ}.test_only_one_of_the_two_inputs_fails_the_validate_step_and_names_the_missing_one"],
+    ),
+    Case(
+        "jump key without a jump host passes validation",
+        [Edit(ACTION, "          [ -n \"$JUMP_HOST\" ] || fail \"jump-key is set but jump-host is empty: a jump needs both or neither.\"\n", "")],
+        [f"{SJ}.test_only_one_of_the_two_inputs_fails_the_validate_step_and_names_the_missing_one"],
+    ),
+    Case(
+        "jump host with a second line passes validation",
+        [Edit(ACTION, "          case \"$JUMP_HOST\" in *$'\\n'*) fail \"jump-host is not of the form user@host.\" ;; esac\n", "")],
+        [f"{SJ}.test_a_malformed_jump_host_fails_the_validate_step_and_is_never_echoed"],
+    ),
+    Case(
+        "jump host form is not checked",
+        [Edit(ACTION, "printf '%s' \"$JUMP_HOST\" | grep -Eq \"$destination_pattern\"", "printf '%s' \"$JUMP_HOST\" | grep -Eq '.'")],
+        [f"{SJ}.test_a_malformed_jump_host_fails_the_validate_step_and_is_never_echoed"],
+    ),
+    Case(
+        "host names may hold an underscore",
+        [Edit(ACTION, "@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'\n", "@[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$'\n")],
+        [f"{SJ}.test_the_alias_of_the_hop_is_not_a_name_the_hosts_input_can_hold"],
+    ),
+    Case(
+        "trap leaves the jump key and config behind",
+        [Edit(ACTION, "            trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir/jump_id\" \"$plan_dir/jump_config\"' EXIT\n", "")],
+        [f"{SJ}.test_the_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out"],
+    ),
+    Case(
+        "jump key and config written with the runner umask",
+        [Edit(ACTION, "              umask 077\n              printf '%s\\n' \"$JUMP_KEY\"", "              printf '%s\\n' \"$JUMP_KEY\"")],
+        [f"{SJ}.test_the_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out"],
+    ),
+    Case(
+        "jump hop configured when no jump is set",
+        [Edit(ACTION, "          if [ -n \"$JUMP_HOST\" ]; then\n            # ssh gives", "          if true; then\n            # ssh gives")],
+        [f"{SJ}.test_with_no_jump_the_ssh_argv_the_files_and_the_removals_are_exactly_what_they_were"],
+    ),
+    Case(
+        "jump call drops the proxy jump option",
+        [Edit(ACTION, "ssh_args+=(-F \"$plan_dir/jump_config\" -o ProxyJump=jump_hop)", "ssh_args+=(-F \"$plan_dir/jump_config\")")],
+        [f"{SJ}.test_a_jump_adds_the_config_file_and_the_proxy_jump_option_after_the_unchanged_options"],
+    ),
+    Case(
+        "jump host left in the text of a host",
+        [Edit(ACTION, "                    if (jd != \"\") { s = mark(mark(s, jd, \"\\002\"), jh, \"\\002\") }\n", "")],
+        [f"{SJ}.test_the_jump_host_is_replaced_in_a_host_text_that_reaches_the_summary"],
+    ),
+    Case(
+        "a failing jump is not unreachable",
+        [Edit(ACTION, "elif [ \"$rc\" = 255 ]; then\n            note=\"the SSH connection failed (exit 255)\"", "elif [ \"$rc\" = 254 ]; then\n            note=\"the SSH connection failed (exit 255)\"")],
+        [f"{SJ}.test_a_failing_jump_is_reported_as_unreachable_and_no_name_reaches_any_output"],
+    ),
+    Case(
+        "jump proof line permits any destination",
+        [Edit(PROOF, "\"port-forwarding\", f'permitopen=\"{target_address}:{port}\"'", "\"port-forwarding\", 'permitopen=\"*:*\"'")],
+        [f"{SP}.test_the_line_is_restrict_then_port_forwarding_one_permitopen_and_a_forced_command", f"{SP}.test_permitopen_is_exactly_one_destination_with_no_wildcard_and_no_list"],
+    ),
+    Case(
+        "jump proof line drops the forced command",
+        [Edit(PROOF, "    if forced_command is not None:", "    if forced_command is None:")],
+        [f"{SP}.test_the_line_carries_a_forced_command_unless_the_caller_asks_for_none"],
+    ),
+    Case(
+        "jump proof line accepts a wildcard or a list as the host",
+        [Edit(PROOF, "ADDRESS_PATTERN = re.compile(r\"^[A-Za-z0-9][A-Za-z0-9.-]*$\")", "ADDRESS_PATTERN = re.compile(r\"^[A-Za-z0-9*][A-Za-z0-9.*,-]*$\")")],
+        [f"{SP}.test_a_wildcard_a_list_or_an_injected_option_is_refused_before_it_reaches_the_line"],
+    ),
+    Case(
+        "jump proof line accepts a port out of range",
+        [Edit(PROOF, "    if not 1 <= port <= 65535:", "    if not 0 <= port <= 70000:")],
+        [f"{SP}.test_a_wildcard_a_list_or_an_injected_option_is_refused_before_it_reaches_the_line"],
+    ),
+    Case(
+        "jump proof counts a denied forward as permitted",
+        [Edit(PROOF, "    remaining.subtract(Counter(denied_forwards(log)))\n", "")],
+        [f"{SL}.test_a_forward_is_permitted_only_when_it_was_requested_and_not_denied"],
+    ),
+    Case(
+        "jump proof gives the documented gateway account a login shell and no forced command",
+        [Edit(PROOF, "GatewayAccount(JUMP_USER, NO_SHELL, True, False,", "GatewayAccount(JUMP_USER, LOGIN_SHELL, False, False,")],
+        [f"{SP}.test_the_documented_account_has_no_shell_and_a_forced_command_and_only_the_control_runs_commands"],
+    ),
+    Case(
+        "jump proof target line is not restricted",
+        [Edit(PROOF, "return f'restrict,command=\"{command_path}\" {public_key}'", "return f'command=\"{command_path}\" {public_key}'")],
+        [f"{SP}.test_the_target_line_forces_the_one_command_and_restricts_the_key"],
+    ),
+    Case(
+        "jump proof stand-in target answers in a form the report step rejects",
+        [Edit(PROOF, "playbook=site.yml changed=0", "playbook=site.yml changed=x")],
+        [f"{SF}.test_the_stand_in_target_prints_a_summary_line_the_report_step_reads_as_clean"],
+    ),
+    Case(
+        "jump self-test workflow gains a path filter",
+        [Edit(JUMP_SELF, "  pull_request:\n  push:", "  pull_request:\n    paths: ['tools/**']\n  push:")],
+        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
+    ),
+    Case(
+        "jump self-test workflow job loses its timeout",
+        [Edit(JUMP_SELF, "    timeout-minutes: 10\n", "")],
+        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
+    ),
+    Case(
+        "jump self-test workflow does not run the proof",
+        [Edit(JUMP_SELF, "run: python3 tools/ssh_jump_proof.py", "run: python3 tools/ssh_jump_proof.py --help")],
+        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
     ),
 ]
 

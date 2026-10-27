@@ -1,0 +1,51 @@
+name: SSH jump (self-test)
+
+# The proof, on two real sshd instances, that the jump hop of the
+# ssh-check-hosts action works under ClearAllForwardings=yes and that the key
+# of the jump host opens one destination and nothing else. It runs the steps of
+# the action in this working copy, so a pull request that changes the action is
+# checked by the change itself. It runs on every pull request, with no path
+# filter, so a change elsewhere in the repo cannot skip it.
+#
+# The two servers listen on port 22 of two loopback addresses, because the
+# action's inputs take no port, so the script needs root and runs itself under
+# sudo. The keys and accounts are created for the run and removed at its end.
+# No secret, no real host and no network beyond the runner's own loopback.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  jump-proof:
+    name: Jump hop on real sshd
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The servers need the sshd account and /run/sshd, which the package
+      # creates. A system sshd that already listens on port 22 would stop the
+      # proof's servers binding; the script names that case and stops.
+      - name: Install the SSH server and stop the system one
+        run: |
+          set -euo pipefail
+          if ! command -v sshd > /dev/null 2>&1 && [ ! -x /usr/sbin/sshd ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends openssh-server
+          fi
+          for unit in ssh.socket ssh.service; do
+            if systemctl is-active --quiet "$unit"; then
+              sudo systemctl stop "$unit"
+            fi
+          done
+
+      - name: Prove the jump path and its lock, printing each observation
+        run: python3 tools/ssh_jump_proof.py
