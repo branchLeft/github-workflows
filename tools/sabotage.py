@@ -50,7 +50,6 @@ DR = "DriftReportTests"
 AL = "AlertTests"
 PG = "PlanGuardTests"
 AG = "ApplyGuardTests"
-HM = "HeadMovedTests"
 CF = "ConfirmMergeGroupTests"
 
 CASES: list[Case] = [
@@ -353,7 +352,7 @@ CASES: list[Case] = [
         [Edit(ACTION, '        if [ "$failed" -gt 0 ]; then\n          echo "::error::$first"', '        if false; then\n          echo "::error::$first"')],
         [f"{P}.test_a_host_that_fails_fails_the_job_and_asks_for_no_approval"],
     ),
-    # The refusals of the apply guard and the head-moved stop, one case each.
+    # The refusals of the apply guard, one case each.
     Case(
         "apply gate: event check dropped from the apply guard",
         [Edit(GATED, '[ "$EVENT_NAME" = push ] || fail "The apply job runs only for a push, not for $EVENT_NAME."', ":")],
@@ -400,9 +399,9 @@ CASES: list[Case] = [
         [f"{AG}.test_the_apply_refuses_hosts_that_were_not_planned"],
     ),
     Case(
-        "apply gate: moved default branch does not stop the apply",
-        [Edit(GATED, 'if [ "$head" != "$PLANNED_SHA" ]; then', "if false; then")],
-        [f"{HM}.test_a_branch_head_that_moved_stops_the_apply"],
+        "apply gate: a host refusal of an older commit is accepted",
+        [Edit(GATED, '            if [ "$ok" -ne 0 ] || {', '            if [ "$ok" -ne 0 ] && [ "$rc:${BASH_REMATCH[1]}" != "20:refused" ] || {')],
+        [f"{A}.test_a_host_that_already_ran_a_newer_commit_refuses_and_the_apply_fails_with_the_reason"],
     ),
     Case(
         "apply gate: environment term joined with or in the apply if",

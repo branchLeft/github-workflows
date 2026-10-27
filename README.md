@@ -246,9 +246,11 @@ host's count.
 The apply job refuses unless all of these hold, and each is a step that fails the
 job, not only a condition: it is a push, to the default branch, not in a fork,
 not a dry run; the environment input is not empty; the commit is the one that was
-planned; the hosts are the hosts that were planned (a digest of the list); and,
-after the approval, the default branch head is still that commit. A newer push
-has its own plan and its own approval.
+planned; and the hosts are the hosts that were planned (a digest of the list).
+The job does not compare the default branch head with the plan: an approved
+apply lands its planned commit even when main has moved on. The host is the
+authority on order. It refuses a commit older than the one it last applied, and
+this job then fails with reason `rollback`.
 
 #### How a repository calls it
 
@@ -384,7 +386,7 @@ README changes, so does this list.
 | Plan job red, `Plan failed:` first line | A host refused, was busy, failed, timed out, did not answer, or answered with a line this workflow cannot read or for another commit | Read the row for that host in the job summary, then the host's log. No approval was requested. |
 | Plan row says the diff matched a secret pattern | A line of the diff looks like a credential, or holds the check key | Fix the task with `no_log: true` and `diff: false` (ANS-16). The diff is withheld and the job fails. |
 | Plan row says the diff is too large | More than 300 KB for a host or 900 KB in all | Split the change. The approver must be able to read the whole plan. |
-| Apply job red, "moved on" | The default branch changed during the wait | Nothing to do: the newer push has its own plan and approval. |
+| Apply job red, reason `rollback` | The host already ran a newer commit on main than the one approved | Nothing to do: the newer commit includes this one's changes. If that newer apply failed, fix forward with a new commit, as for any red host. |
 | Apply job red, "second run" | The apply left something to change, so the role is not idempotent (ANS-11) | Fix the role. The host is already at the applied state. |
 | Apply job red on one host | Hosts after it were not touched; hosts before it were applied | Read the host's log, fix forward with a new commit. |
 | Gate job red, "expected skipped" | A plan or apply ran in a run that cannot reach a host | A defect in a caller's use of the workflow. |

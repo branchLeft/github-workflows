@@ -651,12 +651,6 @@ class StructureTests(unittest.TestCase):
                 "ENVIRONMENT": "${{ inputs.environment }}",
                 "DRY_RUN": "${{ inputs.dry-run }}",
             }),
-            ("apply", "default branch has moved", {
-                "GH_TOKEN": "${{ github.token }}",
-                "REPO": "${{ github.repository }}",
-                "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
-                "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
-            }),
             ("apply", "Apply on each host", {
                 "HOSTS": "${{ secrets.ssh_hosts }}",
                 "SHA": "${{ needs.plan.outputs.sha }}",
@@ -669,18 +663,22 @@ class StructureTests(unittest.TestCase):
             with self.subTest(job=job, step=fragment):
                 self.assertEqual(find_step_named(job, fragment).get("env"), expected)
 
-    def test_the_apply_job_steps_are_the_guard_then_the_head_check_then_the_apply_with_no_if(self) -> None:
+    def test_the_apply_job_steps_are_the_guard_then_the_apply_with_no_if(self) -> None:
         steps = JOBS["apply"]["steps"]
         self.assertEqual(
             [step.get("name") for step in steps],
             [
                 "Refuse unless this is the approved, planned push",
-                "Refuse if the default branch has moved since the plan",
                 "Apply on each host, then run it again to prove nothing is left to change",
             ],
         )
         for step in steps:
             self.assertNotIn("if", step, step.get("name"))
+        # The host is the authority on order. A head check here would stop an approved
+        # apply that the host is willing to run, so no step asks GitHub for the head.
+        for step in steps:
+            self.assertNotIn("gh api", step.get("run", ""), step.get("name"))
+            self.assertNotIn("GH_TOKEN", step.get("env", {}), step.get("name"))
 
     def test_each_expression_that_feeds_an_action_step_comes_from_its_expected_source(self) -> None:
         cases = {
@@ -1572,27 +1570,6 @@ class ApplyGuardTests(unittest.TestCase):
         self.assertIn("digest is missing", result.log)
 
 
-class HeadMovedTests(unittest.TestCase):
-    def head_check(self, head: str) -> Result:
-        sandbox = Sandbox(self)
-        step = find_step_named("apply", "default branch has moved")
-        values = {
-            "GH_TOKEN": "TOKEN_FOR_TEST",
-            "REPO": "org/repo",
-            "DEFAULT_BRANCH": "main",
-            "PLANNED_SHA": SHA,
-        }
-        return sandbox.run(step, values, {"GH_HEAD": head})
-
-    def test_a_branch_head_that_moved_stops_the_apply(self) -> None:
-        result = self.head_check(OTHER_SHA)
-        self.assertNotEqual(result.code, 0)
-        self.assertIn("moved on", result.log)
-
-    def test_an_unmoved_head_lets_it_continue(self) -> None:
-        self.assertEqual(self.head_check(SHA).code, 0)
-
-
 def apply_env(**changes: str) -> dict[str, str]:
     values = {
         "HOSTS": f"{HOST_ONE}\n{HOST_TWO}\n",
@@ -1672,6 +1649,17 @@ class ApplyTests(unittest.TestCase):
             sandbox = Sandbox(self)
             sandbox.host(HOST_ONE, 10, answer, second=(0, UNCHANGED, ""))
             self.assertNotEqual(self.apply(sandbox).code, 0, repr(answer))
+
+    def test_a_host_that_already_ran_a_newer_commit_refuses_and_the_apply_fails_with_the_reason(self) -> None:
+        # The host refuses a commit older than the one it last applied: the apply fails
+        # at once, names the reason in the log, and asks no second run.
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 20, summary_line("refused", 20, "apply", "@SHA@", 0, "rollback"))
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("reason rollback", result.log)
+        self.assertNotIn("Applied commit", result.log)
+        self.assertEqual(sandbox.calls(HOST_ONE), 1)
 
     def test_a_dropped_connection_fails_the_job(self) -> None:
         sandbox = Sandbox(self)

@@ -400,16 +400,6 @@
           },
           {
             "env": {
-              "DEFAULT_BRANCH": "${{ github.event.repository.default_branch }}",
-              "GH_TOKEN": "${{ github.token }}",
-              "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
-              "REPO": "${{ github.repository }}"
-            },
-            "name": "Refuse if the default branch has moved since the plan",
-            "run-sha256": "1ebcc0bab5ec09d8e29ce2da403b80fe090d4522a63fd32c35bc2a7afe5077c1"
-          },
-          {
-            "env": {
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
               "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
