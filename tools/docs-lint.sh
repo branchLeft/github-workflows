@@ -2,18 +2,12 @@
 # Enforces the mechanical parts of branchLeft's documentation standard.
 # Rule reference and rationale: tools/docs-lint-rules.md
 #
-# Scan/report/exemption machinery shared with opv-lint.sh lives in
-# tools/lint-common.sh; this file owns only its own rule ids, patterns and
-# messages.
+# Shared scan/report machinery lives in tools/lint-common.sh; this file owns
+# its rule ids, patterns and messages. Runtime: bash, grep, awk, and npx
+# for markdownlint.
 #
-# No runtime dependencies beyond bash + grep + awk, because three of the repos
-# this runs in have no package.json and no Node.
-#
-# Usage:
-#   docs-lint.sh [--explain] [--mode warn|enforce] [FILE...]
-#
-# With no FILE arguments it scans every tracked file. With FILE arguments it
-# scans only those (this is how pre-commit invokes it).
+# Usage: docs-lint.sh [--explain] [--mode warn|enforce] [FILE...]
+# With no FILE every tracked file is scanned; pre-commit passes FILEs.
 
 set -uo pipefail
 
