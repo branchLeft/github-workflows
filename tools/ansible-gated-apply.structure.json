@@ -807,10 +807,6 @@
           }
         },
         "secrets": {
-          "ssh_apply_key": {
-            "description": "The private key of the apply job. Do not pass it. Store it as a secret of the deployment environment, which the apply job reads because it runs in that environment.",
-            "required": false
-          },
           "ssh_check_key": {
             "description": "The private key of the plan job. On the host it is restricted to the forced command in check mode. Pass it from a repository secret.",
             "required": false

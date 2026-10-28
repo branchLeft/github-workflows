@@ -344,6 +344,11 @@ CASES: list[Case] = [
         [f"{A}.test_the_apply_key_secret_must_be_present"],
     ),
     Case(
+        "apply key declared again as a workflow_call secret",
+        [Edit(GATED, "        description: The known_hosts lines of the hosts. Pass it from a repository secret.\n        required: false\n", "        description: The known_hosts lines of the hosts. Pass it from a repository secret.\n        required: false\n      ssh_apply_key:\n        description: Do not pass it.\n        required: false\n")],
+        [f"{S}.test_the_gated_apply_declares_no_apply_key_secret"],
+    ),
+    Case(
         "apply gate: apply guard passes a plan that found nothing",
         [Edit(GATED, '[ "$HAS_CHANGES" != false ] || fail "The plan found nothing to change."', ":")],
         ["ApplyGuardTests.test_the_apply_refuses_a_plan_with_nothing_to_change"],

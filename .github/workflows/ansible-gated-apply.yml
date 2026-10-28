@@ -10,12 +10,15 @@ name: Ansible gated apply
 # this exact commit would change and shows it. `apply` waits on the deployment
 # gate and then asks each host to apply that same commit. The job named
 # `Ansible checks passed` is the one a caller requires.
-#
+
 # CI never holds a root shell. The only host access is an SSH key whose
 # authorized_keys line on the host runs one forced command, and that command
 # takes one commit id and nothing else. The plan job holds the check key. The
 # apply job holds the apply key, which is an environment secret, so only a job
 # that has passed the environment's approval can read it.
+# The apply key is read as secrets.ssh_apply_key from the environment. It is never
+# declared under workflow_call.secrets and never passed: a declared secret the
+# caller does not pass resolves empty and shadows the environment secret of that name.
 
 on:
   workflow_call:
@@ -123,13 +126,6 @@ on:
       ssh_known_hosts:
         description: The known_hosts lines of the hosts. Pass it from a repository secret.
         required: false
-      ssh_apply_key:
-        description: >-
-          The private key of the apply job. Do not pass it. Store it as a secret
-          of the deployment environment, which the apply job reads because it
-          runs in that environment.
-        required: false
-
 permissions:
   contents: read
 

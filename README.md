@@ -345,7 +345,7 @@ Any failure stops the job before the key is read.
 | `ssh_hosts` | the caller | One `user@host` per line. A secret so the job log masks the names; the job summary shows `host 1`, `host 2` in this order. |
 | `ssh_known_hosts` | the caller | The hosts' public keys in `known_hosts` form. Host key checking is on and the global file is not read. |
 | `ssh_check_key` | the caller | Private key of the plan job. On the host it may run the forced command in check mode only. |
-| `ssh_apply_key` | not passed: an environment secret | Private key of the apply job. It is read because the apply job runs in the environment, so a job that has not passed the approval cannot read it. |
+The apply key (`ssh_apply_key`) is an environment secret of the workflow's environment, not a declared secret of the workflow: it must not be passed or declared, and the apply job reads it because it runs in that environment.
 
 #### Setup the owner does once per repository
 

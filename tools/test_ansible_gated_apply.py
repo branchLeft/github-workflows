@@ -449,6 +449,11 @@ class StructureTests(unittest.TestCase):
             "a workflow or the action changed: regenerate with `python3 tools/test_ansible_gated_apply.py --write-snapshot`",
         )
 
+    def test_the_gated_apply_declares_no_apply_key_secret(self) -> None:
+        declared = {name.lower() for name in DOC[True]["workflow_call"]["secrets"]}
+        self.assertEqual(declared, {"ssh_hosts", "ssh_check_key", "ssh_known_hosts"})
+        self.assertNotIn("ssh_apply_key", declared)
+
     def test_no_job_or_step_condition_is_a_bare_constant_false(self) -> None:
         self_doc: dict[Any, Any] = yaml.safe_load(SELF_WORKFLOW.read_text())
         action_self_doc: dict[Any, Any] = yaml.safe_load(ACTION_SELF_WORKFLOW.read_text())
