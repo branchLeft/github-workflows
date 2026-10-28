@@ -727,14 +727,13 @@
             "run-sha256": "dd3c2497801338dbc21e995a9937978955d7a4c21dedef6504a5ca05e99bfb75"
           },
           {
-            "name": "Molecule default sequence, with the idempotence step",
-            "run-sha256": "7db7a1a5e79e823c6604313d82788d4f6563e9478ae4b561d5ff2ea94bd84e4f",
-            "working-directory": "${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}"
-          },
-          {
-            "name": "Molecule check action",
-            "run-sha256": "a6e9d4bbfecf96132b547b672871e8baed05b38f81d86222255c26ea2cd96b10",
-            "working-directory": "${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}"
+            "env": {
+              "ROLE_PATH": "${{ matrix.path }}",
+              "ROLE_TEST_COMMAND": "${{ inputs.role-test-command }}"
+            },
+            "name": "Test the role",
+            "run-sha256": "2901fa56a05d354fd29eb4f685020a27ebbea31a0c7dd90a2f07eda75d4dd62a",
+            "working-directory": "${{ inputs.working-directory }}/${{ inputs.ansible-directory }}"
           }
         ],
         "strategy": {
@@ -804,6 +803,12 @@
           "role-directories": {
             "default": "roles/*",
             "description": "Globs, one per line, relative to ansible-directory, of the directories that each hold a Molecule scenario at molecule/default.",
+            "required": false,
+            "type": "string"
+          },
+          "role-test-command": {
+            "default": "",
+            "description": "A Python script, relative to ansible-directory, that tests one role directory: it is run as `python <script> <role directory>` from ansible-directory and its exit status is the role's result. Set it to the entry point the repository's pull request gate runs, so delivery and the gate run one sequence. Empty (the default) runs `molecule test` and then `molecule check` in the role directory.",
             "required": false,
             "type": "string"
           },

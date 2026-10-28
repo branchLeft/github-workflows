@@ -226,7 +226,7 @@ allowed key.
 | --- | --- | --- | --- |
 | `Discover the Ansible checks` | every run | validate the inputs, decide whether the run may reach a host, list the Molecule shards, fail on a `requirements.yml` that lists anything or a scenario that leaves Molecule's dependency step enabled | nothing |
 | `Lint the Ansible inputs` | every run | install the hash lock, then yamllint, ansible-lint (production profile, `--strict`, `--offline`), mypy, ruff | nothing |
-| `Molecule: <role>` | every run, one per role | `molecule test` (with the idempotence step) and `molecule check` on containers on the runner | nothing; fails if `DOCKER_HOST` is set (ANS-15) |
+| `Molecule: <role>` | every run, one per role | the one step "Test the role": the caller's `role-test-command` if set, otherwise `molecule test` (with the idempotence step) then `molecule check`, on containers on the runner | nothing; fails if `DOCKER_HOST` is set (ANS-15) |
 | `Plan the apply (check mode on each host)` | a push to the default branch of the repository itself | ask each host for a check-mode run of this commit (through the [`ssh-check-hosts`](#githubactionsssh-check-hosts) action), show the diff, decide `has_changes` | the check key, the host list and the known-hosts lines; `actions: read` |
 | `Apply the planned commit (after approval)` | the same push, the plan succeeded, `has_changes` is not `false`, not a dry run | ask each host to apply the planned commit, then a second time to prove nothing is left | the apply key, the host list and the known-hosts lines, the environment's approval |
 | `Ansible checks passed` | every run, even after a failure | go red unless every job ended as expected for this kind of run | nothing |
@@ -333,6 +333,7 @@ Any failure stops the job before the key is read.
 | `working-directory` | `.` | Directory holding the Ansible directory, `.ansible-lint` and `.yamllint`. |
 | `ansible-directory` | `ansible` | Directory, relative to `working-directory`, holding `requirements.txt` (the hash lock), `pyproject.toml` and, if there is one, a `requirements.yml` that holds only `collections: []`. |
 | `role-directories` | `roles/*` | Globs, one per line, relative to `ansible-directory`; each match must hold `molecule/default/molecule.yml`. A repository with patterns too lists `patterns/*`. |
+| `role-test-command` | empty | A `.py` file, relative to `ansible-directory`, run as `python <file> <role directory>` from `ansible-directory`; its exit status is the role's result. Set it to the entry point the caller's pull request gate runs, so a role that passes the gate runs the same steps at delivery. Empty runs `molecule test` then `molecule check`. |
 | `python-paths` | `.` | Paths mypy and ruff check, relative to `ansible-directory`. Narrow it if a role keeps two modules of one name. |
 | `dry-run` | `false` | Replace the SSH call with `dry-run-stub` and never run the apply job. It can only skip an apply, never perform one. |
 | `dry-run-stub` | empty | With `dry-run`, the executable, relative to `working-directory`, that stands in for a host. |
@@ -470,10 +471,13 @@ README changes, so does this list.
   rule has two homes and each names the other. Two differences are on purpose: this
   workflow passes an absent `requirements.yml` because it never reads one, and it
   reads only each shard's `molecule/default` scenario, the only one it runs.
-- **The Molecule run is the plain `molecule test` and `molecule check`** in each
-  role directory, with `ROLE_TEST_RUN_ID` set to a value unique to the run. A
-  scenario that needs more than that (a harness, unit tests inside a container)
-  is not covered by this workflow.
+- **One step tests a role, and no other step runs Molecule.** By default it is the
+  plain `molecule test` and `molecule check` in each role directory; with
+  `role-test-command` it is the caller's own entry point and nothing else. Either
+  way `ROLE_TEST_RUN_ID` is set to a value unique to the run. A caller whose pull
+  request gate runs any other sequence passes that entry point, because two
+  entry points let a role pass one and fail the other. A test fails if a second
+  Molecule step returns to the job.
 - **No change detection.** Every call runs every check; a caller cannot narrow
   it by path without making the gate job unreliable as a required check.
 - **A schedule is not part of this workflow.** The nightly drift run of ANS-17 is
