@@ -129,6 +129,19 @@ on:
           of the deployment environment, which the apply job reads because it
           runs in that environment.
         required: false
+      ssh_jump_host:
+        description: >-
+          Optional: pass from a secret; both or neither with ssh_jump_key. A
+          user@host, in the form ssh_hosts takes, that every host is reached
+          through (ssh ProxyJump), for hosts with no public address. Its host-key
+          line goes in ssh_known_hosts.
+        required: false
+      ssh_jump_key:
+        description: >-
+          Optional: pass from a secret; both or neither with ssh_jump_host. The
+          private key for the jump host and nothing else, never the check key or
+          the apply key. The jump host restricts it to port 22 of the listed hosts.
+        required: false
 
 permissions:
   contents: read
@@ -641,6 +654,8 @@ jobs:
           hosts: ${{ secrets.ssh_hosts }}
           known-hosts: ${{ secrets.ssh_known_hosts }}
           check-key: ${{ secrets.ssh_check_key }}
+          jump-host: ${{ secrets.ssh_jump_host }}
+          jump-key: ${{ secrets.ssh_jump_key }}
           sha: ${{ steps.guard.outputs.sha }}
           # standards-allow-next-line CI-2 dry-run is the name of an action input in a with: map, not a run: body (the matcher reads the key as run:)
           dry-run: ${{ inputs.dry-run }}
@@ -720,14 +735,29 @@ jobs:
           HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout-minutes }}
           SSH_KEY: ${{ secrets.ssh_apply_key }}
           KNOWN_HOSTS: ${{ secrets.ssh_known_hosts }}
+          JUMP_HOST: ${{ secrets.ssh_jump_host }}
+          JUMP_KEY: ${{ secrets.ssh_jump_key }}
         run: |
           set -euo pipefail
           fail() {
             echo "::error::$1"
             exit 1
           }
+          destination_pattern='^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'
           [ -n "$SSH_KEY" ] || fail "The ssh_apply_key secret is empty. It is a secret of the deployment environment."
           [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
+          # A jump needs a host and a key, or neither. The host goes into an ssh
+          # config file, so it is held to the form of a hosts line and to one line:
+          # grep judges each line alone and would pass a good line with more after it.
+          # This runs before any file is written or host contacted, and no message
+          # holds a value.
+          if [ -n "$JUMP_HOST" ] || [ -n "$JUMP_KEY" ]; then
+            [ -n "$JUMP_HOST" ] || fail "ssh_jump_key is set but ssh_jump_host is empty: a jump needs both or neither."
+            [ -n "$JUMP_KEY" ] || fail "ssh_jump_host is set but ssh_jump_key is empty: a jump needs both or neither."
+            case "$JUMP_HOST" in *$'\n'*) fail "ssh_jump_host is not of the form user@host." ;; esac
+            printf '%s' "$JUMP_HOST" | grep -Eq "$destination_pattern" \
+              || fail "ssh_jump_host is not of the form user@host."
+          fi
           work="$RUNNER_TEMP/ansible-apply"
           mkdir "$work"
           # The key copies go on every way out of the step, a refusal included.
@@ -737,6 +767,37 @@ jobs:
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
             -o ForwardAgent=no -o ClearAllForwardings=yes)
+          if [ -n "$JUMP_HOST" ]; then
+            # ssh gives a jump hop none of the options on the command line, so the
+            # hop is a stanza of its own with its own key and strict options. The
+            # alias holds an underscore, which no validated host name can, so no
+            # target can select the stanza. User and host were validated as one
+            # line of the hosts form before they are written here. The trap is set
+            # again, with the jump files, before either file exists. This stanza is
+            # a copy of the one in the ssh-check-hosts action; a test holds the two
+            # equal.
+            trap 'rm -f "$work/id" "$work/known_hosts" "$work/jump_id" "$work/jump_config"' EXIT
+            (
+              umask 077
+              printf '%s\n' "$JUMP_KEY" > "$work/jump_id"
+              {
+                printf 'Host jump_hop\n'
+                printf '  HostName %s\n' "${JUMP_HOST#*@}"
+                printf '  User %s\n' "${JUMP_HOST%%@*}"
+                printf '  IdentityFile %s\n' "$work/jump_id"
+                printf '  IdentitiesOnly yes\n'
+                printf '  BatchMode yes\n'
+                printf '  StrictHostKeyChecking yes\n'
+                printf '  UserKnownHostsFile %s\n' "$work/known_hosts"
+                printf '  GlobalKnownHostsFile /dev/null\n'
+                printf '  ConnectTimeout 30\n'
+                printf '  ServerAliveInterval 30\n'
+                printf '  ForwardAgent no\n'
+                printf '  ClearAllForwardings yes\n'
+              } > "$work/jump_config"
+            )
+            ssh_args+=(-F "$work/jump_config" -o ProxyJump=jump_hop)
+          fi
           re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
 
           # Run one request and require the answer to be one of the accepted

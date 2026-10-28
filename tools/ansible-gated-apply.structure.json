@@ -328,6 +328,8 @@
               "fail-on-changes": "true",
               "host-timeout": "${{ inputs.host-timeout-minutes }}",
               "hosts": "${{ secrets.ssh_hosts }}",
+              "jump-host": "${{ secrets.ssh_jump_host }}",
+              "jump-key": "${{ secrets.ssh_jump_key }}",
               "known-hosts": "${{ secrets.ssh_known_hosts }}",
               "sha": "${{ github.sha }}",
               "total-timeout": "${{ steps.guard.outputs.budget }}"
@@ -367,6 +369,14 @@
           "ssh_hosts": {
             "description": "The hosts to check, one SSH destination per line in the form user@host. A secret, so the job log masks the names. Pass it from a repository secret.",
             "required": true
+          },
+          "ssh_jump_host": {
+            "description": "Optional: pass from a secret; both or neither with ssh_jump_key. A user@host, in the form ssh_hosts takes, that every host is reached through (ssh ProxyJump), for hosts with no public address. Its host-key line goes in ssh_known_hosts.",
+            "required": false
+          },
+          "ssh_jump_key": {
+            "description": "Optional: pass from a secret; both or neither with ssh_jump_host. The private key for the jump host and nothing else, never the check key. The jump host restricts it to port 22 of the listed hosts.",
+            "required": false
           },
           "ssh_known_hosts": {
             "description": "The known_hosts lines of the hosts. Pass it from a repository secret.",
@@ -417,12 +427,14 @@
             "env": {
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
+              "JUMP_HOST": "${{ secrets.ssh_jump_host }}",
+              "JUMP_KEY": "${{ secrets.ssh_jump_key }}",
               "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
               "SHA": "${{ needs.plan.outputs.sha }}",
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "91ffb0ebb4474ea3970a817b0b07a628625e619df3784ab2c544e1eac6632f32"
+            "run-sha256": "2e6f8139e4ded7cc0ab3b13c5d04fcd8dd9cb30e6a8340ab0edd331f762d4c34"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -666,6 +678,8 @@
               "environment": "${{ inputs.environment }}",
               "host-timeout": "${{ inputs.host-timeout-minutes }}",
               "hosts": "${{ secrets.ssh_hosts }}",
+              "jump-host": "${{ secrets.ssh_jump_host }}",
+              "jump-key": "${{ secrets.ssh_jump_key }}",
               "known-hosts": "${{ secrets.ssh_known_hosts }}",
               "sha": "${{ steps.guard.outputs.sha }}",
               "working-directory": "${{ inputs.working-directory }}"
@@ -817,6 +831,14 @@
           },
           "ssh_hosts": {
             "description": "The hosts to plan and apply, one SSH destination per line in the form user@host. Each is reached only through the forced command. A secret, so the job log masks the names. Pass it from a repository secret.",
+            "required": false
+          },
+          "ssh_jump_host": {
+            "description": "Optional: pass from a secret; both or neither with ssh_jump_key. A user@host, in the form ssh_hosts takes, that every host is reached through (ssh ProxyJump), for hosts with no public address. Its host-key line goes in ssh_known_hosts.",
+            "required": false
+          },
+          "ssh_jump_key": {
+            "description": "Optional: pass from a secret; both or neither with ssh_jump_host. The private key for the jump host and nothing else, never the check key or the apply key. The jump host restricts it to port 22 of the listed hosts.",
             "required": false
           },
           "ssh_known_hosts": {
