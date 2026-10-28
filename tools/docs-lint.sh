@@ -187,17 +187,22 @@ while IFS=$'\t' read -r f ln len; do
 done < "$TMPDIR_LINT/dl011"
 
 # ---------------------------------------------------------------------------
-# Structural markdown hygiene. Optional: skipped where Node is unavailable,
-# because it is the only part of this script with a runtime dependency.
+# Structural markdown hygiene. npx is this script's only runtime dependency.
+# Markdown in scope means markdownlint is enabled, so a missing npx fails the
+# run instead of skipping the checks. That holds in every mode: warn mode
+# ratchets per-file findings, and a runner without npx is an environment
+# fault, not a finding. With no markdown in scope markdownlint is off.
 # ---------------------------------------------------------------------------
-if [ -s "$MD_FILES" ] && command -v npx >/dev/null 2>&1; then
+if [ -s "$MD_FILES" ] && ! command -v npx >/dev/null 2>&1; then
+  echo "docs-lint: npx is not on PATH, so markdownlint cannot run and the structural markdown checks were not performed. Put npx on the runner's PATH; this run fails rather than skip them."
+  FAILED=1
+  bump "markdownlint"
+elif [ -s "$MD_FILES" ]; then
   CFG="$(dirname "$0")/docs.markdownlint-cli2.jsonc"
   if ! npx --yes markdownlint-cli2@0.18.1 --config "$CFG" $(cat "$MD_FILES") 2>&1 | sed 's/^/markdownlint: /'; then
     if [ "$MODE" = "enforce" ]; then FAILED=1; fi
     bump "markdownlint"
   fi
-else
-  [ -s "$MD_FILES" ] && echo "docs-lint: npx unavailable, skipping structural markdown checks"
 fi
 
 lint_summary_and_exit "docs-lint"
