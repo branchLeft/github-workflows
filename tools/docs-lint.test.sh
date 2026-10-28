@@ -274,6 +274,62 @@ annotation_case() {
 }
 annotation_case
 
+# Fail-closed when npx is missing. The shim holds every executable from PATH
+# except npx, so npx is the only tool removed. With markdown in scope
+# markdownlint is enabled, and a runner without npx must fail the run in both
+# modes with the fixed message, not skip the checks and exit clean. With no
+# markdown in scope markdownlint is deliberately off and the run still passes.
+BASH_BIN=$(command -v bash)
+NO_NPX="$WORK/no-npx-bin"
+mkdir -p "$NO_NPX"
+(
+  IFS=:
+  for dir in $PATH; do
+    [ -d "$dir" ] || continue
+    for tool in "$dir"/*; do
+      name=${tool##*/}
+      [ "$name" = npx ] && continue
+      [ -f "$tool" ] && [ -x "$tool" ] && [ ! -e "$NO_NPX/$name" ] && ln -s "$tool" "$NO_NPX/$name"
+    done
+  done
+)
+if [ -n "$(PATH="$NO_NPX" "$BASH_BIN" -c 'command -v npx')" ]; then
+  FAIL=$((FAIL + 1))
+  echo "FAIL: no-npx shim still resolves npx -- the fixture does not test what it claims"
+fi
+
+NPX_MISSING_MSG="markdownlint cannot run"
+no_npx_case() { # name, fixture, mode, expect-exit, expect-message (yes|no)
+  local name="$1" file="$2" mode="$3" want_rc="$4" want_msg="$5"
+  local out rc has_msg=no ok=1
+  printf '%s\n' "Plain prose for the fixture." > "$file"
+  out=$(GITHUB_ACTIONS=false PATH="$NO_NPX" "$BASH_BIN" "$LINT" --explain --mode "$mode" "$file" 2>&1)
+  rc=$?
+  printf '%s' "$out" | grep -q "$NPX_MISSING_MSG" && has_msg=yes
+  if [ "$rc" != "$want_rc" ]; then
+    ok=0
+    echo "FAIL: $name -- expected exit=$want_rc, got $rc"
+  fi
+  if [ "$has_msg" != "$want_msg" ]; then
+    ok=0
+    echo "FAIL: $name -- expected fixed npx message=$want_msg, got $has_msg"
+  fi
+  if [ "$ok" = "1" ]; then
+    PASS=$((PASS + 1))
+    echo "ok   $name"
+  else
+    FAIL=$((FAIL + 1))
+    echo "$out" | sed 's/^/    /'
+  fi
+  rm -f "$file"
+}
+no_npx_case "npx missing, markdown in scope, enforce: fails with fixed message" \
+  "fixture.md" enforce 1 yes
+no_npx_case "npx missing, markdown in scope, warn: still fails with fixed message" \
+  "fixture.md" warn 1 yes
+no_npx_case "npx missing, no markdown in scope: markdownlint off, passes" \
+  "fixture.sh" enforce 0 no
+
 echo
 echo "docs-lint.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ]
