@@ -75,6 +75,8 @@ caller block works everywhere:
 - `.docs-lintignore` — tab-separated `glob`, rule ids, reason. Use it for
   files that legitimately match a rule, such as a document about the rules.
 
+**`runs-on` is optional.** It is a JSON array of runner labels, passed as a string, and it defaults to `'["ubuntu-latest"]'`. A caller that needs its own runner for the job passes it, for example `runs-on: '["self-hosted","Linux","branchleft-gpd"]'`. A caller that passes nothing keeps GitHub-hosted `ubuntu-latest`. A runner of your own needs `bash`, `git` and `npx` (for markdownlint).
+
 Adopting the gate in a repo that has never run it is therefore a two-file
 change, and the ratchet means the first PR is green.
 
