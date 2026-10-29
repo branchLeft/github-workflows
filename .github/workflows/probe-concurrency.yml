@@ -1,0 +1,20 @@
+name: Probe concurrency
+on:
+  push:
+    branches: [scratch/probe-concurrency-2695]
+permissions: {}
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo "plan ${GITHUB_SHA}"
+  apply:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    concurrency:
+      group: probe-2695
+      cancel-in-progress: false
+    steps:
+      - run: echo "apply ${GITHUB_SHA}" && sleep 100
