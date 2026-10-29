@@ -23,13 +23,19 @@ on:
         description: "Print the matched text for each finding"
         type: boolean
         default: true
+      runs-on:
+        description: "Runner labels for the job, as a JSON array string; the default is GitHub-hosted ubuntu-latest"
+        type: string
+        default: '["ubuntu-latest"]'
 
 permissions:
   contents: read
 
 jobs:
   docs-lint:
-    runs-on: ubuntu-latest
+    # The caller picks the runner. A caller that passes nothing keeps
+    # GitHub-hosted ubuntu-latest, so existing pins behave as before.
+    runs-on: ${{ fromJSON(inputs.runs-on) }}
     # Observed 0.2-0.63min p95 across 60 caller runs (shared-infra,
     # ghost-platform, website, components; 15 each) plus one 7.35min outlier —
     # headroom set above that outlier, not just the p95.

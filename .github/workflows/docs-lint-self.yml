@@ -26,6 +26,9 @@ jobs:
       - name: Run the pinned-ref resolver tests
         run: ./tools/resolve-pinned-ref.test.sh
 
+      - name: Check the reusable workflow's runner seam
+        run: ./tools/docs-lint-workflow.test.sh
+
       - name: Run docs-lint unit tests
         run: ./tools/docs-lint.test.sh
 
