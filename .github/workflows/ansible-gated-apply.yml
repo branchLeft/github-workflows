@@ -50,6 +50,17 @@ on:
         type: string
         required: false
         default: roles/*
+      role-test-command:
+        description: >-
+          A Python script, relative to ansible-directory, that tests one role
+          directory: it is run as `python <script> <role directory>` from
+          ansible-directory and its exit status is the role's result. Set it to
+          the entry point the repository's pull request gate runs, so delivery
+          and the gate run one sequence. Empty (the default) runs `molecule
+          test` and then `molecule check` in the role directory.
+        type: string
+        required: false
+        default: ''
       python-paths:
         description: >-
           Paths, space separated and relative to ansible-directory, that mypy
@@ -496,13 +507,32 @@ jobs:
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
         run: '"$RUNNER_TEMP/ansible-venv/bin/pip" install --require-virtualenv --require-hashes -r "$ANSIBLE_DIRECTORY/requirements.txt"'
 
-      - name: Molecule default sequence, with the idempotence step
-        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}
-        run: '"$RUNNER_TEMP/ansible-venv/bin/molecule" test'
-
-      - name: Molecule check action
-        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}
-        run: '"$RUNNER_TEMP/ansible-venv/bin/molecule" check'
+      # The one step that tests a role: no other step of this job runs Molecule,
+      # so delivery cannot run a sequence the caller's gate does not. With
+      # role-test-command the caller's own entry point is the whole test.
+      - name: Test the role
+        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}
+        env:
+          ROLE_PATH: ${{ matrix.path }}
+          ROLE_TEST_COMMAND: ${{ inputs.role-test-command }}
+        run: |
+          set -euo pipefail
+          if [ -n "$ROLE_TEST_COMMAND" ]; then
+            command_re='^[A-Za-z0-9_][A-Za-z0-9_./-]*[.]py$'
+            if ! [[ "$ROLE_TEST_COMMAND" =~ $command_re ]] || [[ "$ROLE_TEST_COMMAND" == *..* ]]; then
+              echo "::error::role-test-command must be a relative path to a .py file, with no '..'."
+              exit 1
+            fi
+            if [ ! -f "$ROLE_TEST_COMMAND" ]; then
+              echo "::error::role-test-command names a file that does not exist under the Ansible directory."
+              exit 1
+            fi
+            "$RUNNER_TEMP/ansible-venv/bin/python" "$ROLE_TEST_COMMAND" "$ROLE_PATH"
+          else
+            cd "$ROLE_PATH"
+            "$RUNNER_TEMP/ansible-venv/bin/molecule" test
+            "$RUNNER_TEMP/ansible-venv/bin/molecule" check
+          fi
 
   # The plan job. It runs only for a push to the default branch. It holds the
   # check key, which the host restricts to the forced command in check mode, and

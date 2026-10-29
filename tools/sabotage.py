@@ -59,8 +59,30 @@ SO = "SshOptionTests"
 SP = "SshJumpProofLineTests"
 SL = "SshJumpProofLogTests"
 SF = "SshJumpProofFixtureTests"
+RT = "RoleTestEntryPointTests"
 
 CASES: list[Case] = [
+    Case(
+        "delivery runs a Molecule sequence of its own beside the role test",
+        [
+            Edit(
+                GATED,
+                "  # The plan job. It runs only for a push",
+                "      - name: Molecule check action\n        working-directory: ${{ inputs.working-directory }}/${{ inputs.ansible-directory }}/${{ matrix.path }}\n        run: '\"$RUNNER_TEMP/ansible-venv/bin/molecule\" check'\n\n  # The plan job. It runs only for a push",
+            )
+        ],
+        [f"{RT}.test_test_the_role_is_the_only_step_of_the_shard_job_that_runs_molecule_or_a_role_test"],
+    ),
+    Case(
+        "delivery ignores the caller's role test command",
+        [Edit(GATED, 'if [ -n "$ROLE_TEST_COMMAND" ]; then', "if false; then")],
+        [f"{RT}.test_a_set_command_is_run_from_the_ansible_directory_with_the_role_and_molecule_is_never_called"],
+    ),
+    Case(
+        "delivery lets the caller's role test command through unchecked",
+        [Edit(GATED, "if ! [[ \"$ROLE_TEST_COMMAND\" =~ $command_re ]] || [[ \"$ROLE_TEST_COMMAND\" == *..* ]]; then", "if false; then")],
+        [f"{RT}.test_a_command_that_is_not_a_plain_relative_python_file_is_refused_before_anything_runs"],
+    ),
     Case(
         "apply key passed in the drift workflow",
         [Edit(DRIFT, "          fail-on-changes: 'true'\n", "          fail-on-changes: 'true'\n          apply-key: ${{ secrets.ssh_apply_key }}\n")],

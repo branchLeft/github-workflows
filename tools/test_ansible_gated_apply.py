@@ -3693,6 +3693,83 @@ class InstallStepTests(unittest.TestCase):
         target.chmod(0o755)
 
 
+# Stand-ins for the venv's molecule and python: each appends its working directory
+# and arguments to one log, so the order and the place of every call can be read.
+TOOL_STUB = """#!/usr/bin/env bash
+echo "$(basename "$0") $(basename "$PWD") $*" >> "$STUB_DIR/tools.log"
+"""
+
+
+# A call of the molecule program, by path or by name with one of its actions.
+MOLECULE_CALL = r"bin/molecule|\bmolecule\s+(?:test|check|create|prepare|converge|idempotence|verify|destroy|lint)\b"
+
+
+class RoleTestEntryPointTests(unittest.TestCase):
+    """Delivery tests a role by the caller's own entry point, so it cannot run a sequence the gate does not."""
+
+    def sandbox(self) -> Sandbox:
+        sandbox = Sandbox(self)
+        tools = sandbox.temp / "ansible-venv" / "bin"
+        tools.mkdir(parents=True)
+        for name in ("molecule", "python"):
+            (tools / name).write_text(TOOL_STUB)
+            (tools / name).chmod(0o755)
+        (sandbox.dir / "roles" / "demo").mkdir(parents=True)
+        (sandbox.dir / "harness").mkdir()
+        (sandbox.dir / "harness" / "run.py").write_text("")
+        return sandbox
+
+    def test_test_the_role_is_the_only_step_of_the_shard_job_that_runs_molecule_or_a_role_test(self) -> None:
+        runners = [step["name"] for step in JOBS["shard"]["steps"] if re.search(MOLECULE_CALL + "|ROLE_TEST_COMMAND", step.get("run", ""))]
+        self.assertEqual(runners, ["Test the role"])
+
+    def test_no_other_job_runs_molecule(self) -> None:
+        for name, job in JOBS.items():
+            if name == "shard":
+                continue
+            for step in job.get("steps", []):
+                with self.subTest(job=name, step=step.get("name")):
+                    self.assertNotRegex(step.get("run", ""), MOLECULE_CALL)
+
+    def test_the_step_takes_its_command_from_the_declared_input_and_the_role_from_the_matrix(self) -> None:
+        step = find_step_named("shard", "Test the role")
+        self.assertEqual(step["env"], {"ROLE_PATH": "${{ matrix.path }}", "ROLE_TEST_COMMAND": "${{ inputs.role-test-command }}"})
+        declared = DOC[True]["workflow_call"]["inputs"]["role-test-command"]
+        self.assertEqual((declared["type"], declared["required"], declared["default"]), ("string", False, ""))
+
+    def test_a_set_command_is_run_from_the_ansible_directory_with_the_role_and_molecule_is_never_called(self) -> None:
+        sandbox = self.sandbox()
+        result = sandbox.run(find_step_named("shard", "Test the role"), {"ROLE_PATH": "roles/demo", "ROLE_TEST_COMMAND": "harness/run.py"})
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual((sandbox.stubs / "tools.log").read_text().splitlines(), [f"python {sandbox.dir.name} harness/run.py roles/demo"])
+
+    def test_no_command_runs_molecule_test_then_molecule_check_in_the_role_directory(self) -> None:
+        sandbox = self.sandbox()
+        result = sandbox.run(find_step_named("shard", "Test the role"), {"ROLE_PATH": "roles/demo", "ROLE_TEST_COMMAND": ""})
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual((sandbox.stubs / "tools.log").read_text().splitlines(), ["molecule demo test", "molecule demo check"])
+
+    def test_a_failing_test_command_fails_the_step_and_molecule_is_not_tried_after_it(self) -> None:
+        sandbox = self.sandbox()
+        sandbox.temp.joinpath("ansible-venv/bin/python").write_text("#!/usr/bin/env bash\nexit 3\n")
+        result = sandbox.run(find_step_named("shard", "Test the role"), {"ROLE_PATH": "roles/demo", "ROLE_TEST_COMMAND": "harness/run.py"})
+        self.assertEqual(result.code, 3, result.log)
+        self.assertFalse((sandbox.stubs / "tools.log").exists())
+
+    def test_a_command_that_is_not_a_plain_relative_python_file_is_refused_before_anything_runs(self) -> None:
+        for bad in ("ABSOLUTE", "harness/../harness/run.py", "harness/run.sh", "harness/run.py; id", "-m.py", "harness/missing.py"):
+            with self.subTest(command=bad):
+                sandbox = self.sandbox()
+                # Every refused name exists, so only the shape check can refuse it.
+                for name in ("harness/run.sh", "harness/run.py; id", "-m.py"):
+                    (sandbox.dir / name).write_text("")
+                bad = str(sandbox.dir / "harness" / "run.py") if bad == "ABSOLUTE" else bad
+                result = sandbox.run(find_step_named("shard", "Test the role"), {"ROLE_PATH": "roles/demo", "ROLE_TEST_COMMAND": bad})
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("::error::role-test-command", result.log)
+                self.assertFalse((sandbox.stubs / "tools.log").exists())
+
+
 class LintStepTests(unittest.TestCase):
     """Each lint command, run with a recording stand-in for its tool."""
 
