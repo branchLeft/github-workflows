@@ -47,6 +47,39 @@ inputs:
       both, or neither.
     required: false
     default: ''
+  push-hosts:
+    description: >-
+      Empty (the default) puts no host on the push route. Otherwise a subset of
+      hosts, one user@host per line, that never open a connection themselves:
+      the runner connects to each, through the jump host, and streams a git
+      bundle of the checked-out commit on standard input, with the command
+      '<mode> <commit> <push-playbook>'. Every line must also be in hosts.
+      Needs push-playbook, jump-host and jump-key, a checkout of the caller's
+      repository at sha with its whole history, and a public repository. Pass it
+      from a secret so the job log masks the names.
+    required: false
+    default: ''
+  push-playbook:
+    description: >-
+      With push-hosts, the playbook the receiver is asked to run: a relative
+      path of letters, digits, dot, underscore, dash and slash, with no '..'.
+      Ignored when push-hosts is empty.
+    required: false
+    default: ''
+  push-dry-run-stub:
+    description: >-
+      With dry-run and push-hosts, the executable, relative to working-directory,
+      that stands in for the receiver. It receives the destination, the mode, the
+      commit and the playbook, and the bundle on standard input.
+    required: false
+    default: ''
+  push-repo-private:
+    description: >-
+      With push-hosts, the value of github.event.repository.private, passed as it
+      is. A bundle carries the whole history of the repository to the host, so
+      only the exact value false is accepted: an empty or any other value refuses.
+    required: false
+    default: ''
   sha:
     description: The commit to ask about, 40 lowercase hex digits.
     required: true
@@ -98,6 +131,11 @@ outputs:
   hosts-digest:
     description: The SHA-256 of the validated host list, so a later job can prove it uses the same hosts.
     value: ${{ steps.validate.outputs.hosts_digest }}
+  push-hosts-digest:
+    description: >-
+      The SHA-256 of the validated push list, so a later job can prove it uses
+      the same push hosts. Empty when push-hosts is empty.
+    value: ${{ steps.validate.outputs.push_hosts_digest }}
   outcome:
     description: >-
       ok, drift, refused, unreachable, no-answer, failed, withheld, or mixed when
@@ -126,6 +164,10 @@ runs:
         TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
         JUMP_HOST: ${{ inputs.jump-host }}
         JUMP_KEY: ${{ inputs.jump-key }}
+        PUSH_HOSTS: ${{ inputs.push-hosts }}
+        PUSH_PLAYBOOK: ${{ inputs.push-playbook }}
+        PUSH_DRY_RUN_STUB: ${{ inputs.push-dry-run-stub }}
+        PUSH_REPO_PRIVATE: ${{ inputs.push-repo-private }}
       run: |
         set -euo pipefail
         fail() {
@@ -173,7 +215,43 @@ runs:
         [ "$count" -le 50 ] || fail "The ssh_hosts secret lists more than 50 hosts."
         digest=$(printf '%s' "$list" | shasum -a 256 | cut -d ' ' -f 1)
         echo "hosts_digest=$digest" >> "$GITHUB_OUTPUT"
+        # The push route is off unless push-hosts is set, and then nothing else
+        # about it is read: push-playbook set with no push list is ignored. A push
+        # host is one of the hosts above, so the hosts list, its digest and the
+        # known_hosts lines are the ones every caller already has. The apply job
+        # rebuilds the push list from the same secret and must find the same
+        # digest, so it never pushes to a host that was not planned. A push
+        # sends the whole history of the checked-out repository to the host, so
+        # it is refused unless the repository is public: only the exact value
+        # false passes, and an empty value (a payload without the field) refuses.
+        push_digest=""
+        push_count=0
+        if [ -n "$PUSH_HOSTS" ]; then
+          playbook_re='^[A-Za-z0-9_][A-Za-z0-9_./-]*$'
+          [[ "$PUSH_PLAYBOOK" =~ $playbook_re ]] || fail "push-playbook must be a relative path of letters, digits, dot, underscore, dash and slash."
+          case "$PUSH_PLAYBOOK" in *..*) fail "push-playbook must not contain '..'." ;; esac
+          [ "$PUSH_REPO_PRIVATE" = false ] || fail "Pushing refuses unless the repository is public: a bundle carries its whole history to the host."
+          { [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "push-hosts needs jump-host and jump-key: a pushed host is reached only through the jump host."
+          if [ "$DRY_RUN" = true ]; then
+            [ -n "$PUSH_DRY_RUN_STUB" ] || fail "dry-run with push-hosts needs push-dry-run-stub."
+          fi
+          push_list=""
+          while IFS= read -r dest; do
+            [ -n "$dest" ] || continue
+            # A push host must equal a line of the hosts list, which was held to
+            # the form of a hosts line above, so no pattern is needed here and a
+            # line with a space in it matches nothing.
+            grep -qxF -- "$dest" <<< "$HOSTS" || fail "A push host is not in the hosts list."
+            case " $push_list " in *" $dest "*) fail "A push host is listed twice." ;; esac
+            push_list="${push_list:+$push_list }$dest"
+            push_count=$((push_count + 1))
+          done <<< "$PUSH_HOSTS"
+          [ "$push_count" -ge 1 ] || fail "push-hosts lists no host."
+          push_digest=$(printf '%s' "$push_list" | shasum -a 256 | cut -d ' ' -f 1)
+        fi
+        echo "push_hosts_digest=$push_digest" >> "$GITHUB_OUTPUT"
         echo "Checking commit $SHA on $count host(s)."
+        echo "$push_count of them by push."
 
     - name: Check every host in check mode
       id: check
@@ -190,6 +268,9 @@ runs:
         KNOWN_HOSTS: ${{ inputs.known-hosts }}
         JUMP_HOST: ${{ inputs.jump-host }}
         JUMP_KEY: ${{ inputs.jump-key }}
+        PUSH_HOSTS: ${{ inputs.push-hosts }}
+        PUSH_PLAYBOOK: ${{ inputs.push-playbook }}
+        PUSH_DRY_RUN_STUB: ${{ inputs.push-dry-run-stub }}
       run: |
         set -euo pipefail
         fail() {
@@ -245,9 +326,37 @@ runs:
             ssh_args+=(-F "$plan_dir/jump_config" -o ProxyJump=jump_hop)
           fi
         fi
-        # Every call takes its input from /dev/null. The loop reads the host list
-        # from its own standard input, and a call that reads standard input
-        # (ssh does) would swallow the hosts after the first.
+        # The push route. A host on the push list never opens a connection, so the
+        # runner connects to it and sends what a pull would have fetched: a git
+        # bundle of the checked-out commit, on standard input, with the command
+        # '<mode> <commit> <playbook>'. The bundle is made once, here, before any
+        # host is asked, and each call reads it from the start. It holds the whole
+        # history of a public repository, so nothing in it is secret. No fetch or
+        # pull command is ever sent to a host.
+        push_bundle=""
+        push_stub=""
+        if [ -n "$PUSH_HOSTS" ]; then
+          # --- bundle begin (this text is the same in ssh-check-hosts and in ansible-gated-apply.yml; a test holds the two equal)
+          make_bundle() {
+            local file="$1" sha="$2" head
+            [ "$(git -C "$GITHUB_WORKSPACE" rev-parse --is-shallow-repository)" = false ] \
+              || fail "The checkout of the repository is shallow, so its bundle would not carry the history the host needs."
+            head=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD) || fail "The checkout of the repository could not be read."
+            [ "$head" = "$sha" ] || fail "The checkout of the repository is not at the commit being delivered."
+            git -C "$GITHUB_WORKSPACE" bundle create "$file" HEAD > /dev/null 2>&1 || fail "The bundle of the commit could not be made."
+          }
+          # --- bundle end
+          push_bundle="$plan_dir/push.bundle"
+          make_bundle "$push_bundle" "$SHA"
+          if [ "$DRY_RUN" = true ]; then
+            push_stub="$GITHUB_WORKSPACE/$WORKING_DIRECTORY/$PUSH_DRY_RUN_STUB"
+            [ -x "$push_stub" ] || fail "push-dry-run-stub is not an executable file."
+          fi
+        fi
+        # Every pull call takes its input from /dev/null. The loop reads the host
+        # list from its own standard input, and a call that reads standard input
+        # (ssh does) would swallow the hosts after the first. A push call reads
+        # the bundle from its own file, so it takes nothing from the loop either.
         i=0
         started=$(date +%s)
         while IFS= read -r dest; do
@@ -255,6 +364,11 @@ runs:
           i=$((i + 1))
           n=$(printf '%02d' "$i")
           printf '%s\n' "$dest" > "$plan_dir/$n.dest"
+          route=pull
+          if [ -n "$PUSH_HOSTS" ] && grep -qxF -- "$dest" <<< "$PUSH_HOSTS"; then
+            route=push
+          fi
+          printf '%s\n' "$route" > "$plan_dir/$n.route"
           rc=0
           # The hosts are asked one after another. With a total time, a call gets
           # the smaller of its own limit and what is left of the total, so the
@@ -271,6 +385,10 @@ runs:
             : > "$plan_dir/$n.err"
             : > "$plan_dir/$n.skipped"
             rc=124
+          elif [ "$route" = push ] && [ "$DRY_RUN" = true ]; then
+            "$push_stub" "$dest" check "$SHA" "$PUSH_PLAYBOOK" < "$push_bundle" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+          elif [ "$route" = push ]; then
+            timeout "${limit}s" ssh "${ssh_args[@]}" -- "$dest" "check $SHA $PUSH_PLAYBOOK" < "$push_bundle" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
           elif [ "$DRY_RUN" = true ]; then
             "$stub" "$dest" "$SHA" < /dev/null > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
           else
@@ -350,20 +468,48 @@ runs:
 
           line_count=$(wc -l < "$base.out" | tr -d ' ')
           line=$(tr -d '\r' < "$base.out" | head -n 1)
+          # Each host is judged by its route, and only by the one line its route
+          # speaks. A host that was pulled from answers as the pull trigger, a
+          # host that was pushed to answers as the push receiver, and the other
+          # host's line is no answer. The two lines carry the same fields. The
+          # route is written by the step before this one; an absent file means
+          # pull, and any other value matches neither line.
+          route=pull
+          if [ -e "$base.route" ]; then
+            route=$(cat "$base.route")
+          fi
           re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-)$'
+          push_re='^push-receiver verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply) commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+          matched=no
+          if [ "$line_count" = 1 ]; then
+            if [ "$route" = push ]; then
+              if [[ "$line" =~ $push_re ]] && [ "${BASH_REMATCH[4]}" = check ]; then
+                matched=yes
+                f_verdict="${BASH_REMATCH[1]}"
+                f_exit="${BASH_REMATCH[2]}"
+                f_reason="${BASH_REMATCH[3]}"
+                f_commit="${BASH_REMATCH[5]}"
+                f_changed="${BASH_REMATCH[6]}"
+              fi
+            elif [ "$route" = pull ]; then
+              if [[ "$line" =~ $re ]]; then
+                matched=yes
+                f_verdict="${BASH_REMATCH[1]}"
+                f_exit="${BASH_REMATCH[2]}"
+                f_reason="${BASH_REMATCH[3]}"
+                f_commit="${BASH_REMATCH[4]}"
+                f_changed="${BASH_REMATCH[5]}"
+              fi
+            fi
+          fi
           if [ -e "$base.skipped" ]; then
             note="not asked: the time given to the check was spent before this host"
           elif [ "$rc" = 255 ]; then
             note="the SSH connection failed (exit 255)"
             kind="unreachable"
-          elif [ "$line_count" != 1 ] || ! [[ "$line" =~ $re ]]; then
+          elif [ "$matched" != yes ]; then
             note="the host did not answer with one summary line (exit $rc)"
           else
-            f_verdict="${BASH_REMATCH[1]}"
-            f_exit="${BASH_REMATCH[2]}"
-            f_reason="${BASH_REMATCH[3]}"
-            f_commit="${BASH_REMATCH[4]}"
-            f_changed="${BASH_REMATCH[5]}"
             if [ "$f_commit" != "$SHA" ] || [ "$f_exit" != "$rc" ]; then
               note="the summary line names another commit or exit status (exit $rc)"
             elif [ "$rc" = 0 ] && [ "$f_verdict" = unchanged ] && [ "$f_changed" = 0 ]; then

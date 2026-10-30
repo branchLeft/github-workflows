@@ -35,6 +35,15 @@ on:
         type: number
         required: false
         default: 90
+      push-playbook:
+        description: >-
+          With the ssh_push_hosts secret, the playbook the receiver of a pushed
+          host is asked to check: a relative path of letters, digits, dot,
+          underscore, dash and slash, with no '..'. Ignored when ssh_push_hosts
+          is empty.
+        type: string
+        required: false
+        default: ''
     secrets:
       ssh_hosts:
         description: >-
@@ -49,6 +58,16 @@ on:
       ssh_known_hosts:
         description: The known_hosts lines of the hosts. Pass it from a repository secret.
         required: true
+      ssh_push_hosts:
+        description: >-
+          Optional: pass from a secret. The hosts that never open a connection
+          themselves, one user@host per line, a subset of ssh_hosts. Each is
+          reached through ssh_jump_host, which is then required with
+          ssh_jump_key, and is sent a git bundle of the commit on standard input
+          with the command 'check <commit> <push-playbook>' instead of being
+          asked to fetch it. Needs push-playbook and a public repository. Empty
+          (the default) leaves every host on the pull route.
+        required: false
       ssh_jump_host:
         description: >-
           Optional: pass from a secret; both or neither with ssh_jump_key. A
@@ -122,6 +141,33 @@ jobs:
           echo "refused=false" >> "$GITHUB_OUTPUT"
           echo "budget=$((CHECK_TIMEOUT - 5))" >> "$GITHUB_OUTPUT"
           echo "Checking the default branch head $SHA, with $((CHECK_TIMEOUT - 5)) minutes for the hosts together."
+
+      # Whether any host is pushed to. A step condition cannot read a secret, so
+      # this step reads it and says so in an output. Everything else about the
+      # push route is judged by the action.
+      - name: Decide whether any host is pushed to
+        id: push
+        env:
+          PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PUSH_HOSTS" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+            echo "Some hosts are pushed to, so the repository is checked out with its whole history."
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # A pushed host is sent a bundle of this repository at the commit, with the
+      # history the receiver needs for its own rules on order and on main. This
+      # runs before the shared actions are placed at .gw, so the pin step still
+      # sees a workspace with no .gw of the caller's.
+      - name: Check out the repository with its whole history, to push it
+        if: steps.push.outputs.push == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       # The commit this workflow was called at is read from the run record, which
       # names the commit of every reusable workflow the run called. The runner
@@ -218,6 +264,9 @@ jobs:
           check-key: ${{ secrets.ssh_check_key }}
           jump-host: ${{ secrets.ssh_jump_host }}
           jump-key: ${{ secrets.ssh_jump_key }}
+          push-hosts: ${{ secrets.ssh_push_hosts }}
+          push-playbook: ${{ inputs.push-playbook }}
+          push-repo-private: ${{ github.event.repository.private }}
           sha: ${{ github.sha }}
           host-timeout: ${{ inputs.host-timeout-minutes }}
           total-timeout: ${{ steps.guard.outputs.budget }}

@@ -51,6 +51,26 @@
         "description": "The known_hosts lines of the hosts. Pass it from a secret. Empty only in a dry run.",
         "required": false
       },
+      "push-dry-run-stub": {
+        "default": "",
+        "description": "With dry-run and push-hosts, the executable, relative to working-directory, that stands in for the receiver. It receives the destination, the mode, the commit and the playbook, and the bundle on standard input.",
+        "required": false
+      },
+      "push-hosts": {
+        "default": "",
+        "description": "Empty (the default) puts no host on the push route. Otherwise a subset of hosts, one user@host per line, that never open a connection themselves: the runner connects to each, through the jump host, and streams a git bundle of the checked-out commit on standard input, with the command '<mode> <commit> <push-playbook>'. Every line must also be in hosts. Needs push-playbook, jump-host and jump-key, a checkout of the caller's repository at sha with its whole history, and a public repository. Pass it from a secret so the job log masks the names.",
+        "required": false
+      },
+      "push-playbook": {
+        "default": "",
+        "description": "With push-hosts, the playbook the receiver is asked to run: a relative path of letters, digits, dot, underscore, dash and slash, with no '..'. Ignored when push-hosts is empty.",
+        "required": false
+      },
+      "push-repo-private": {
+        "default": "",
+        "description": "With push-hosts, the value of github.event.repository.private, passed as it is. A bundle carries the whole history of the repository to the host, so only the exact value false is accepted: an empty or any other value refuses.",
+        "required": false
+      },
       "sha": {
         "description": "The commit to ask about, 40 lowercase hex digits.",
         "required": true
@@ -83,6 +103,10 @@
       "outcome": {
         "description": "ok, drift, refused, unreachable, no-answer, failed, withheld, or mixed when more than one of those occurred. Empty if the step stopped before it could judge.",
         "value": "${{ steps.report.outputs.outcome }}"
+      },
+      "push-hosts-digest": {
+        "description": "The SHA-256 of the validated push list, so a later job can prove it uses the same push hosts. Empty when push-hosts is empty.",
+        "value": "${{ steps.validate.outputs.push_hosts_digest }}"
       }
     },
     "runs": {
@@ -96,12 +120,16 @@
             "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
             "JUMP_HOST": "${{ inputs.jump-host }}",
             "JUMP_KEY": "${{ inputs.jump-key }}",
+            "PUSH_DRY_RUN_STUB": "${{ inputs.push-dry-run-stub }}",
+            "PUSH_HOSTS": "${{ inputs.push-hosts }}",
+            "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
+            "PUSH_REPO_PRIVATE": "${{ inputs.push-repo-private }}",
             "SHA": "${{ inputs.sha }}",
             "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}"
           },
           "id": "validate",
           "name": "Validate the host list and the inputs",
-          "run-sha256": "5a208092eeec4e23a6ce16ed9b44aff34e51f26b9392d1f0fbc195a3bb661a56",
+          "run-sha256": "31aa473a8add4ae8839dddec39f5becb3502b18c39cdeac628522b0e585bae50",
           "shell": "bash"
         },
         {
@@ -113,6 +141,9 @@
             "JUMP_HOST": "${{ inputs.jump-host }}",
             "JUMP_KEY": "${{ inputs.jump-key }}",
             "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
+            "PUSH_DRY_RUN_STUB": "${{ inputs.push-dry-run-stub }}",
+            "PUSH_HOSTS": "${{ inputs.push-hosts }}",
+            "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
             "SHA": "${{ inputs.sha }}",
             "SSH_KEY": "${{ inputs.check-key }}",
             "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
@@ -120,7 +151,7 @@
           },
           "id": "check",
           "name": "Check every host in check mode",
-          "run-sha256": "0012f828be9e3d1025a5c393ac2628d2ed922eeb2728cfd4fddb18d363fa9165",
+          "run-sha256": "23684117295f0e03c1d32a8f19ef64fdffa6fc17983763e0f200988b34028d52",
           "shell": "bash"
         },
         {
@@ -134,7 +165,7 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "172858fd6f7816fa0082789ea9c5a6fda22119457f7429649125985c343a2cc1",
+          "run-sha256": "22a0586c6d45ac5a7949720fda2629f710ca040fe7ae6ec0bfcc319c9e463ff8",
           "shell": "bash"
         }
       ],
@@ -151,6 +182,7 @@
             "name": "Checkout",
             "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             "with": {
+              "fetch-depth": 0,
               "persist-credentials": false
             }
           },
@@ -165,6 +197,12 @@
               "environment": "ansible-self-test",
               "fail-on-changes": "${{ matrix.fail-on-changes }}",
               "hosts": "${{ matrix.hosts }}",
+              "jump-host": "${{ matrix.push-hosts != '' && 'ci@jump-stub' || '' }}",
+              "jump-key": "${{ matrix.push-hosts != '' && 'STUB_JUMP_KEY' || '' }}",
+              "push-dry-run-stub": "stub/push-receiver.sh",
+              "push-hosts": "${{ matrix.push-hosts }}",
+              "push-playbook": "ansible/playbooks/stub.yml",
+              "push-repo-private": "${{ github.event.repository.private }}",
               "sha": "${{ github.sha }}",
               "working-directory": ".github/fixtures/ansible-gated-apply"
             }
@@ -174,14 +212,17 @@
               "DETAIL": "${{ steps.ssh.outputs.detail }}",
               "EXPECT_HAS_CHANGES": "${{ matrix.has-changes }}",
               "EXPECT_OUTCOME": "${{ matrix.outcome }}",
+              "EXPECT_OUTCOME_ALWAYS": "${{ matrix.outcome-always }}",
+              "EXPECT_PUSH": "${{ matrix.push-hosts != '' }}",
               "EXPECT_STEP_OUTCOME": "${{ matrix.step-outcome }}",
               "HAS_CHANGES": "${{ steps.ssh.outputs.has-changes }}",
               "HOSTS_DIGEST": "${{ steps.ssh.outputs.hosts-digest }}",
               "OUTCOME": "${{ steps.ssh.outputs.outcome }}",
+              "PUSH_HOSTS_DIGEST": "${{ steps.ssh.outputs.push-hosts-digest }}",
               "STEP_OUTCOME": "${{ steps.ssh.outcome }}"
             },
             "name": "The step ended as the case expects, with the outputs it expects",
-            "run-sha256": "f39f5c2abb107ea78820bc7f84433b0dbb04c6e3f6727f5848c5aed48bfa08fb"
+            "run-sha256": "86401a907340721318b27ce769f1992167db78eba89b976516b77baf2cf8d800"
           }
         ],
         "strategy": {
@@ -211,6 +252,53 @@
                 "name": "drift check, every host clean",
                 "outcome": "ok",
                 "step-outcome": "success"
+              },
+              {
+                "fail-on-changes": "false",
+                "has-changes": "true",
+                "hosts": "ci@first-stub-host\nci@second-stub-host",
+                "name": "push route, one host would change",
+                "outcome": "drift",
+                "push-hosts": "ci@second-stub-host",
+                "step-outcome": "success"
+              },
+              {
+                "fail-on-changes": "true",
+                "has-changes": "false",
+                "hosts": "ci@first-stub-host",
+                "name": "push route, every host clean",
+                "outcome": "ok",
+                "push-hosts": "ci@first-stub-host",
+                "step-outcome": "success"
+              },
+              {
+                "fail-on-changes": "true",
+                "has-changes": "false",
+                "hosts": "ci@first-stub-host\nci@first-stub-pulled-host",
+                "name": "push and pull routes mixed, both clean",
+                "outcome": "ok",
+                "push-hosts": "ci@first-stub-host",
+                "step-outcome": "success"
+              },
+              {
+                "fail-on-changes": "false",
+                "has-changes": "",
+                "hosts": "ci@first-stub-host\nci@wrong-line-host",
+                "name": "a pushed host that answers with the pull trigger's line is refused",
+                "outcome": "",
+                "outcome-always": "no-answer",
+                "push-hosts": "ci@wrong-line-host",
+                "step-outcome": "failure"
+              },
+              {
+                "fail-on-changes": "false",
+                "has-changes": "",
+                "hosts": "ci@first-stub-host\nci@wrong-line-host",
+                "name": "a pulled host that answers with the push receiver's line is refused",
+                "outcome": "",
+                "outcome-always": "no-answer",
+                "push-hosts": "ci@first-stub-host",
+                "step-outcome": "failure"
               }
             ]
           }
@@ -293,6 +381,23 @@
           },
           {
             "env": {
+              "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}"
+            },
+            "id": "push",
+            "name": "Decide whether any host is pushed to",
+            "run-sha256": "2c3a2c47231cae74b76f3f478dcce59179b51aa736a7d1c117353a608900c361"
+          },
+          {
+            "if": "steps.push.outputs.push == 'true'",
+            "name": "Check out the repository with its whole history, to push it",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "fetch-depth": 0,
+              "persist-credentials": false
+            }
+          },
+          {
+            "env": {
               "CALLED_WORKFLOW": "branchLeft/github-workflows/.github/workflows/ansible-drift-check.yml",
               "GH_TOKEN": "${{ github.token }}",
               "REPO": "${{ github.repository }}",
@@ -331,6 +436,9 @@
               "jump-host": "${{ secrets.ssh_jump_host }}",
               "jump-key": "${{ secrets.ssh_jump_key }}",
               "known-hosts": "${{ secrets.ssh_known_hosts }}",
+              "push-hosts": "${{ secrets.ssh_push_hosts }}",
+              "push-playbook": "${{ inputs.push-playbook }}",
+              "push-repo-private": "${{ github.event.repository.private }}",
               "sha": "${{ github.sha }}",
               "total-timeout": "${{ steps.guard.outputs.budget }}"
             }
@@ -359,6 +467,12 @@
             "description": "One host call is stopped after this many minutes.",
             "required": false,
             "type": "number"
+          },
+          "push-playbook": {
+            "default": "",
+            "description": "With the ssh_push_hosts secret, the playbook the receiver of a pushed host is asked to check: a relative path of letters, digits, dot, underscore, dash and slash, with no '..'. Ignored when ssh_push_hosts is empty.",
+            "required": false,
+            "type": "string"
           }
         },
         "secrets": {
@@ -381,6 +495,10 @@
           "ssh_known_hosts": {
             "description": "The known_hosts lines of the hosts. Pass it from a repository secret.",
             "required": true
+          },
+          "ssh_push_hosts": {
+            "description": "Optional: pass from a secret. The hosts that never open a connection themselves, one user@host per line, a subset of ssh_hosts. Each is reached through ssh_jump_host, which is then required with ssh_jump_key, and is sent a git bundle of the commit on standard input with the command 'check <commit> <push-playbook>' instead of being asked to fetch it. Needs push-playbook and a public repository. Empty (the default) leaves every host on the pull route.",
+            "required": false
           }
         }
       }
@@ -415,13 +533,26 @@
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "IS_FORK": "${{ github.event.repository.fork }}",
               "PLANNED_DIGEST": "${{ needs.plan.outputs.hosts_digest }}",
+              "PLANNED_PUSH_DIGEST": "${{ needs.plan.outputs.push_hosts_digest }}",
               "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
+              "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
+              "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
+              "PUSH_REPO_PRIVATE": "${{ github.event.repository.private }}",
               "REF": "${{ github.ref }}",
               "SHA": "${{ github.sha }}"
             },
             "id": "guard",
             "name": "Refuse unless this is the approved, planned push",
-            "run-sha256": "6828e60a086f045b794d48d84e42992946f9d79d3dd962048a216b1c6a73c67b"
+            "run-sha256": "2a683199b87c1e2458a7f0bf60466224f2f679b34f324ef68b4a2b9ed82be1bc"
+          },
+          {
+            "if": "steps.guard.outputs.push == 'true'",
+            "name": "Check out the repository with its whole history, to push it",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "fetch-depth": 0,
+              "persist-credentials": false
+            }
           },
           {
             "env": {
@@ -430,11 +561,13 @@
               "JUMP_HOST": "${{ secrets.ssh_jump_host }}",
               "JUMP_KEY": "${{ secrets.ssh_jump_key }}",
               "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
+              "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
+              "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
               "SHA": "${{ needs.plan.outputs.sha }}",
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "231737fb65b0cff272d97a161f3e61eb352b5ae71b013c3f366d92e9d0758d8f"
+            "run-sha256": "0e135a87cb25840ddb2ce214c7498b9509bc59f8d8be1a813214653f7546dac2"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -608,6 +741,7 @@
         "outputs": {
           "has_changes": "${{ steps.ssh.outputs.has-changes }}",
           "hosts_digest": "${{ steps.ssh.outputs.hosts-digest }}",
+          "push_hosts_digest": "${{ steps.ssh.outputs.push-hosts-digest }}",
           "sha": "${{ steps.guard.outputs.sha }}"
         },
         "permissions": {
@@ -617,10 +751,27 @@
         "runs-on": "ubuntu-24.04",
         "steps": [
           {
+            "env": {
+              "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}"
+            },
+            "id": "push",
+            "name": "Decide whether any host is pushed to",
+            "run-sha256": "2c3a2c47231cae74b76f3f478dcce59179b51aa736a7d1c117353a608900c361"
+          },
+          {
             "if": "inputs.dry-run == true",
             "name": "Checkout",
             "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             "with": {
+              "persist-credentials": false
+            }
+          },
+          {
+            "if": "steps.push.outputs.push == 'true'",
+            "name": "Check out the repository with its whole history, to push it",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "fetch-depth": 0,
               "persist-credentials": false
             }
           },
@@ -681,6 +832,10 @@
               "jump-host": "${{ secrets.ssh_jump_host }}",
               "jump-key": "${{ secrets.ssh_jump_key }}",
               "known-hosts": "${{ secrets.ssh_known_hosts }}",
+              "push-dry-run-stub": "${{ inputs.push-dry-run-stub }}",
+              "push-hosts": "${{ secrets.ssh_push_hosts }}",
+              "push-playbook": "${{ inputs.push-playbook }}",
+              "push-repo-private": "${{ github.event.repository.private }}",
               "sha": "${{ steps.guard.outputs.sha }}",
               "working-directory": "${{ inputs.working-directory }}"
             }
@@ -794,6 +949,18 @@
             "required": false,
             "type": "number"
           },
+          "push-dry-run-stub": {
+            "default": "",
+            "description": "With dry-run and ssh_push_hosts, the executable, relative to working-directory, that stands in for the receiver of a pushed host. It receives the destination, the mode, the commit and the playbook, and the bundle on standard input.",
+            "required": false,
+            "type": "string"
+          },
+          "push-playbook": {
+            "default": "",
+            "description": "With the ssh_push_hosts secret, the playbook the receiver of a pushed host is asked to run: a relative path of letters, digits, dot, underscore, dash and slash, with no '..'. Ignored when ssh_push_hosts is empty.",
+            "required": false,
+            "type": "string"
+          },
           "python-paths": {
             "default": ".",
             "description": "Paths, space separated and relative to ansible-directory, that mypy and ruff check.",
@@ -855,6 +1022,10 @@
           "ssh_known_hosts": {
             "description": "The known_hosts lines of the hosts. Pass it from a repository secret.",
             "required": false
+          },
+          "ssh_push_hosts": {
+            "description": "Optional: pass from a secret. The hosts that never open a connection themselves, one user@host per line, a subset of ssh_hosts. Each is reached through ssh_jump_host, which is then required with ssh_jump_key, and is sent a git bundle of the commit on standard input with the command '<mode> <commit> <push-playbook>' instead of being asked to fetch it. Needs push-playbook and a public repository. Empty (the default) leaves every host on the pull route.",
+            "required": false
           }
         }
       }
@@ -905,13 +1076,18 @@
     "jobs": {
       "gated-apply": {
         "secrets": {
-          "ssh_hosts": "ci@first-stub-host\nci@second-stub-host\n"
+          "ssh_hosts": "ci@first-stub-host\nci@second-stub-host\n",
+          "ssh_jump_host": "ci@jump-stub",
+          "ssh_jump_key": "STUB_JUMP_KEY",
+          "ssh_push_hosts": "ci@second-stub-host\n"
         },
         "uses": "./.github/workflows/ansible-gated-apply.yml",
         "with": {
           "dry-run": true,
           "dry-run-stub": "stub/host.sh",
           "environment": "ansible-self-test",
+          "push-dry-run-stub": "stub/push-receiver.sh",
+          "push-playbook": "ansible/playbooks/stub.yml",
           "working-directory": ".github/fixtures/ansible-gated-apply"
         }
       },

@@ -60,6 +60,12 @@ SP = "SshJumpProofLineTests"
 SL = "SshJumpProofLogTests"
 SF = "SshJumpProofFixtureTests"
 RT = "RoleTestEntryPointTests"
+PV = "PushValidateTests"
+PP = "PushPlanTests"
+PAG = "PushApplyGuardTests"
+PA = "PushApplyTests"
+PPar = "PushParityTests"
+PO = "PushOffTests"
 
 CASES: list[Case] = [
     Case(
@@ -135,7 +141,7 @@ CASES: list[Case] = [
     ),
     Case(
         "apply accepts an applied or unchanged line with a dash count",
-        [Edit(GATED, '[ "${BASH_REMATCH[5]}" = - ] || { [ "${BASH_REMATCH[1]}"', '{ [ "${BASH_REMATCH[1]}"')],
+        [Edit(GATED, '[ "$f_changed" = - ] || { [ "$f_verdict"', '{ [ "$f_verdict"')],
         [f"{A}.test_an_applied_or_unchanged_line_that_counts_no_change_as_a_dash_fails_the_job"],
     ),
     Case(
@@ -450,7 +456,7 @@ CASES: list[Case] = [
     ),
     Case(
         "apply gate: a host refusal of an older commit is accepted",
-        [Edit(GATED, '            if [ "$ok" -ne 0 ] || [ "${BASH_REMATCH[5]}" = - ] || {', '            if [ "$ok" -ne 0 ] && [ "$rc:${BASH_REMATCH[1]}" != "20:refused" ] || [ "${BASH_REMATCH[5]}" = - ] || {')],
+        [Edit(GATED, '            if [ "$ok" -ne 0 ] || [ "$f_changed" = - ] || {', '            if [ "$ok" -ne 0 ] && [ "$rc:$f_verdict" != "20:refused" ] || [ "$f_changed" = - ] || {')],
         [f"{A}.test_a_host_that_already_ran_a_newer_commit_refuses_and_the_apply_fails_with_the_reason"],
     ),
     Case(
@@ -818,6 +824,222 @@ CASES: list[Case] = [
         "gated jump key secret not declared",
         [Edit(GATED, "      ssh_jump_key:\n", "      ssh_jump_key_unused:\n")],
         [f"{S}.test_both_workflows_declare_the_two_jump_secrets_as_optional_and_say_both_or_neither"],
+    ),
+    # The push route (README, "Pushed hosts"): each control of the sender, broken once.
+    Case(
+        "push: the route is ignored and a pulled host is judged as a pushed one",
+        [Edit(ACTION, 'route=$(cat "$base.route")', "route=push")],
+        [f"{PP}.test_a_pulled_host_that_answers_with_the_line_of_the_push_receiver_is_refused", f"{PP}.test_the_real_stand_ins_refuse_the_wrong_line_in_both_directions"],
+    ),
+    Case(
+        "push: the route is ignored and a pushed host is judged as a pulled one",
+        [Edit(ACTION, 'route=$(cat "$base.route")', "route=pull")],
+        [f"{PP}.test_a_pushed_host_that_answers_with_the_line_of_the_pull_trigger_is_refused", f"{PP}.test_the_real_stand_ins_refuse_the_wrong_line_in_both_directions"],
+    ),
+    Case(
+        "push: the route file is never written",
+        [Edit(ACTION, 'printf \'%s\\n\' "$route" > "$plan_dir/$n.route"', ":")],
+        [f"{PP}.test_a_clean_pushed_host_and_a_clean_pulled_host_give_no_changes", f"{PO}.test_with_no_push_list_the_plan_and_apply_calls_are_byte_for_byte_the_pull_calls_with_nothing_on_stdin"],
+    ),
+    Case(
+        "push: the action accepts a push line for another mode",
+        [Edit(ACTION, ' && [ "${BASH_REMATCH[4]}" = check ]; then', "; then")],
+        [f"{PP}.test_a_push_line_for_another_mode_commit_or_exit_status_or_with_more_lines_is_refused"],
+    ),
+    Case(
+        "push: the apply job accepts a push line for another mode",
+        [Edit(GATED, ' && [ "${BASH_REMATCH[4]}" = apply ]; then', "; then")],
+        [f"{PA}.test_a_push_line_for_the_check_mode_another_commit_or_exit_or_a_second_change_fails_the_job"],
+    ),
+    Case(
+        "push: the apply job judges a pushed host by the pull trigger's line",
+        [Edit(GATED, '              if [ "$route" = push ]; then\n                if [[ "$line" =~ $push_re ]]', '              if [ "$route" = never ]; then\n                if [[ "$line" =~ $push_re ]]')],
+        [f"{PA}.test_a_pushed_host_that_answers_with_the_line_of_the_pull_trigger_is_refused"],
+    ),
+    Case(
+        "push: the apply job judges a pulled host by the push receiver's line",
+        [Edit(GATED, '              if [ "$route" = push ]; then\n                if [[ "$line" =~ $push_re ]]', '              if true; then\n                if [[ "$line" =~ $push_re ]]')],
+        [f"{PA}.test_a_pulled_host_that_answers_with_the_line_of_the_push_receiver_is_refused"],
+    ),
+    Case(
+        "push: the plan sends the pull form to a pushed host",
+        [Edit(ACTION, '-- "$dest" "check $SHA $PUSH_PLAYBOOK" < "$push_bundle"', '-- "$dest" "$SHA" < "$push_bundle"')],
+        [f"{PP}.test_a_pushed_host_gets_check_the_commit_the_playbook_and_the_bundle_and_a_pulled_host_gets_the_commit_alone"],
+    ),
+    Case(
+        "push: the plan sends apply to a pushed host",
+        [Edit(ACTION, '-- "$dest" "check $SHA $PUSH_PLAYBOOK" < "$push_bundle"', '-- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle"')],
+        [f"{PP}.test_the_plan_never_sends_apply_and_every_pushed_host_reads_the_same_bundle_from_its_start"],
+    ),
+    Case(
+        "push: the plan sends no bundle to a pushed host",
+        [Edit(ACTION, '-- "$dest" "check $SHA $PUSH_PLAYBOOK" < "$push_bundle"', '-- "$dest" "check $SHA $PUSH_PLAYBOOK" < /dev/null')],
+        [f"{PP}.test_a_pushed_host_gets_check_the_commit_the_playbook_and_the_bundle_and_a_pulled_host_gets_the_commit_alone"],
+    ),
+    Case(
+        "push: the apply job sends the pull form to a pushed host",
+        [Edit(GATED, '-- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle"', '-- "$dest" "$SHA" < "$push_bundle"')],
+        [f"{PA}.test_a_pushed_host_gets_apply_the_commit_the_playbook_and_a_fresh_whole_bundle_for_each_run"],
+    ),
+    Case(
+        "push: the apply job sends check to a pushed host",
+        [Edit(GATED, '-- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle"', '-- "$dest" "check $SHA $PUSH_PLAYBOOK" < "$push_bundle"')],
+        [f"{PA}.test_a_pushed_host_gets_apply_the_commit_the_playbook_and_a_fresh_whole_bundle_for_each_run"],
+    ),
+    Case(
+        "push: the apply job sends no bundle to a pushed host",
+        [Edit(GATED, '-- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle"', '-- "$dest" "apply $SHA $PUSH_PLAYBOOK" < /dev/null')],
+        [f"{PA}.test_a_pushed_host_gets_apply_the_commit_the_playbook_and_a_fresh_whole_bundle_for_each_run"],
+    ),
+    Case(
+        "push: the bundle drops the history",
+        [Edit(ACTION, 'bundle create "$file" HEAD', 'bundle create "$file" HEAD~1..HEAD')],
+        [f"{PP}.test_a_pushed_host_gets_check_the_commit_the_playbook_and_the_bundle_and_a_pulled_host_gets_the_commit_alone", f"{PPar}.test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"],
+    ),
+    Case(
+        "push: the apply job's bundle drops the history",
+        [Edit(GATED, 'bundle create "$file" HEAD', 'bundle create "$file" HEAD~1..HEAD')],
+        [f"{PA}.test_a_pushed_host_gets_apply_the_commit_the_playbook_and_a_fresh_whole_bundle_for_each_run", f"{PPar}.test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"],
+    ),
+    Case(
+        "push: the action bundles a shallow checkout",
+        [Edit(ACTION, '|| fail "The checkout of the repository is shallow, so its bundle would not carry the history the host needs."', "|| true")],
+        [f"{PP}.test_a_shallow_checkout_a_head_that_is_not_the_commit_and_a_directory_that_is_no_repository_are_refused_before_any_host_is_asked", f"{PPar}.test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"],
+    ),
+    Case(
+        "push: the apply job bundles a shallow checkout",
+        [Edit(GATED, '|| fail "The checkout of the repository is shallow, so its bundle would not carry the history the host needs."', "|| true")],
+        [f"{PA}.test_a_shallow_checkout_a_head_that_is_not_the_commit_and_a_directory_that_is_no_repository_are_refused_before_any_host_is_asked"],
+    ),
+    Case(
+        "push: the action bundles a checkout that is not at the commit",
+        [Edit(ACTION, '[ "$head" = "$sha" ] || fail "The checkout of the repository is not at the commit being delivered."', ":")],
+        [f"{PP}.test_a_shallow_checkout_a_head_that_is_not_the_commit_and_a_directory_that_is_no_repository_are_refused_before_any_host_is_asked"],
+    ),
+    Case(
+        "push: the apply job bundles a checkout that is not at the commit",
+        [Edit(GATED, '[ "$head" = "$sha" ] || fail "The checkout of the repository is not at the commit being delivered."', ":")],
+        [f"{PA}.test_a_shallow_checkout_a_head_that_is_not_the_commit_and_a_directory_that_is_no_repository_are_refused_before_any_host_is_asked"],
+    ),
+    Case(
+        "push: the action pushes from a repository that is not public",
+        [Edit(ACTION, '[ "$PUSH_REPO_PRIVATE" = false ] || fail "Pushing refuses unless the repository is public: a bundle carries its whole history to the host."', ":")],
+        [f"{PV}.test_a_repository_that_is_not_known_to_be_public_is_refused"],
+    ),
+    Case(
+        "push: the apply guard pushes from a repository that is not public",
+        [Edit(GATED, '[ "$PUSH_REPO_PRIVATE" = false ] || fail "Pushing refuses unless the repository is public: a bundle carries its whole history to the host."', ":")],
+        [f"{PAG}.test_the_push_playbook_and_the_public_repository_are_checked_again_in_the_apply_job"],
+    ),
+    Case(
+        "push: the action takes a push host that is not a listed host",
+        [Edit(ACTION, 'grep -qxF -- "$dest" <<< "$HOSTS" || fail "A push host is not in the hosts list."', ":")],
+        [f"{PV}.test_a_push_host_that_is_not_a_listed_host_a_duplicate_or_a_malformed_line_is_refused"],
+    ),
+    Case(
+        "push: the action takes a push host listed twice",
+        [Edit(ACTION, 'case " $push_list " in *" $dest "*) fail "A push host is listed twice." ;; esac', ":")],
+        [f"{PV}.test_a_push_host_that_is_not_a_listed_host_a_duplicate_or_a_malformed_line_is_refused"],
+    ),
+    Case(
+        "push: the apply guard does not compare the push list with the plan",
+        [Edit(GATED, '[ "$push_digest" = "$PLANNED_PUSH_DIGEST" ] || fail "The pushed hosts are not the pushed hosts that were planned."', ":")],
+        [f"{PAG}.test_a_push_list_the_plan_did_not_have_a_list_the_plan_had_and_a_different_list_are_refused"],
+    ),
+    Case(
+        "push: the apply guard takes an empty planned push digest for a push list",
+        [Edit(GATED, "printf '%s' \"$PLANNED_PUSH_DIGEST\" | grep -Eq '^[0-9a-f]{64}$' || fail \"The planned push digest is missing.\"", ":")],
+        [f"{PAG}.test_a_push_list_with_no_host_in_it_is_refused_whatever_the_plan_said"],
+    ),
+    Case(
+        "push: the push digest is joined with a comma in the action",
+        [Edit(ACTION, 'push_list="${push_list:+$push_list }$dest"', 'push_list="${push_list:+$push_list,}$dest"')],
+        [f"{PAG}.test_the_push_digest_the_action_publishes_is_the_one_the_apply_guard_recomputes"],
+    ),
+    Case(
+        "push: the push digest is joined with a comma in the apply guard",
+        [Edit(GATED, 'push_list="${push_list:+$push_list }$dest"', 'push_list="${push_list:+$push_list,}$dest"')],
+        [f"{PAG}.test_the_push_digest_the_action_publishes_is_the_one_the_apply_guard_recomputes"],
+    ),
+    Case(
+        "push: the action does not require the jump host for a push",
+        [Edit(ACTION, '{ [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "push-hosts needs jump-host and jump-key: a pushed host is reached only through the jump host."', ":")],
+        [f"{PV}.test_a_push_needs_the_jump_host_and_its_key"],
+    ),
+    Case(
+        "push: the apply job does not require the jump host for a push",
+        [Edit(GATED, '{ [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "ssh_push_hosts needs ssh_jump_host and ssh_jump_key: a pushed host is reached only through the jump host."', ":")],
+        [f"{PA}.test_a_push_needs_the_jump_host_and_its_key_and_asks_no_host_without_them"],
+    ),
+    Case(
+        "push: the action takes a playbook with a parent directory in it",
+        [Edit(ACTION, "case \"$PUSH_PLAYBOOK\" in *..*) fail \"push-playbook must not contain '..'.\" ;; esac", ":")],
+        [f"{PV}.test_the_push_playbook_must_be_a_relative_path_of_plain_characters_with_no_dotdot"],
+    ),
+    Case(
+        "push: the action takes any playbook text",
+        [Edit(ACTION, '[[ "$PUSH_PLAYBOOK" =~ $playbook_re ]] || fail "push-playbook must be a relative path of letters, digits, dot, underscore, dash and slash."', ":")],
+        [f"{PV}.test_the_push_playbook_must_be_a_relative_path_of_plain_characters_with_no_dotdot"],
+    ),
+    Case(
+        "push: the apply guard takes a playbook with a parent directory in it",
+        [Edit(GATED, "case \"$PUSH_PLAYBOOK\" in *..*) fail \"push-playbook must not contain '..'.\" ;; esac", ":")],
+        [f"{PAG}.test_the_push_playbook_and_the_public_repository_are_checked_again_in_the_apply_job"],
+    ),
+    Case(
+        "push: the apply guard takes any playbook text",
+        [Edit(GATED, '[[ "$PUSH_PLAYBOOK" =~ $playbook_re ]] || fail "push-playbook must be a relative path of letters, digits, dot, underscore, dash and slash."', ":")],
+        [f"{PAG}.test_the_push_playbook_and_the_public_repository_are_checked_again_in_the_apply_job"],
+    ),
+    Case(
+        "push: the push decision of the plan job reads no push list",
+        [Edit(GATED, "        env:\n          PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}\n        run: |", "        env:\n          PUSH_HOSTS: ''\n        run: |")],
+        [f"{S}.test_each_expression_that_feeds_a_gate_or_apply_step_comes_from_its_expected_source"],
+    ),
+    Case(
+        "push: the plan job checks out the whole history on every run",
+        [Edit(GATED, "        if: steps.push.outputs.push == 'true'\n", "        if: always()\n")],
+        [f"{S}.test_the_drift_job_checks_out_the_caller_only_for_a_push_and_the_plan_job_only_in_a_dry_run_or_for_a_push", f"{PO}.test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it"],
+    ),
+    Case(
+        "push: the apply job checks out the whole history on every run",
+        [Edit(GATED, "        if: steps.guard.outputs.push == 'true'\n", "        if: always()\n")],
+        [f"{S}.test_the_apply_job_steps_are_the_guard_then_the_apply_with_no_if_but_the_push_checkout", f"{PO}.test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it"],
+    ),
+    Case(
+        "push: the drift job checks out the whole history on every run",
+        [Edit(DRIFT, "        if: steps.push.outputs.push == 'true'\n", "        if: always()\n")],
+        [f"{S}.test_the_drift_job_checks_out_the_caller_only_for_a_push_and_the_plan_job_only_in_a_dry_run_or_for_a_push", f"{PO}.test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it"],
+    ),
+    Case(
+        "push: the push checkout is shallow",
+        [Edit(DRIFT, "          fetch-depth: 0\n", "          fetch-depth: 1\n")],
+        [f"{S}.test_the_drift_job_checks_out_the_caller_only_for_a_push_and_the_plan_job_only_in_a_dry_run_or_for_a_push"],
+    ),
+    Case(
+        "push: the drift job does not pass the push list",
+        [Edit(DRIFT, "          push-hosts: ${{ secrets.ssh_push_hosts }}\n", "")],
+        [f"{S}.test_the_drift_workflow_is_two_jobs_and_the_key_job_never_applies"],
+    ),
+    Case(
+        "push: the plan job does not pass the public-repository value",
+        [Edit(GATED, "          push-repo-private: ${{ github.event.repository.private }}\n", "")],
+        [f"{S}.test_the_plan_job_calls_the_action_from_the_checkout_and_passes_the_plan_inputs"],
+    ),
+    Case(
+        "push: the plan job's push digest is read from the wrong step",
+        [Edit(GATED, "push_hosts_digest: ${{ steps.ssh.outputs.push-hosts-digest }}", "push_hosts_digest: ${{ steps.guard.outputs.push-hosts-digest }}")],
+        [f"{S}.test_the_plan_job_outputs_come_from_the_steps_that_make_them"],
+    ),
+    Case(
+        "push: the push receiver's line differs in the apply job",
+        [Edit(GATED, "push_re='^push-receiver verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply)", "push_re='^push-receiver verdict=([a-z-]*) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply)")],
+        [f"{PPar}.test_the_push_line_is_the_contract_and_the_same_in_the_action_and_in_the_apply_job"],
+    ),
+    Case(
+        "push: the old pull path gains a step that runs without a push list",
+        [Edit(GATED, "      - name: Decide whether any host is pushed to\n        id: push\n", "      - name: Decide whether any host is pushed to\n        id: push\n        if: always()\n")],
+        [f"{PO}.test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it"],
     ),
 ]
 

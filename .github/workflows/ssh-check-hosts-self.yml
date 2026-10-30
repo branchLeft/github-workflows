@@ -45,10 +45,49 @@ jobs:
             step-outcome: success
             has-changes: 'false'
             outcome: ok
+          - name: push route, one host would change
+            hosts: "ci@first-stub-host\nci@second-stub-host"
+            push-hosts: "ci@second-stub-host"
+            fail-on-changes: 'false'
+            step-outcome: success
+            has-changes: 'true'
+            outcome: drift
+          - name: push route, every host clean
+            hosts: "ci@first-stub-host"
+            push-hosts: "ci@first-stub-host"
+            fail-on-changes: 'true'
+            step-outcome: success
+            has-changes: 'false'
+            outcome: ok
+          - name: push and pull routes mixed, both clean
+            hosts: "ci@first-stub-host\nci@first-stub-pulled-host"
+            push-hosts: "ci@first-stub-host"
+            fail-on-changes: 'true'
+            step-outcome: success
+            has-changes: 'false'
+            outcome: ok
+          - name: a pushed host that answers with the pull trigger's line is refused
+            hosts: "ci@first-stub-host\nci@wrong-line-host"
+            push-hosts: "ci@wrong-line-host"
+            fail-on-changes: 'false'
+            step-outcome: failure
+            has-changes: ''
+            outcome: ''
+            outcome-always: no-answer
+          - name: a pulled host that answers with the push receiver's line is refused
+            hosts: "ci@first-stub-host\nci@wrong-line-host"
+            push-hosts: "ci@first-stub-host"
+            fail-on-changes: 'false'
+            step-outcome: failure
+            has-changes: ''
+            outcome: ''
+            outcome-always: no-answer
     steps:
+      # The whole history, because the push cases send a bundle of this checkout.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Run the action against the stand-in host
@@ -60,6 +99,12 @@ jobs:
           sha: ${{ github.sha }}
           dry-run: 'true'
           dry-run-stub: stub/host.sh
+          push-hosts: ${{ matrix.push-hosts }}
+          push-playbook: ansible/playbooks/stub.yml
+          push-dry-run-stub: stub/push-receiver.sh
+          push-repo-private: ${{ github.event.repository.private }}
+          jump-host: ${{ matrix.push-hosts != '' && 'ci@jump-stub' || '' }}
+          jump-key: ${{ matrix.push-hosts != '' && 'STUB_JUMP_KEY' || '' }}
           working-directory: .github/fixtures/ansible-gated-apply
           environment: ansible-self-test
           fail-on-changes: ${{ matrix.fail-on-changes }}
@@ -76,12 +121,23 @@ jobs:
           EXPECT_STEP_OUTCOME: ${{ matrix.step-outcome }}
           EXPECT_HAS_CHANGES: ${{ matrix.has-changes }}
           EXPECT_OUTCOME: ${{ matrix.outcome }}
+          EXPECT_OUTCOME_ALWAYS: ${{ matrix.outcome-always }}
+          PUSH_HOSTS_DIGEST: ${{ steps.ssh.outputs.push-hosts-digest }}
+          EXPECT_PUSH: ${{ matrix.push-hosts != '' }}
         run: |
           set -euo pipefail
           echo "step outcome: $STEP_OUTCOME; has-changes: '$HAS_CHANGES'; outcome: '$OUTCOME'; detail: '$DETAIL'"
           test "$STEP_OUTCOME" = "$EXPECT_STEP_OUTCOME"
+          if [ -n "$EXPECT_OUTCOME_ALWAYS" ]; then
+            test "$OUTCOME" = "$EXPECT_OUTCOME_ALWAYS"
+          fi
           if [ "$EXPECT_STEP_OUTCOME" = success ]; then
             test "$HAS_CHANGES" = "$EXPECT_HAS_CHANGES"
             test "$OUTCOME" = "$EXPECT_OUTCOME"
             printf '%s' "$HOSTS_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+            if [ "$EXPECT_PUSH" = true ]; then
+              printf '%s' "$PUSH_HOSTS_DIGEST" | grep -Eq '^[0-9a-f]{64}$'
+            else
+              test -z "$PUSH_HOSTS_DIGEST"
+            fi
           fi

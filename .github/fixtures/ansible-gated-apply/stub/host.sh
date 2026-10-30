@@ -8,6 +8,12 @@ dest="$1"
 commit="$2"
 
 case "$dest" in
+  # A host that answers with the line of the push receiver although it is pulled
+  # from: the judge must refuse it (the self-test of the action).
+  *wrong-line*)
+    printf 'push-receiver verdict=unchanged exit=0 reason=ok mode=check commit=%s playbook=ansible/playbooks/stub.yml changed=0\n' "$commit"
+    exit 0
+    ;;
   *first-stub*)
     printf 'pull-trigger verdict=unchanged exit=0 reason=ok mode=check commit=%s playbook=ansible/playbooks/stub.yml changed=0\n' "$commit"
     exit 0
