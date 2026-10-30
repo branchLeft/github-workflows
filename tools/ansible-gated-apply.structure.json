@@ -165,7 +165,7 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "048d742d0310056e88c4217c143fd0fe3bde9fdd0317082585ef6677bfa9bc30",
+          "run-sha256": "22a0586c6d45ac5a7949720fda2629f710ca040fe7ae6ec0bfcc319c9e463ff8",
           "shell": "bash"
         }
       ],
@@ -567,7 +567,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "d6cfb750624bb00519ad4bb0a8ba6b4eb58a19800329ee81875cd0b3f3576106"
+            "run-sha256": "0e135a87cb25840ddb2ce214c7498b9509bc59f8d8be1a813214653f7546dac2"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -895,7 +895,7 @@
           "fail-fast": false,
           "matrix": "${{ fromJSON(needs.discover.outputs.matrix) }}"
         },
-        "timeout-minutes": 30
+        "timeout-minutes": "${{ inputs.shard-timeout-minutes }}"
       }
     },
     "name": "Ansible gated apply",
@@ -978,6 +978,12 @@
             "description": "A Python script, relative to ansible-directory, that tests one role directory: it is run as `python <script> <role directory>` from ansible-directory and its exit status is the role's result. Set it to the entry point the repository's pull request gate runs, so delivery and the gate run one sequence. Empty (the default) runs `molecule test` and then `molecule check` in the role directory.",
             "required": false,
             "type": "string"
+          },
+          "shard-timeout-minutes": {
+            "default": 30,
+            "description": "Each Molecule shard job, one per role, is stopped after this many minutes.",
+            "required": false,
+            "type": "number"
           },
           "skip-rerun-after-merge-group": {
             "default": false,

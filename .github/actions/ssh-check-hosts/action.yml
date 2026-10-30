@@ -478,7 +478,7 @@ runs:
           if [ -e "$base.route" ]; then
             route=$(cat "$base.route")
           fi
-          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-)$'
           push_re='^push-receiver verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply) commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
           matched=no
           if [ "$line_count" = 1 ]; then
@@ -515,7 +515,7 @@ runs:
             elif [ "$rc" = 0 ] && [ "$f_verdict" = unchanged ] && [ "$f_changed" = 0 ]; then
               verdict="clean"
               kind="ok"
-            elif [ "$rc" = 11 ] && [ "$f_verdict" = would-change ]; then
+            elif [ "$rc" = 11 ] && [ "$f_verdict" = would-change ] && [ "$f_changed" != - ]; then
               verdict="changes"
               kind="drift"
             else

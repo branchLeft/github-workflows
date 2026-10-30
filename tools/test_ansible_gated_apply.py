@@ -215,11 +215,16 @@ except (OSError, yaml.YAMLError):
 """
 
 
-def summary_line(verdict: str, code: int, mode: str, commit: str, changed: int, reason: str = "ok") -> str:
+def summary_line(verdict: str, code: int, mode: str, commit: str, changed: int | str, reason: str = "ok") -> str:
     return (
         f"pull-trigger verdict={verdict} exit={code} reason={reason} mode={mode} "
         f"commit={commit} playbook=ansible/playbooks/host.yml changed={changed}\n"
     )
+
+
+def real_refusal(verdict: str, code: int, mode: str, reason: str) -> str:
+    """The line pull_trigger.py prints for a verdict that carries no count: changed=-, as every refusal, busy and failure does."""
+    return summary_line(verdict, code, mode, "@SHA@", "-", reason)
 
 
 class Result:
@@ -1407,6 +1412,16 @@ class PlanTests(unittest.TestCase):
             _, result = self.plan(sandbox)
             self.assertNotEqual(result.code, 0, verdict)
 
+    def test_a_real_refusal_line_makes_the_plan_red_and_names_the_reason(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "check", "rollback"))
+        sandbox.host(HOST_TWO, 0, CLEAN)
+        _, result = self.plan(sandbox)
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "true")
+        self.assertTrue(result.summary.splitlines()[0].startswith("Plan failed:"), result.summary)
+        self.assertIn("verdict refused, reason rollback, exit 20", result.summary)
+
     def test_a_dropped_connection_is_a_failure_and_its_text_is_not_shown(self) -> None:
         sandbox = Sandbox(self)
         sandbox.host(HOST_ONE, 255, "", "ssh: connect to host host-one port 22: refused\n")
@@ -1804,6 +1819,29 @@ class ApplyTests(unittest.TestCase):
         self.assertIn("reason rollback", result.log)
         self.assertNotIn("Applied commit", result.log)
         self.assertEqual(sandbox.calls(HOST_ONE), 1)
+
+    def test_a_real_refusal_line_with_no_count_fails_the_apply_with_its_reason_and_asks_no_second_run(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "apply", "rollback"))
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("reason rollback", result.log)
+        self.assertNotIn("Applied commit", result.log)
+        self.assertEqual(sandbox.calls(HOST_ONE), 1)
+
+    def test_an_applied_or_unchanged_line_that_counts_no_change_as_a_dash_fails_the_job(self) -> None:
+        cases = {
+            "the first run says applied with a dash count": (10, summary_line("applied", 10, "apply", "@SHA@", "-"), (0, UNCHANGED, "")),
+            "the first run says unchanged with a dash count": (0, summary_line("unchanged", 0, "apply", "@SHA@", "-"), None),
+            "the second run says unchanged with a dash count": (10, APPLIED, (0, summary_line("unchanged", 0, "apply", "@SHA@", "-"), "")),
+        }
+        for name, (code, out, second) in cases.items():
+            with self.subTest(name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, code, out, second=second)
+                result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertNotIn("Applied commit", result.log)
 
     def test_a_dropped_connection_fails_the_job(self) -> None:
         sandbox = Sandbox(self)
@@ -3170,6 +3208,57 @@ class DriftReportTests(unittest.TestCase):
                 self.assertEqual(result.outputs["detail"], f"{kind} (1)")
                 self.assertIn(f"| {kind} |", result.summary)
                 self.assertNotIn("drift:", result.summary)
+
+    def test_a_real_refusal_line_with_no_count_is_read_as_its_refusal(self) -> None:
+        # pull_trigger.py prints changed=- on a refusal and a busy host, not a count: the judge must read that line.
+        cases = [
+            (20, "refused", "not-on-main", "refused: not-on-main"),
+            (20, "refused", "rollback", "refused: rollback"),
+            (20, "refused", "unsigned", "refused: unsigned"),
+            (20, "refused", "bad-signature", "refused: bad-signature"),
+            (20, "refused", "signer-not-allowed", "refused: signer-not-allowed"),
+            (20, "refused", "playbook-not-allowed", "refused: playbook-not-allowed"),
+            (20, "refused", "an-unlisted-reason", "refused: other"),
+            (21, "busy", "ok", "refused: busy"),
+        ]
+        for code, verdict, reason, kind in cases:
+            with self.subTest(kind=kind):
+                answer = (code, real_refusal(verdict, code, "check", reason), "")
+                result = self.run_report(drift_answers(alpha=DRIFT_CLEAN, beta=answer))
+                self.assertNotEqual(result.code, 0)
+                self.assertEqual(result.outputs["outcome"], "refused")
+                self.assertEqual(result.outputs["detail"], f"{kind} (1)")
+                self.assertIn(f"| {kind} |", result.summary)
+                self.assertNotIn("drift:", result.summary)
+
+    def test_a_real_failure_line_with_no_count_is_a_failed_host_and_not_no_answer(self) -> None:
+        cases = [(30, "failed", "playbook-failed"), (31, "timed-out", "timeout"), (40, "error", "internal-error")]
+        for code, verdict, reason in cases:
+            with self.subTest(verdict=verdict):
+                answer = (code, real_refusal(verdict, code, "check", reason), "")
+                result = self.run_report(drift_answers(alpha=DRIFT_CLEAN, beta=answer))
+                self.assertNotEqual(result.code, 0)
+                self.assertEqual(result.outputs["outcome"], "failed")
+                self.assertEqual(result.outputs["detail"], "failed (1)")
+
+    def test_a_dash_count_never_makes_an_unchanged_host_clean_or_a_would_change_host_drift(self) -> None:
+        cases = [(0, "unchanged"), (11, "would-change")]
+        for code, verdict in cases:
+            with self.subTest(verdict=verdict):
+                answer = (code, real_refusal(verdict, code, "check", "ok"), "")
+                result = self.run_report(drift_answers(alpha=DRIFT_CLEAN, beta=answer))
+                self.assertNotEqual(result.code, 0)
+                self.assertEqual(result.outputs["outcome"], "failed")
+                self.assertEqual(result.outputs["detail"], "failed (1)")
+
+    def test_a_count_that_is_neither_a_number_nor_a_dash_is_still_no_answer(self) -> None:
+        for bad in ("x", ""):
+            with self.subTest(changed=bad):
+                answer = (20, summary_line("refused", 20, "check", "@SHA@", bad, "rollback"), "")
+                result = self.run_report(drift_answers(alpha=DRIFT_CLEAN, beta=answer))
+                self.assertNotEqual(result.code, 0)
+                self.assertEqual(result.outputs["outcome"], "no-answer")
+                self.assertEqual(result.outputs["detail"], "no usable answer (1)")
 
     def test_an_unreachable_host_an_unreadable_answer_and_a_failed_playbook_are_each_named_and_red(self) -> None:
         cases = [

@@ -116,6 +116,11 @@ on:
         type: number
         required: false
         default: 180
+      shard-timeout-minutes:
+        description: Each Molecule shard job, one per role, is stopped after this many minutes.
+        type: number
+        required: false
+        default: 30
       skip-rerun-after-merge-group:
         description: >-
           For a caller whose merge queue already runs these same checks on the
@@ -500,7 +505,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: ${{ inputs.shard-timeout-minutes }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -935,7 +940,7 @@ jobs:
             )
             ssh_args+=(-F "$work/jump_config" -o ProxyJump=jump_hop)
           fi
-          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-)$'
           # The line of a pushed host. A copy of the one in the ssh-check-hosts
           # action; a test holds the two equal. Each host is judged by its route
           # and by the one line its route speaks.
@@ -1013,7 +1018,7 @@ jobs:
                 ok=0
               fi
             done
-            if [ "$ok" -ne 0 ] || { [ "$f_verdict" = unchanged ] && [ "$f_changed" != 0 ]; }; then
+            if [ "$ok" -ne 0 ] || [ "$f_changed" = - ] || { [ "$f_verdict" = unchanged ] && [ "$f_changed" != 0 ]; }; then
               fail "Host $num, $label: verdict $f_verdict, reason $f_reason, exit $rc."
             fi
             REPLY_VERDICT="$f_verdict"
