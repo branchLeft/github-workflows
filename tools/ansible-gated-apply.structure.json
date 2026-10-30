@@ -740,7 +740,7 @@
           "fail-fast": false,
           "matrix": "${{ fromJSON(needs.discover.outputs.matrix) }}"
         },
-        "timeout-minutes": 30
+        "timeout-minutes": "${{ inputs.shard-timeout-minutes }}"
       }
     },
     "name": "Ansible gated apply",
@@ -811,6 +811,12 @@
             "description": "A Python script, relative to ansible-directory, that tests one role directory: it is run as `python <script> <role directory>` from ansible-directory and its exit status is the role's result. Set it to the entry point the repository's pull request gate runs, so delivery and the gate run one sequence. Empty (the default) runs `molecule test` and then `molecule check` in the role directory.",
             "required": false,
             "type": "string"
+          },
+          "shard-timeout-minutes": {
+            "default": 30,
+            "description": "Each Molecule shard job, one per role, is stopped after this many minutes.",
+            "required": false,
+            "type": "number"
           },
           "skip-rerun-after-merge-group": {
             "default": false,

@@ -342,6 +342,7 @@ Any failure stops the job before the key is read.
 | `host-timeout-minutes` | 65 | One host call is stopped after this long (the host's own limit is one hour by default). |
 | `plan-timeout-minutes` | 90 | Bound of the plan job. |
 | `apply-timeout-minutes` | 180 | Bound of the apply job, not counting the wait for approval. |
+| `shard-timeout-minutes` | 30 | Bound of each Molecule shard job, one per role. A role whose test runs longer than this is cancelled; raise it for a slow role. |
 
 | Secret | Passed by | Meaning |
 | --- | --- | --- |
