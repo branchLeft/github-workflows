@@ -134,7 +134,7 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "28cbbf40f14d4b9b6802bedc1ac7d555e03a0abfaa827da71ab8bc954e6c9126",
+          "run-sha256": "172858fd6f7816fa0082789ea9c5a6fda22119457f7429649125985c343a2cc1",
           "shell": "bash"
         }
       ],
@@ -434,7 +434,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "2e6f8139e4ded7cc0ab3b13c5d04fcd8dd9cb30e6a8340ab0edd331f762d4c34"
+            "run-sha256": "231737fb65b0cff272d97a161f3e61eb352b5ae71b013c3f366d92e9d0758d8f"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
