@@ -350,7 +350,7 @@ runs:
 
           line_count=$(wc -l < "$base.out" | tr -d ' ')
           line=$(tr -d '\r' < "$base.out" | head -n 1)
-          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=check commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-)$'
           if [ -e "$base.skipped" ]; then
             note="not asked: the time given to the check was spent before this host"
           elif [ "$rc" = 255 ]; then
@@ -369,7 +369,7 @@ runs:
             elif [ "$rc" = 0 ] && [ "$f_verdict" = unchanged ] && [ "$f_changed" = 0 ]; then
               verdict="clean"
               kind="ok"
-            elif [ "$rc" = 11 ] && [ "$f_verdict" = would-change ]; then
+            elif [ "$rc" = 11 ] && [ "$f_verdict" = would-change ] && [ "$f_changed" != - ]; then
               verdict="changes"
               kind="drift"
             else

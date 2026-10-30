@@ -119,6 +119,26 @@ CASES: list[Case] = [
         [f"{DR}.test_a_refusal_is_not_drift_and_names_its_reason"],
     ),
     Case(
+        "check judge regex drops the dash count of a refusal",
+        [Edit(ACTION, "changed=([0-9]+|-)$'", "changed=([0-9]+)$'")],
+        [f"{DR}.test_a_real_refusal_line_with_no_count_is_read_as_its_refusal"],
+    ),
+    Case(
+        "apply judge regex drops the dash count of a refusal",
+        [Edit(GATED, "changed=([0-9]+|-)$'", "changed=([0-9]+)$'")],
+        [f"{A}.test_a_real_refusal_line_with_no_count_fails_the_apply_with_its_reason_and_asks_no_second_run"],
+    ),
+    Case(
+        "would-change with a dash count is read as drift",
+        [Edit(ACTION, ' && [ "$f_changed" != - ]; then', "; then")],
+        [f"{DR}.test_a_dash_count_never_makes_an_unchanged_host_clean_or_a_would_change_host_drift"],
+    ),
+    Case(
+        "apply accepts an applied or unchanged line with a dash count",
+        [Edit(GATED, '[ "${BASH_REMATCH[5]}" = - ] || { [ "${BASH_REMATCH[1]}"', '{ [ "${BASH_REMATCH[1]}"')],
+        [f"{A}.test_an_applied_or_unchanged_line_that_counts_no_change_as_a_dash_fails_the_job"],
+    ),
+    Case(
         "plan has_changes read from the wrong step",
         [Edit(GATED, "has_changes: ${{ steps.ssh.outputs.has-changes }}", "has_changes: ${{ steps.guard.outputs.has-changes }}")],
         [f"{S}.test_the_plan_job_outputs_come_from_the_steps_that_make_them"],
@@ -430,7 +450,7 @@ CASES: list[Case] = [
     ),
     Case(
         "apply gate: a host refusal of an older commit is accepted",
-        [Edit(GATED, '            if [ "$ok" -ne 0 ] || {', '            if [ "$ok" -ne 0 ] && [ "$rc:${BASH_REMATCH[1]}" != "20:refused" ] || {')],
+        [Edit(GATED, '            if [ "$ok" -ne 0 ] || [ "${BASH_REMATCH[5]}" = - ] || {', '            if [ "$ok" -ne 0 ] && [ "$rc:${BASH_REMATCH[1]}" != "20:refused" ] || [ "${BASH_REMATCH[5]}" = - ] || {')],
         [f"{A}.test_a_host_that_already_ran_a_newer_commit_refuses_and_the_apply_fails_with_the_reason"],
     ),
     Case(

@@ -833,7 +833,7 @@ jobs:
             )
             ssh_args+=(-F "$work/jump_config" -o ProxyJump=jump_hop)
           fi
-          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-)$'
 
           # Run one request and require the answer to be one of the accepted
           # kinds. Arguments: host number, destination, label, then the accepted
@@ -861,7 +861,7 @@ jobs:
                 ok=0
               fi
             done
-            if [ "$ok" -ne 0 ] || { [ "${BASH_REMATCH[1]}" = unchanged ] && [ "${BASH_REMATCH[5]}" != 0 ]; }; then
+            if [ "$ok" -ne 0 ] || [ "${BASH_REMATCH[5]}" = - ] || { [ "${BASH_REMATCH[1]}" = unchanged ] && [ "${BASH_REMATCH[5]}" != 0 ]; }; then
               fail "Host $num, $label: verdict ${BASH_REMATCH[1]}, reason ${BASH_REMATCH[3]}, exit $rc."
             fi
             REPLY_VERDICT="${BASH_REMATCH[1]}"
