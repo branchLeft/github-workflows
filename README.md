@@ -339,6 +339,8 @@ Any failure stops the job before the key is read.
 | `python-paths` | `.` | Paths mypy and ruff check, relative to `ansible-directory`. Narrow it if a role keeps two modules of one name. |
 | `dry-run` | `false` | Replace the SSH call with `dry-run-stub` and never run the apply job. It can only skip an apply, never perform one. |
 | `dry-run-stub` | empty | With `dry-run`, the executable, relative to `working-directory`, that stands in for a host. |
+| `push-playbook` | empty | With `ssh_push_hosts`, the playbook a pushed host's receiver is asked to run: a relative path of letters, digits, dot, underscore, dash and slash, with no `..`. See "Pushed hosts". |
+| `push-dry-run-stub` | empty | With `dry-run` and `ssh_push_hosts`, the executable, relative to `working-directory`, that stands in for the receiver of a pushed host. It receives the destination, the mode, the commit and the playbook, and the bundle on standard input. |
 | `host-timeout-minutes` | 65 | One host call is stopped after this long (the host's own limit is one hour by default). |
 | `plan-timeout-minutes` | 90 | Bound of the plan job. |
 | `apply-timeout-minutes` | 180 | Bound of the apply job, not counting the wait for approval. |
@@ -346,6 +348,7 @@ Any failure stops the job before the key is read.
 | Secret | Passed by | Meaning |
 | --- | --- | --- |
 | `ssh_hosts` | the caller | One `user@host` per line. A secret so the job log masks the names; the job summary shows `host 1`, `host 2` in this order. |
+| `ssh_push_hosts` | the caller, optional | The hosts that are sent the commit instead of fetching it, one `user@host` per line, a subset of `ssh_hosts`. Needs `push-playbook`, the jump pair and a public repository. Empty leaves every host on the pull route. See "Pushed hosts". |
 | `ssh_known_hosts` | the caller | The hosts' public keys in `known_hosts` form. Host key checking is on and the global file is not read. |
 | `ssh_check_key` | the caller | Private key of the plan job. On the host it may run the forced command in check mode only. |
 | `ssh_apply_key` | not passed: an environment secret | Private key of the apply job. It is read because the apply job runs in the environment, so a job that has not passed the approval cannot read it. |
@@ -361,6 +364,106 @@ nothing changes. What the host operator provides on the gateway is in "Reaching 
 private host through a jump host" under `ssh-check-hosts` below, not restated here.
 The jump host is not part of the digest that ties the apply to the plan: the digest
 binds the target hosts, which strict host-key checking pins.
+
+#### Pushed hosts
+
+A host can be one that never opens a connection of its own, so it cannot fetch a
+commit. For such a host the runner does the opposite of a pull: it connects to the
+host and sends the commit. This is the push route, and it is off unless the caller
+passes the `ssh_push_hosts` secret. With the secret empty (the default) and
+`push-playbook` and `push-dry-run-stub` unset, every job renders and runs what it
+ran before: no step of the push route runs, no extra argument reaches `ssh`, and a
+pulled host's call is byte for byte the call it was.
+
+The owner's ruling is that CI pushes the build to such a host through the edge
+host. The receiver on the host is built in `branchLeft/shared-infra`; this workflow
+is the sender, and the two share the contract below.
+
+**The contract with the receiver.** For each push host the runner connects through
+the jump host (`ssh_jump_host` and `ssh_jump_key`, both required) with the key of
+that job: the check key in the plan job and the drift check, the apply key in the
+apply job. The remote command is exactly `<mode> <commit> <playbook>`, where
+`<mode>` is `check` for the plan and the drift check and `apply` for the apply,
+`<commit>` is the 40-digit commit id and `<playbook>` is the `push-playbook` input.
+A git bundle of the checked-out commit (`git bundle create FILE HEAD`, with the
+whole history) is the standard input. The host fetches nothing and no fetch or pull
+command is ever sent. The receiver answers with one summary line on standard
+output, with the same fields as the pull trigger's line and the same exit statuses:
+
+```text
+push-receiver verdict=V exit=N reason=R mode=M commit=SHA playbook=P changed=C
+```
+
+**How a pushed host is chosen and held to the plan.**
+
+- `ssh_push_hosts` is a subset of `ssh_hosts`: one `user@host` per line, each also a
+  line of `ssh_hosts`, none twice. The `ssh_hosts` list, its digest and the
+  `ssh_known_hosts` lines are the ones a pull-only caller has. A push host that is
+  not in `ssh_hosts`, a duplicate or an empty list fails the plan before any host is
+  contacted.
+- It is a secret, not an input, so the job log masks the names: a host name in a
+  public caller's `with:` would publish it.
+- `push-playbook` is one relative path for all push hosts: letters, digits, dot,
+  underscore, dash and slash, starting with a letter, digit or underscore, with no
+  `..`. It goes into the command sent to the host, so the apply job checks it again
+  with the same expression. Set with no push list, it is ignored.
+- The plan publishes `push_hosts_digest`, the SHA-256 of the validated push list.
+  The apply job recomputes it from the same secret and refuses any difference: a
+  push list the plan did not have, a plan list this run lacks, or another list. The
+  digest is empty when the plan had no push list.
+- Only a public repository is pushed from. A bundle carries the whole history of the
+  repository to the host, and PRIN-1 makes public the default, so the plan, the
+  drift check and the apply job refuse when `github.event.repository.private` is
+  anything but `false`, an absent value included. The refusal is lifted by changing
+  the code, not by an input.
+
+**How the bundle is made.** The plan job, the drift job and the apply job each check
+the caller's repository out with `fetch-depth: 0` and no credential kept, but only
+when the push list is not empty (a step cannot read a secret in its condition, so a
+first step reads it and says so in an output). The bundle is made once, before any
+host is asked, from that checkout, after the step has checked that the repository is
+not shallow and that `HEAD` is the commit being delivered. The same file is read from
+its start for each push host, and again for the apply job's second run, so each call
+gets the whole bundle. The apply job cannot call the action, so it holds a copy of
+the snippet; a test holds the two equal.
+
+**How a pushed host's answer is judged.** Each host is judged by its route and by the
+one line its route speaks. A push host is accepted only with the `push-receiver`
+line, whose `mode` is the one asked for; a `pull-trigger` line from a push host is
+no answer. A pull host is accepted only with the `pull-trigger` line; a
+`push-receiver` line from a pull host is no answer. The exit status, the commit, the
+secret scan and the withholding of a diff are the same code for both routes.
+
+**How a caller passes it.**
+
+```yaml
+    with:
+      push-playbook: ansible/playbooks/pushed.yml
+    secrets:
+      ssh_hosts: ${{ secrets.ANSIBLE_HOSTS }}
+      ssh_push_hosts: ${{ secrets.ANSIBLE_PUSH_HOSTS }}
+      ssh_jump_host: ${{ secrets.ANSIBLE_JUMP_HOST }}
+      ssh_jump_key: ${{ secrets.ANSIBLE_JUMP_KEY }}
+```
+
+Named limits of the push route:
+
+- **ANS-17 does not yet approve it.** The standard says pushing from a CI runner
+  was the alternative the owner did not choose. The owner's ruling above postdates
+  it, and the amendment to the standard is tracked with the receiver. Nothing has
+  run against a real host.
+- **The bundle has no size limit.** The host call's timeout bounds it. A repository
+  with a large history makes a large bundle on every call.
+- **One playbook for all push hosts.** A second playbook for a second host is a
+  second use of the workflow.
+- **The receiver is trusted to take the commit from the command and the history from
+  the bundle.** The sender checks that the bundle's `HEAD` is the commit; the check
+  that it is on the host's `main` and not a rollback is the receiver's.
+- **The judge does not require the echoed playbook to equal the one sent.** The line
+  allows any playbook label and the receiver prints its own.
+- **The dry run drives a stand-in.** The self-test hands a real bundle to
+  `stub/push-receiver.sh`, which verifies it with git and answers; it proves the
+  sender's side only.
 
 #### Setup the owner does once per repository
 
@@ -571,13 +674,19 @@ jobs:
 | --- | --- | --- |
 | `host-label` | required | A short name for this set of hosts: letters, digits, dot, underscore and dash, at most 32 characters. It names the issue and its label. It is not a host name, because the hosts are secrets. |
 | `host-timeout-minutes` | 65 | One host call is stopped after this long. A whole number from 1. |
+| `push-playbook` | empty | With `ssh_push_hosts`, the playbook a pushed host's receiver is asked to check. See "Pushed hosts" under `ansible-gated-apply.yml`. |
 | `check-timeout-minutes` | 90 | Bound of the check job, from 10 to 350 (GitHub ends a job at 360). The hosts are asked one after another and share this time less five minutes: a call is stopped at the smaller of `host-timeout-minutes` and what is left, and a host reached after that is not asked and is judged `no-answer`. So a run of hung hosts ends red with an outcome and opens the issue; it does not wait for the job bound. |
 
 Three secrets are required and are the same secrets as the plan job's:
 `ssh_hosts`, `ssh_known_hosts` and `ssh_check_key`. Two more are optional, both or
 neither: `ssh_jump_host` and `ssh_jump_key`, which reach hosts that have no public
 address through a gateway host (see "Reaching a private host through a jump host"
-under `ssh-check-hosts` below). There is no input for a host or a key, and no dry run.
+under `ssh-check-hosts` below). A third optional secret, `ssh_push_hosts`, puts a
+subset of the hosts on the push route, which sends the commit as a bundle with the
+command `check <commit> <playbook>` (see "Pushed hosts" under
+`ansible-gated-apply.yml`); it needs `push-playbook` and checks the repository out
+with its whole history, only when it is set. There is no input for a host or a key,
+and no dry run.
 
 #### What a red run means, and how to clear it
 
@@ -919,6 +1028,10 @@ job loads the host check"), and it takes the secrets as inputs.
 | `check-key` | empty | The private key of the check route, from a secret. Empty only in a dry run. |
 | `jump-host` | empty | A `user@host`, in the form `hosts` takes, from a secret. Set, every host is reached through this one host (see "Reaching a private host through a jump host"). Needs `jump-key`: one without the other fails the validate step, naming the one that is missing. Its host-key line goes in `known-hosts`. |
 | `jump-key` | empty | The private key for the jump host and nothing else, from a secret. Never the check key or the apply key. |
+| `push-hosts` | empty | A subset of `hosts`, from a secret, that is sent a git bundle of the checked-out commit on standard input with the command `<mode> <commit> <push-playbook>` instead of being asked to fetch it (see "Pushed hosts" under `ansible-gated-apply.yml`). Needs `push-playbook`, `jump-host` and `jump-key`, a checkout of the caller's repository at `sha` with its whole history, and a public repository. Empty puts no host on the push route and ignores the other `push-` inputs. |
+| `push-playbook` | empty | With `push-hosts`, a relative path of letters, digits, dot, underscore, dash and slash, with no `..`. |
+| `push-dry-run-stub` | empty | With `dry-run` and `push-hosts`, the executable, relative to `working-directory`, that stands in for the receiver. |
+| `push-repo-private` | empty | With `push-hosts`, the value of `github.event.repository.private`, passed as it is. Only the exact value `false` passes: an empty or any other value refuses. |
 | `sha` | required | The commit to ask about, 40 lowercase hex digits. |
 | `dry-run` | `false` | `true` replaces the SSH call with `dry-run-stub`. |
 | `dry-run-stub` | empty | With `dry-run`, the executable, relative to `working-directory`, that stands in for a host. |
@@ -932,6 +1045,7 @@ job loads the host check"), and it takes the secrets as inputs.
 | --- | --- |
 | `has-changes` | `false` only when every host answered clean for this commit; `true` otherwise. |
 | `hosts-digest` | The SHA-256 of the validated host list. The apply job recomputes it from the same secret and refuses a list that differs. |
+| `push-hosts-digest` | The SHA-256 of the validated push list, which the apply job recomputes and compares. Empty when `push-hosts` is empty. |
 | `outcome` | `ok`, `drift`, `refused`, `unreachable`, `no-answer`, `failed`, `withheld`, or `mixed`. Empty if the step stopped before it could judge. |
 | `detail` | The kinds with counts and no host name, as in the first line of the summary. Empty if the step stopped before it could judge. |
 

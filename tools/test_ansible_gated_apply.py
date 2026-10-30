@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from collections.abc import Callable
 from pathlib import Path
@@ -350,6 +351,10 @@ def composite_validate_env(**changes: str) -> dict[str, str]:
         "TOTAL_TIMEOUT_MINUTES": "",
         "JUMP_HOST": "",
         "JUMP_KEY": "",
+        "PUSH_HOSTS": "",
+        "PUSH_PLAYBOOK": "",
+        "PUSH_DRY_RUN_STUB": "",
+        "PUSH_REPO_PRIVATE": "",
     }
     values.update(changes)
     return values
@@ -523,6 +528,10 @@ class StructureTests(unittest.TestCase):
                 "check-key": "${{ secrets.ssh_check_key }}",
                 "jump-host": "${{ secrets.ssh_jump_host }}",
                 "jump-key": "${{ secrets.ssh_jump_key }}",
+                "push-hosts": "${{ secrets.ssh_push_hosts }}",
+                "push-playbook": "${{ inputs.push-playbook }}",
+                "push-dry-run-stub": "${{ inputs.push-dry-run-stub }}",
+                "push-repo-private": "${{ github.event.repository.private }}",
                 "sha": "${{ steps.guard.outputs.sha }}",
                 "dry-run": "${{ inputs.dry-run }}",
                 "dry-run-stub": "${{ inputs.dry-run-stub }}",
@@ -547,6 +556,7 @@ class StructureTests(unittest.TestCase):
                 "has_changes": "${{ steps.ssh.outputs.has-changes }}",
                 "sha": "${{ steps.guard.outputs.sha }}",
                 "hosts_digest": "${{ steps.ssh.outputs.hosts-digest }}",
+                "push_hosts_digest": "${{ steps.ssh.outputs.push-hosts-digest }}",
             },
         )
         self.assertEqual(
@@ -554,6 +564,9 @@ class StructureTests(unittest.TestCase):
         )
         self.assertEqual(
             ACTION_DOC["outputs"]["hosts-digest"]["value"], "${{ steps.validate.outputs.hosts_digest }}"
+        )
+        self.assertEqual(
+            ACTION_DOC["outputs"]["push-hosts-digest"]["value"], "${{ steps.validate.outputs.push_hosts_digest }}"
         )
 
     def test_the_host_list_is_validated_in_the_action_and_nowhere_else(self) -> None:
@@ -721,6 +734,10 @@ class StructureTests(unittest.TestCase):
                 "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
                 "PLANNED_DIGEST": "${{ needs.plan.outputs.hosts_digest }}",
                 "HOSTS": "${{ secrets.ssh_hosts }}",
+                "PLANNED_PUSH_DIGEST": "${{ needs.plan.outputs.push_hosts_digest }}",
+                "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
+                "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
+                "PUSH_REPO_PRIVATE": "${{ github.event.repository.private }}",
                 "ENVIRONMENT": "${{ inputs.environment }}",
                 "DRY_RUN": "${{ inputs.dry-run }}",
             }),
@@ -732,23 +749,35 @@ class StructureTests(unittest.TestCase):
                 "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
                 "JUMP_HOST": "${{ secrets.ssh_jump_host }}",
                 "JUMP_KEY": "${{ secrets.ssh_jump_key }}",
+                "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
+                "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
+            }),
+            ("plan", "Decide whether any host is pushed to", {
+                "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
             }),
         ]
         for job, fragment, expected in cases:
             with self.subTest(job=job, step=fragment):
                 self.assertEqual(find_step_named(job, fragment).get("env"), expected)
 
-    def test_the_apply_job_steps_are_the_guard_then_the_apply_with_no_if(self) -> None:
+    def test_the_apply_job_steps_are_the_guard_then_the_apply_with_no_if_but_the_push_checkout(self) -> None:
         steps = JOBS["apply"]["steps"]
         self.assertEqual(
             [step.get("name") for step in steps],
             [
                 "Refuse unless this is the approved, planned push",
+                "Check out the repository with its whole history, to push it",
                 "Apply on each host, then run it again to prove nothing is left to change",
             ],
         )
+        # The one conditional step is the checkout for a push, and it is conditional
+        # on the guard's decision alone, so a job with no push list runs the guard
+        # and the apply exactly as before.
         for step in steps:
-            self.assertNotIn("if", step, step.get("name"))
+            if step.get("uses"):
+                self.assertEqual(step["if"], "steps.guard.outputs.push == 'true'")
+            else:
+                self.assertNotIn("if", step, step.get("name"))
         # The host is the authority on order. A head check here would stop an approved
         # apply that the host is willing to run, so no step asks GitHub for the head.
         for step in steps:
@@ -767,6 +796,10 @@ class StructureTests(unittest.TestCase):
                 "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
                 "JUMP_HOST": "${{ inputs.jump-host }}",
                 "JUMP_KEY": "${{ inputs.jump-key }}",
+                "PUSH_HOSTS": "${{ inputs.push-hosts }}",
+                "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
+                "PUSH_DRY_RUN_STUB": "${{ inputs.push-dry-run-stub }}",
+                "PUSH_REPO_PRIVATE": "${{ inputs.push-repo-private }}",
             },
             "check": {
                 "HOSTS": "${{ inputs.hosts }}",
@@ -780,6 +813,9 @@ class StructureTests(unittest.TestCase):
                 "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
                 "JUMP_HOST": "${{ inputs.jump-host }}",
                 "JUMP_KEY": "${{ inputs.jump-key }}",
+                "PUSH_HOSTS": "${{ inputs.push-hosts }}",
+                "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
+                "PUSH_DRY_RUN_STUB": "${{ inputs.push-dry-run-stub }}",
             },
             "report": {
                 "SHA": "${{ inputs.sha }}",
@@ -851,14 +887,20 @@ class StructureTests(unittest.TestCase):
                 for other in checkouts:
                     if other != shared[0]:
                         self.assertLess(other, pin)
-                        self.assertEqual(steps[other].get("if"), "inputs.dry-run == true")
+                        # A checkout of the caller: a dry run reads a stand-in, a push
+                        # reads the whole repository. Both come before the pin step.
+                        self.assertIn(steps[other].get("if"), ("inputs.dry-run == true", "steps.push.outputs.push == 'true'"))
                 self.assertNotIn("job_workflow_sha", json.dumps(steps))
 
-    def test_the_drift_job_has_no_checkout_of_the_caller_and_the_plan_job_only_in_a_dry_run(self) -> None:
+    def test_the_drift_job_checks_out_the_caller_only_for_a_push_and_the_plan_job_only_in_a_dry_run_or_for_a_push(self) -> None:
         other = [s for s in DRIFT_JOBS["drift"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout@") and s["with"].get("path") != ".gw"]
-        self.assertEqual(other, [])
+        self.assertEqual([s.get("if") for s in other], ["steps.push.outputs.push == 'true'"])
         caller = [s for s in JOBS["plan"]["steps"] if str(s.get("uses", "")).startswith("actions/checkout@") and s["with"].get("path") != ".gw"]
-        self.assertEqual([s.get("if") for s in caller], ["inputs.dry-run == true"])
+        self.assertEqual([s.get("if") for s in caller], ["inputs.dry-run == true", "steps.push.outputs.push == 'true'"])
+        # The push checkout takes the whole history (a shallow one cannot be bundled
+        # for the host's order and main rules) and keeps no credential.
+        for step in (other[0], caller[1], find_step_named("apply", "Check out the repository with its whole history")):
+            self.assertEqual(step["with"], {"fetch-depth": 0, "persist-credentials": False})
 
     def test_the_pin_and_verify_steps_are_the_same_text_in_both_workflows(self) -> None:
         self.assertEqual(find_step("plan", "pin")["run"], drift_step("drift", "pin")["run"])
@@ -871,20 +913,23 @@ class StructureTests(unittest.TestCase):
         inputs = ACTION_DOC["inputs"]
         self.assertEqual(
             set(inputs),
-            {"hosts", "known-hosts", "check-key", "jump-host", "jump-key", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes"},
+            {"hosts", "known-hosts", "check-key", "jump-host", "jump-key", "push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes"},
         )
         self.assertEqual(inputs["fail-on-changes"]["default"], "false")
         self.assertEqual(inputs["total-timeout"]["default"], "")
         self.assertEqual(inputs["dry-run"]["default"], "false")
-        self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "outcome", "detail"})
+        self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "push-hosts-digest", "outcome", "detail"})
+        for name in ("push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private"):
+            self.assertEqual(inputs[name]["default"], "", name)
+            self.assertIs(inputs[name]["required"], False, name)
 
     def test_the_drift_workflow_takes_the_declared_inputs_and_three_required_secrets_and_no_apply_key(self) -> None:
         call = DRIFT_DOC[True]["workflow_call"]
-        self.assertEqual(set(call["inputs"]), {"host-label", "host-timeout-minutes", "check-timeout-minutes"})
+        self.assertEqual(set(call["inputs"]), {"host-label", "host-timeout-minutes", "check-timeout-minutes", "push-playbook"})
         self.assertTrue(call["inputs"]["host-label"]["required"])
-        self.assertEqual(set(call["secrets"]), {"ssh_hosts", "ssh_check_key", "ssh_known_hosts", "ssh_jump_host", "ssh_jump_key"})
+        self.assertEqual(set(call["secrets"]), {"ssh_hosts", "ssh_check_key", "ssh_known_hosts", "ssh_jump_host", "ssh_jump_key", "ssh_push_hosts"})
         for name, secret in call["secrets"].items():
-            self.assertEqual(secret["required"], name not in ("ssh_jump_host", "ssh_jump_key"), name)
+            self.assertEqual(secret["required"], name not in ("ssh_jump_host", "ssh_jump_key", "ssh_push_hosts"), name)
         self.assertNotIn("ssh_apply_key", DRIFT_WORKFLOW.read_text())
 
     def test_the_drift_workflow_is_two_jobs_and_the_key_job_never_applies(self) -> None:
@@ -900,6 +945,9 @@ class StructureTests(unittest.TestCase):
                 "check-key": "${{ secrets.ssh_check_key }}",
                 "jump-host": "${{ secrets.ssh_jump_host }}",
                 "jump-key": "${{ secrets.ssh_jump_key }}",
+                "push-hosts": "${{ secrets.ssh_push_hosts }}",
+                "push-playbook": "${{ inputs.push-playbook }}",
+                "push-repo-private": "${{ github.event.repository.private }}",
                 "sha": "${{ github.sha }}",
                 "host-timeout": "${{ inputs.host-timeout-minutes }}",
                 "total-timeout": "${{ steps.guard.outputs.budget }}",
@@ -1277,6 +1325,9 @@ def check_env(**changes: str) -> dict[str, str]:
         "KNOWN_HOSTS": "host-one ssh-ed25519 PUBLIC",
         "JUMP_HOST": "",
         "JUMP_KEY": "",
+        "PUSH_HOSTS": "",
+        "PUSH_PLAYBOOK": "",
+        "PUSH_DRY_RUN_STUB": "",
     }
     values.update(changes)
     return values
@@ -1594,6 +1645,10 @@ def apply_guard_env(**changes: str) -> dict[str, str]:
         "HOSTS": f"{HOST_ONE}\n{HOST_TWO}\n",
         "ENVIRONMENT": "production",
         "DRY_RUN": "false",
+        "PLANNED_PUSH_DIGEST": "",
+        "PUSH_HOSTS": "",
+        "PUSH_PLAYBOOK": "",
+        "PUSH_REPO_PRIVATE": "false",
     }
     values.update(changes)
     return values
@@ -1664,6 +1719,8 @@ def apply_env(**changes: str) -> dict[str, str]:
         "KNOWN_HOSTS": "host-one ssh-ed25519 PUBLIC",
         "JUMP_HOST": "",
         "JUMP_KEY": "",
+        "PUSH_HOSTS": "",
+        "PUSH_PLAYBOOK": "",
     }
     values.update(changes)
     return values
@@ -3974,6 +4031,664 @@ class RunWorkflowStepsTests(unittest.TestCase):
         self.assertEqual([name for name, _, _ in planned], [*INSTALL_STEPS, "ansible-lint at the production profile"])
         self.assertEqual(planned[1][2], {"ANSIBLE_DIRECTORY": "ansible"})
         self.assertEqual(planned[2][2], {"ANSIBLE_DIRECTORY": "lint-fail"})
+
+
+# ---------------------------------------------------------------------------
+# The push route: a host that never opens a connection is sent a git bundle of
+# the commit by the runner, through the jump host, and answers with the line of
+# the push receiver. The receiver is built in shared-infra; these tests are the
+# sender's half of the one contract. README, "Pushed hosts".
+# ---------------------------------------------------------------------------
+
+PUSH_PLAYBOOK = "ansible/playbooks/pushed.yml"
+PUSH_RE = (
+    "^push-receiver verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply) "
+    "commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$"
+)
+PLAYBOOK_RE = "^[A-Za-z0-9_][A-Za-z0-9_./-]*$"
+PUSH_STUB_DIR = REPO / ".github/fixtures/ansible-gated-apply/stub"
+
+# Records the exact arguments of each call (separated by NUL) and the whole of its
+# standard input, then answers as the ordinary stand-in does. The last argument is
+# the command: a bare commit for a pull, '<mode> <commit> <playbook>' for a push.
+PUSH_SSH_STUB = """#!/usr/bin/env bash
+set -eu
+dest="${@: -2:1}"
+command="${@: -1}"
+echo "$*" >> "$STUB_DIR/ssh.log"
+count_file="$STUB_DIR/$dest.count"
+n=$(( $(cat "$count_file" 2> /dev/null || echo 0) + 1 ))
+echo "$n" > "$count_file"
+printf '%s\\0' "$@" > "$STUB_DIR/argv.$dest.$n"
+cat > "$STUB_DIR/stdin.$dest.$n"
+read -r -a words <<< "$command"
+sha="${words[0]}"
+if [ "${#words[@]}" -gt 1 ]; then
+  sha="${words[1]}"
+fi
+base="$STUB_DIR/$dest"
+if [ -f "$base.$n.rc" ]; then
+  base="$base.$n"
+fi
+sed "s/@SHA@/$sha/g" "$base.out"
+sed "s/@SHA@/$sha/g" "$base.err" >&2
+exit "$(cat "$base.rc")"
+"""
+
+
+def push_line(verdict: str, code: int, mode: str, commit: str, changed: int, reason: str = "ok") -> str:
+    return (
+        f"push-receiver verdict={verdict} exit={code} reason={reason} mode={mode} "
+        f"commit={commit} playbook={PUSH_PLAYBOOK} changed={changed}\n"
+    )
+
+
+PUSH_CLEAN = push_line("unchanged", 0, "check", "@SHA@", 0)
+PUSH_WOULD_CHANGE = push_line("would-change", 11, "check", "@SHA@", 2)
+PUSH_APPLIED = push_line("applied", 10, "apply", "@SHA@", 2)
+PUSH_UNCHANGED = push_line("unchanged", 0, "apply", "@SHA@", 0)
+
+
+class Workspace:
+    """A scratch git repository standing in for the caller's checkout: three commits, so the bundle carries history."""
+
+    def __init__(self, test: unittest.TestCase, shallow: bool = False) -> None:
+        self.dir = Path(tempfile.mkdtemp(prefix="gated-apply-workspace-"))
+        test.addCleanup(shutil.rmtree, self.dir, True)
+        source = self.dir / "source"
+        source.mkdir()
+        git("init", "-q", "-b", "main", cwd=source)
+        for number in range(3):
+            (source / "file.txt").write_text(f"content {number}\n")
+            git("add", "file.txt", cwd=source)
+            git("commit", "-q", "-m", f"commit {number}", cwd=source)
+        self.head = git("rev-parse", "HEAD", cwd=source)
+        self.path = source
+        if shallow:
+            clone = self.dir / "shallow"
+            git("clone", "-q", "--depth", "1", f"file://{source}", str(clone), cwd=self.dir)
+            self.path = clone
+
+    def extra(self) -> dict[str, str]:
+        return {"GITHUB_WORKSPACE": str(self.path)}
+
+    def read_bundle(self, bundle: bytes, test: unittest.TestCase) -> int:
+        """Verify the bytes as a git bundle in an empty repository and return the number of commits it carries."""
+        scratch = self.dir / "receiver"
+        shutil.rmtree(scratch, True)
+        scratch.mkdir()
+        file = scratch / "in.bundle"
+        file.write_bytes(bundle)
+        git("init", "-q", cwd=scratch)
+        git("bundle", "verify", str(file), cwd=scratch)
+        git("fetch", "-q", str(file), "HEAD", cwd=scratch)
+        test.assertEqual(git("rev-parse", "FETCH_HEAD", cwd=scratch), self.head)
+        return int(git("rev-list", "--count", "FETCH_HEAD", cwd=scratch))
+
+
+def push_sandbox(test: unittest.TestCase) -> Sandbox:
+    sandbox = Sandbox(test)
+    sandbox.stub("ssh", PUSH_SSH_STUB)
+    return sandbox
+
+
+def argv_of(sandbox: Sandbox, dest: str, n: int = 1) -> list[str]:
+    raw = (sandbox.stubs / f"argv.{dest}.{n}").read_bytes().decode()
+    return raw.split("\0")[:-1]
+
+
+def stdin_of(sandbox: Sandbox, dest: str, n: int = 1) -> bytes:
+    return (sandbox.stubs / f"stdin.{dest}.{n}").read_bytes()
+
+
+def named(argv: list[str]) -> list[str]:
+    """An argv with the key, the known_hosts and the jump config paths replaced by names."""
+    out = list(argv)
+    for index, token in enumerate(out):
+        if token in ("-i", "-F"):
+            out[index + 1] = "KEY" if token == "-i" else "CONFIG"
+        elif token.startswith("UserKnownHostsFile="):
+            out[index] = "UserKnownHostsFile=KNOWN"
+    return out
+
+
+def through_the_jump(argv: list[str]) -> list[str]:
+    """The expected argv with the hop the steps add when a jump host is given, before the `--`."""
+    at = argv.index("--")
+    return argv[:at] + ["-F", "CONFIG", "-o", "ProxyJump=jump_hop"] + argv[at:]
+
+
+def snippet(text: str, begin: str, end: str) -> str:
+    found = re.search(re.escape(begin) + r"[^\n]*\n(.*?)" + re.escape(end), text, re.S)
+    if not found:
+        raise AssertionError(f"{begin} not found")
+    return textwrap.dedent(found.group(1))
+
+
+def assignment(text: str, name: str) -> list[str]:
+    """The quoted right-hand sides of every `name='...'` line of a step."""
+    return re.findall(rf"(?m)^\s*{name}='([^']*)'$", text)
+
+
+class PushValidateTests(unittest.TestCase):
+    """What the action refuses about the push list and its inputs before any key is read."""
+
+    def validate(self, **changes: str) -> Result:
+        values = {
+            "PUSH_HOSTS": f"{HOST_TWO}\n",
+            "PUSH_PLAYBOOK": PUSH_PLAYBOOK,
+            "PUSH_REPO_PRIVATE": "false",
+            "JUMP_HOST": JUMP_HOST,
+            "JUMP_KEY": JUMP_KEY,
+        }
+        values.update(changes)
+        return Sandbox(self).run(action_step("validate"), composite_validate_env(**values))
+
+    def test_a_push_list_inside_the_hosts_list_passes_and_publishes_its_own_digest_and_never_logs_a_host(self) -> None:
+        result = self.validate()
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["push_hosts_digest"], digest([HOST_TWO]))
+        self.assertEqual(result.outputs["hosts_digest"], digest([HOST_ONE, HOST_TWO]))
+        self.assertNotIn(HOST_TWO, result.log)
+        both = self.validate(PUSH_HOSTS=f"{HOST_TWO}\n{HOST_ONE}\n")
+        self.assertEqual(both.outputs["push_hosts_digest"], digest([HOST_TWO, HOST_ONE]))
+
+    def test_with_no_push_list_the_route_is_off_and_every_other_push_input_is_ignored(self) -> None:
+        for changes in ({}, {"PUSH_PLAYBOOK": "../x", "PUSH_REPO_PRIVATE": "true", "PUSH_DRY_RUN_STUB": "x"}):
+            with self.subTest(changes=changes):
+                result = self.validate(PUSH_HOSTS="", **changes)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs["push_hosts_digest"], "")
+                self.assertIn("0 of them by push", result.log)
+
+    def test_a_push_host_that_is_not_a_listed_host_a_duplicate_or_a_malformed_line_is_refused(self) -> None:
+        cases = {
+            "not a listed host": "deploy@host-three\n",
+            "listed twice": f"{HOST_TWO}\n{HOST_TWO}\n",
+            "two hosts on one line": f"{HOST_ONE} {HOST_TWO}\n",
+            "a leading space": f" {HOST_TWO}\n",
+            "a command after the host": f"{HOST_TWO};id\n",
+            "only blank lines": "\n\n",
+        }
+        for name, listed in cases.items():
+            with self.subTest(case=name):
+                result = self.validate(PUSH_HOSTS=listed)
+                self.assertNotEqual(result.code, 0, name)
+                self.assertNotIn("push_hosts_digest", result.outputs, name)
+
+    def test_the_push_playbook_must_be_a_relative_path_of_plain_characters_with_no_dotdot(self) -> None:
+        for playbook in ("", "/etc/passwd", "../x.yml", "a/../b.yml", "a/..b.yml", "a b.yml", "a;id", "-x.yml", ".hidden.yml", "a\nb.yml"):
+            with self.subTest(playbook=repr(playbook)):
+                self.assertNotEqual(self.validate(PUSH_PLAYBOOK=playbook).code, 0)
+        for playbook in (PUSH_PLAYBOOK, "play_1.yml", "a-b/c.d/e.yml"):
+            with self.subTest(playbook=playbook):
+                self.assertEqual(self.validate(PUSH_PLAYBOOK=playbook).code, 0)
+
+    def test_a_repository_that_is_not_known_to_be_public_is_refused(self) -> None:
+        for value in ("true", "", "null", "False", "0", "public"):
+            with self.subTest(private=repr(value)):
+                result = self.validate(PUSH_REPO_PRIVATE=value)
+                self.assertNotEqual(result.code, 0)
+                self.assertIn("public", result.log)
+
+    def test_a_push_needs_the_jump_host_and_its_key(self) -> None:
+        for changes in ({"JUMP_HOST": "", "JUMP_KEY": ""}, {"JUMP_HOST": JUMP_HOST, "JUMP_KEY": ""}, {"JUMP_HOST": "", "JUMP_KEY": JUMP_KEY}):
+            with self.subTest(changes=sorted(k for k, v in changes.items() if not v)):
+                self.assertNotEqual(self.validate(**changes).code, 0)
+
+    def test_a_dry_run_with_a_push_list_needs_the_stand_in_of_the_receiver(self) -> None:
+        self.assertNotEqual(self.validate(DRY_RUN="true", DRY_RUN_STUB="stub/host.sh").code, 0)
+        self.assertEqual(self.validate(DRY_RUN="true", DRY_RUN_STUB="stub/host.sh", PUSH_DRY_RUN_STUB="stub/push-receiver.sh").code, 0)
+
+
+class PushPlanTests(unittest.TestCase):
+    """The plan step and the drift check send the push command with the bundle, and judge the push receiver's line."""
+
+    def setUp(self) -> None:
+        self.ws = Workspace(self)
+
+    def check(self, sandbox: Sandbox, **changes: str) -> Result:
+        values = {
+            "SHA": self.ws.head,
+            "PUSH_HOSTS": f"{HOST_TWO}\n",
+            "PUSH_PLAYBOOK": PUSH_PLAYBOOK,
+            "JUMP_HOST": JUMP_HOST,
+            "JUMP_KEY": JUMP_KEY,
+        }
+        values.update(changes)
+        return sandbox.run(action_step("check"), check_env(**values), self.ws.extra())
+
+    def report(self, sandbox: Sandbox, **changes: str) -> Result:
+        values = {"SHA": self.ws.head, "JUMP_HOST": JUMP_HOST}
+        values.update(changes)
+        return sandbox.run(action_step("report"), report_env(**values), self.ws.extra())
+
+    def planned(self, pulled: tuple[int, str, str], pushed: tuple[int, str, str], **report: str) -> tuple[Sandbox, Result, Result]:
+        sandbox = push_sandbox(self)
+        sandbox.host(HOST_ONE, *pulled)
+        sandbox.host(HOST_TWO, *pushed)
+        checked = self.check(sandbox)
+        self.assertEqual(checked.code, 0, checked.log)
+        return sandbox, checked, self.report(sandbox, **report)
+
+    def test_a_pushed_host_gets_check_the_commit_the_playbook_and_the_bundle_and_a_pulled_host_gets_the_commit_alone(self) -> None:
+        sandbox, _, _ = self.planned((0, CLEAN, ""), (0, PUSH_CLEAN, ""))
+        head = self.ws.head
+        pulled = named(argv_of(sandbox, HOST_ONE))
+        self.assertEqual(pulled, through_the_jump(expected_ssh_call(HOST_ONE, head)))
+        self.assertEqual(stdin_of(sandbox, HOST_ONE), b"")
+        pushed = named(argv_of(sandbox, HOST_TWO))
+        self.assertEqual(pushed, through_the_jump(expected_ssh_call(HOST_TWO, f"check {head} {PUSH_PLAYBOOK}")))
+        bundle = stdin_of(sandbox, HOST_TWO)
+        self.assertEqual(bundle, (sandbox.temp / "ansible-plan" / "push.bundle").read_bytes())
+        self.assertEqual(self.ws.read_bundle(bundle, self), 3)
+        # No call anywhere tells a host to fetch or to pull.
+        for dest in (HOST_ONE, HOST_TWO):
+            self.assertNotRegex(argv_of(sandbox, dest)[-1], r"fetch|pull|git")
+
+    def test_the_plan_never_sends_apply_and_every_pushed_host_reads_the_same_bundle_from_its_start(self) -> None:
+        sandbox = push_sandbox(self)
+        for dest in (HOST_ONE, HOST_TWO):
+            sandbox.host(dest, 0, PUSH_CLEAN)
+        result = self.check(sandbox, PUSH_HOSTS=f"{HOST_ONE}\n{HOST_TWO}\n")
+        self.assertEqual(result.code, 0, result.log)
+        bundles = []
+        for dest in (HOST_ONE, HOST_TWO):
+            command = argv_of(sandbox, dest)[-1]
+            self.assertEqual(command, f"check {self.ws.head} {PUSH_PLAYBOOK}")
+            bundles.append(stdin_of(sandbox, dest))
+        self.assertEqual(bundles[0], bundles[1])
+        self.assertTrue(bundles[0])
+
+    def test_a_clean_pushed_host_and_a_clean_pulled_host_give_no_changes(self) -> None:
+        _, _, result = self.planned((0, CLEAN, ""), (0, PUSH_CLEAN, ""))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "false")
+        self.assertTrue(result.summary.splitlines()[0].startswith("No changes:"))
+
+    def test_a_pushed_host_that_would_change_gives_changes_and_shows_its_diff(self) -> None:
+        _, _, result = self.planned((0, CLEAN, ""), (11, PUSH_WOULD_CHANGE, "--- before\n+++ after\n-greeting = OLD\n+greeting = NEW\n"))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "true")
+        self.assertTrue(result.summary.splitlines()[0].startswith("Changes: 1 of 2"))
+        self.assertIn("+greeting = NEW", result.summary)
+
+    def test_a_pushed_host_that_answers_with_the_line_of_the_pull_trigger_is_refused(self) -> None:
+        _, _, result = self.planned((0, CLEAN, ""), (0, CLEAN, ""))
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "true")
+        self.assertEqual(result.outputs["outcome"], "no-answer")
+
+    def test_a_pulled_host_that_answers_with_the_line_of_the_push_receiver_is_refused(self) -> None:
+        _, _, result = self.planned((0, PUSH_CLEAN, ""), (0, PUSH_CLEAN, ""))
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "true")
+        self.assertEqual(result.outputs["outcome"], "no-answer")
+
+    def test_a_push_line_for_another_mode_commit_or_exit_status_or_with_more_lines_is_refused(self) -> None:
+        bad_answers = [
+            push_line("unchanged", 0, "apply", "@SHA@", 0),
+            push_line("unchanged", 0, "check", OTHER_SHA, 0),
+            push_line("unchanged", 11, "check", "@SHA@", 0),
+            push_line("unchanged", 0, "check", "@SHA@", 3),
+            PUSH_CLEAN + PUSH_CLEAN,
+            "",
+            "hello\n",
+        ]
+        for answer in bad_answers:
+            with self.subTest(answer=answer):
+                _, _, result = self.planned((0, CLEAN, ""), (0, answer, ""))
+                self.assertNotEqual(result.code, 0, answer)
+                self.assertEqual(result.outputs["has_changes"], "true", answer)
+
+    def test_a_clean_exit_with_changes_counted_is_never_no_changes_on_a_pushed_host(self) -> None:
+        _, _, result = self.planned((0, CLEAN, ""), (0, push_line("unchanged", 0, "check", "@SHA@", 1), ""))
+        self.assertNotEqual(result.outputs["has_changes"], "false")
+
+    def test_a_shallow_checkout_a_head_that_is_not_the_commit_and_a_directory_that_is_no_repository_are_refused_before_any_host_is_asked(self) -> None:
+        shallow = Workspace(self, shallow=True)
+        sandbox = push_sandbox(self)
+        empty = sandbox.dir / "empty"
+        empty.mkdir()
+        cases = {
+            "shallow": ({"SHA": shallow.head}, {"GITHUB_WORKSPACE": str(shallow.path)}, "shallow"),
+            "head is another commit": ({"SHA": OTHER_SHA}, self.ws.extra(), "not at the commit"),
+            "no repository": ({"SHA": self.ws.head}, {"GITHUB_WORKSPACE": str(empty)}, "shallow"),
+        }
+        for name, (changes, extra, message) in cases.items():
+            with self.subTest(case=name):
+                fresh = push_sandbox(self)
+                values = {"PUSH_HOSTS": f"{HOST_TWO}\n", "PUSH_PLAYBOOK": PUSH_PLAYBOOK, "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY, **changes}
+                result = fresh.run(action_step("check"), check_env(**values), extra)
+                self.assertNotEqual(result.code, 0, name)
+                self.assertIn(message, result.log)
+                self.assertEqual(fresh.ssh_log(), [], name)
+
+    def test_a_dry_run_hands_a_real_bundle_to_the_receiver_stand_in_and_never_calls_ssh(self) -> None:
+        stubs = self.ws.path / "stub"
+        stubs.mkdir()
+        for name in ("host.sh", "push-receiver.sh"):
+            shutil.copy2(PUSH_STUB_DIR / name, stubs / name)
+        sandbox = push_sandbox(self)
+        hosts = "ci@first-stub-host\nci@second-stub-host\n"
+        values = {
+            "DRY_RUN": "true",
+            "DRY_RUN_STUB": "stub/host.sh",
+            "PUSH_DRY_RUN_STUB": "stub/push-receiver.sh",
+            "HOSTS": hosts,
+            "PUSH_HOSTS": "ci@second-stub-host\n",
+            "SSH_KEY": "",
+            "KNOWN_HOSTS": "",
+        }
+        checked = self.check(sandbox, **values)
+        self.assertEqual(checked.code, 0, checked.log)
+        self.assertEqual(sandbox.ssh_log(), [])
+        result = self.report(sandbox, DRY_RUN="true", SSH_KEY="")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "true")
+        self.assertIn("+greeting = NEW_VALUE", result.summary)
+        self.assertTrue(result.summary.startswith("DRY RUN"), result.summary)
+        # The stand-in verified the bundle and the commit it was given, so a pushed host that is clean says so.
+        clean = self.check(push_sandbox(self), **{**values, "PUSH_HOSTS": "ci@first-stub-host\n"})
+        self.assertEqual(clean.code, 0, clean.log)
+
+    def test_the_real_stand_ins_refuse_the_wrong_line_in_both_directions(self) -> None:
+        stubs = self.ws.path / "stub"
+        stubs.mkdir()
+        for name in ("host.sh", "push-receiver.sh"):
+            shutil.copy2(PUSH_STUB_DIR / name, stubs / name)
+        common = {
+            "DRY_RUN": "true",
+            "DRY_RUN_STUB": "stub/host.sh",
+            "PUSH_DRY_RUN_STUB": "stub/push-receiver.sh",
+            "HOSTS": "ci@first-stub-host\nci@wrong-line-host\n",
+            "SSH_KEY": "",
+            "KNOWN_HOSTS": "",
+        }
+        for pushed in ("ci@wrong-line-host\n", "ci@first-stub-host\n"):
+            with self.subTest(pushed=pushed):
+                sandbox = push_sandbox(self)
+                self.assertEqual(self.check(sandbox, **common, PUSH_HOSTS=pushed).code, 0)
+                result = self.report(sandbox, DRY_RUN="true", SSH_KEY="")
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs["outcome"], "no-answer")
+
+
+class PushApplyGuardTests(unittest.TestCase):
+    """The apply guard holds the push list to the plan, as it holds the host list."""
+
+    def guard(self, **changes: str) -> Result:
+        values = {
+            "PLANNED_PUSH_DIGEST": digest([HOST_TWO]),
+            "PUSH_HOSTS": f"{HOST_TWO}\n",
+            "PUSH_PLAYBOOK": PUSH_PLAYBOOK,
+            "PUSH_REPO_PRIVATE": "false",
+        }
+        values.update(changes)
+        return Sandbox(self).run(find_step("apply", "guard"), apply_guard_env(**values))
+
+    def test_the_planned_push_list_passes_and_says_the_job_pushes(self) -> None:
+        result = self.guard()
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["push"], "true")
+
+    def test_with_no_push_list_planned_or_given_the_job_does_not_push(self) -> None:
+        result = Sandbox(self).run(find_step("apply", "guard"), apply_guard_env())
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["push"], "false")
+
+    def test_a_push_list_the_plan_did_not_have_a_list_the_plan_had_and_a_different_list_are_refused(self) -> None:
+        cases = {
+            "the plan had no list": {"PLANNED_PUSH_DIGEST": ""},
+            "this run has no list": {"PUSH_HOSTS": ""},
+            "a different host": {"PUSH_HOSTS": f"{HOST_ONE}\n"},
+            "one more host": {"PUSH_HOSTS": f"{HOST_TWO}\n{HOST_ONE}\n"},
+            "another digest": {"PLANNED_PUSH_DIGEST": digest([HOST_ONE])},
+        }
+        for name, changes in cases.items():
+            with self.subTest(case=name):
+                result = self.guard(**changes)
+                self.assertNotEqual(result.code, 0, name)
+                self.assertIn("pushed hosts", result.log)
+
+    def test_a_push_list_with_no_host_in_it_is_refused_whatever_the_plan_said(self) -> None:
+        result = self.guard(PUSH_HOSTS="\n", PLANNED_PUSH_DIGEST="")
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("push digest is missing", result.log)
+
+    def test_the_push_playbook_and_the_public_repository_are_checked_again_in_the_apply_job(self) -> None:
+        for playbook in ("", "../x.yml", "/x.yml", "a b.yml", "a/../b.yml", "a;id"):
+            with self.subTest(playbook=repr(playbook)):
+                self.assertNotEqual(self.guard(PUSH_PLAYBOOK=playbook).code, 0)
+        for value in ("true", "", "null"):
+            with self.subTest(private=repr(value)):
+                result = self.guard(PUSH_REPO_PRIVATE=value)
+                self.assertNotEqual(result.code, 0)
+                self.assertIn("public", result.log)
+
+    def test_the_push_digest_the_action_publishes_is_the_one_the_apply_guard_recomputes(self) -> None:
+        for pushed in ([HOST_TWO], [HOST_TWO, HOST_ONE], [HOST_ONE]):
+            with self.subTest(pushed=pushed):
+                listed = "".join(f"{host}\n" for host in pushed)
+                published = Sandbox(self).run(
+                    action_step("validate"),
+                    composite_validate_env(
+                        PUSH_HOSTS=listed, PUSH_PLAYBOOK=PUSH_PLAYBOOK, PUSH_REPO_PRIVATE="false", JUMP_HOST=JUMP_HOST, JUMP_KEY=JUMP_KEY
+                    ),
+                ).outputs["push_hosts_digest"]
+                accepted = self.guard(PUSH_HOSTS=listed, PLANNED_PUSH_DIGEST=published)
+                self.assertEqual(accepted.code, 0, accepted.log)
+
+
+class PushApplyTests(unittest.TestCase):
+    """The apply step sends the apply command with the bundle to a pushed host, twice, and judges the push receiver's line."""
+
+    def setUp(self) -> None:
+        self.ws = Workspace(self)
+
+    def apply(self, sandbox: Sandbox, **changes: str) -> Result:
+        values = {
+            "SHA": self.ws.head,
+            "PUSH_HOSTS": f"{HOST_TWO}\n",
+            "PUSH_PLAYBOOK": PUSH_PLAYBOOK,
+            "JUMP_HOST": JUMP_HOST,
+            "JUMP_KEY": JUMP_KEY,
+        }
+        values.update(changes)
+        return sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(**values), self.ws.extra())
+
+    def pushed_host(self, sandbox: Sandbox, first: tuple[int, str, str], second: tuple[int, str, str] | None) -> None:
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
+        sandbox.host(HOST_TWO, *first, second=second)
+
+    def test_a_pushed_host_gets_apply_the_commit_the_playbook_and_a_fresh_whole_bundle_for_each_run(self) -> None:
+        sandbox = push_sandbox(self)
+        self.pushed_host(sandbox, (10, PUSH_APPLIED, ""), (0, PUSH_UNCHANGED, ""))
+        result = self.apply(sandbox)
+        self.assertEqual(result.code, 0, result.log)
+        head = self.ws.head
+        expected = through_the_jump(expected_ssh_call(HOST_TWO, f"apply {head} {PUSH_PLAYBOOK}"))
+        for run in (1, 2):
+            self.assertEqual(named(argv_of(sandbox, HOST_TWO, run)), expected, run)
+            self.assertEqual(self.ws.read_bundle(stdin_of(sandbox, HOST_TWO, run), self), 3, run)
+            self.assertEqual(named(argv_of(sandbox, HOST_ONE, run)), through_the_jump(expected_ssh_call(HOST_ONE, head)), run)
+            self.assertEqual(stdin_of(sandbox, HOST_ONE, run), b"", run)
+        self.assertEqual(stdin_of(sandbox, HOST_TWO, 1), stdin_of(sandbox, HOST_TWO, 2))
+        for line in sandbox.ssh_log():
+            self.assertNotRegex(line.rsplit(" -- ", 1)[1], r"fetch|pull|git")
+        self.assertNotIn(HOST_TWO, result.log + result.summary)
+
+    def test_a_pushed_host_that_answers_with_the_line_of_the_pull_trigger_is_refused(self) -> None:
+        sandbox = push_sandbox(self)
+        self.pushed_host(sandbox, (10, APPLIED, ""), (0, UNCHANGED, ""))
+        result = self.apply(sandbox)
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("did not answer with one summary line", result.log)
+        self.assertNotIn("Applied commit", result.log)
+
+    def test_a_pulled_host_that_answers_with_the_line_of_the_push_receiver_is_refused(self) -> None:
+        sandbox = push_sandbox(self)
+        sandbox.host(HOST_ONE, 10, PUSH_APPLIED, second=(0, PUSH_UNCHANGED, ""))
+        sandbox.host(HOST_TWO, 10, PUSH_APPLIED, second=(0, PUSH_UNCHANGED, ""))
+        result = self.apply(sandbox)
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("did not answer with one summary line", result.log)
+        self.assertEqual(sandbox.calls(HOST_TWO), 0)
+
+    def test_a_push_line_for_the_check_mode_another_commit_or_exit_or_a_second_change_fails_the_job(self) -> None:
+        cases = {
+            "mode check": ((10, push_line("applied", 10, "check", "@SHA@", 2), ""), (0, PUSH_UNCHANGED, "")),
+            "another commit": ((10, push_line("applied", 10, "apply", OTHER_SHA, 2), ""), (0, PUSH_UNCHANGED, "")),
+            "another exit": ((10, push_line("applied", 0, "apply", "@SHA@", 2), ""), (0, PUSH_UNCHANGED, "")),
+            "unchanged with a change counted": ((0, push_line("unchanged", 0, "apply", "@SHA@", 1), ""), None),
+            "the second run changes again": ((10, PUSH_APPLIED, ""), (10, PUSH_APPLIED, "")),
+            "nothing": ((10, "nothing\n", ""), None),
+        }
+        for name, (first, second) in cases.items():
+            with self.subTest(case=name):
+                sandbox = push_sandbox(self)
+                self.pushed_host(sandbox, first, second)
+                result = self.apply(sandbox)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertNotIn("Applied commit", result.log)
+
+    def test_a_pushed_host_that_refuses_fails_the_job_with_the_reason_and_is_not_asked_again(self) -> None:
+        sandbox = push_sandbox(self)
+        self.pushed_host(sandbox, (20, push_line("refused", 20, "apply", "@SHA@", 0, "rollback"), ""), None)
+        result = self.apply(sandbox)
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("reason rollback", result.log)
+        self.assertEqual(sandbox.calls(HOST_TWO), 1)
+
+    def test_a_push_needs_the_jump_host_and_its_key_and_asks_no_host_without_them(self) -> None:
+        sandbox = push_sandbox(self)
+        self.pushed_host(sandbox, (10, PUSH_APPLIED, ""), (0, PUSH_UNCHANGED, ""))
+        result = self.apply(sandbox, JUMP_HOST="", JUMP_KEY="")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("jump", result.log)
+        self.assertEqual(sandbox.ssh_log(), [])
+
+    def test_a_shallow_checkout_a_head_that_is_not_the_commit_and_a_directory_that_is_no_repository_are_refused_before_any_host_is_asked(self) -> None:
+        shallow = Workspace(self, shallow=True)
+        base = push_sandbox(self)
+        empty = base.dir / "empty"
+        empty.mkdir()
+        cases = {
+            "shallow": ({"SHA": shallow.head}, {"GITHUB_WORKSPACE": str(shallow.path)}, "shallow"),
+            "head is another commit": ({"SHA": OTHER_SHA}, self.ws.extra(), "not at the commit"),
+            "no repository": ({"SHA": self.ws.head}, {"GITHUB_WORKSPACE": str(empty)}, "shallow"),
+        }
+        for name, (changes, extra, message) in cases.items():
+            with self.subTest(case=name):
+                sandbox = push_sandbox(self)
+                self.pushed_host(sandbox, (10, PUSH_APPLIED, ""), (0, PUSH_UNCHANGED, ""))
+                values = {"PUSH_HOSTS": f"{HOST_TWO}\n", "PUSH_PLAYBOOK": PUSH_PLAYBOOK, "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY, **changes}
+                result = sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(**values), extra)
+                self.assertNotEqual(result.code, 0, name)
+                self.assertIn(message, result.log)
+                self.assertEqual(sandbox.ssh_log(), [], name)
+
+
+class PushParityTests(unittest.TestCase):
+    """The apply job cannot call the action, so it holds copies; each pair is held equal here."""
+
+    def test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job(self) -> None:
+        action = snippet(action_step("check")["run"], "# --- bundle begin", "# --- bundle end")
+        applied = snippet(find_step_named("apply", "Apply on each host")["run"], "# --- bundle begin", "# --- bundle end")
+        self.assertIn("git -C \"$GITHUB_WORKSPACE\" bundle create \"$file\" HEAD", action)
+        self.assertEqual(action, applied)
+
+    def test_the_push_line_is_the_contract_and_the_same_in_the_action_and_in_the_apply_job(self) -> None:
+        self.assertEqual(assignment(action_step("report")["run"], "push_re"), [PUSH_RE])
+        self.assertEqual(assignment(find_step_named("apply", "Apply on each host")["run"], "push_re"), [PUSH_RE])
+
+    def test_the_push_playbook_form_is_the_same_in_the_action_and_in_the_apply_guard(self) -> None:
+        self.assertEqual(assignment(action_step("validate")["run"], "playbook_re"), [PLAYBOOK_RE])
+        self.assertEqual(assignment(find_step("apply", "guard")["run"], "playbook_re"), [PLAYBOOK_RE])
+
+
+# The job-level keys and the step names the two workflows had before the push
+# route (origin/main at 675fe41). The push route adds steps and options; it takes
+# none away, and a caller that passes none of its inputs runs what it ran.
+FROZEN_JOB_KEYS = {
+    "gated": {
+        "discover": ["name", "outputs", "runs-on", "timeout-minutes"],
+        "lint": ["defaults", "if", "name", "needs", "runs-on", "timeout-minutes"],
+        "shard": ["defaults", "env", "if", "name", "needs", "runs-on", "strategy", "timeout-minutes"],
+        "plan": ["if", "name", "needs", "outputs", "permissions", "runs-on", "timeout-minutes"],
+        "apply": ["concurrency", "environment", "if", "name", "needs", "runs-on", "timeout-minutes"],
+        "checks": ["if", "name", "needs", "runs-on", "timeout-minutes"],
+    },
+    "drift": {
+        "drift": ["name", "outputs", "permissions", "runs-on", "timeout-minutes"],
+        "alert": ["concurrency", "if", "name", "needs", "permissions", "runs-on", "timeout-minutes"],
+    },
+}
+FROZEN_STEP_NAMES = {
+    ("gated", "discover"): ["Checkout", "Decide whether this run may reach a host", "Confirm the merge queue passed this commit", "List the Molecule shards from the repository tree"],
+    ("gated", "lint"): ["Checkout", "Create the tool environment", "Install the pinned tools", "yamllint every YAML file under the Ansible directory", "ansible-lint at the production profile", "Type-check the Python", "Lint the Python", "Check the Python formatting"],
+    ("gated", "shard"): ["Checkout", "Refuse a redirected container engine", "Create the tool environment", "Install the pinned tools", "Test the role"],
+    ("gated", "plan"): ["Checkout", "Refuse outside a push to the default branch, and check the inputs", "Resolve the commit this workflow was called at", "Check out the shared actions at that commit", "Verify the checkout is that commit", "Check every host in check mode and write the plan"],
+    ("gated", "apply"): ["Refuse unless this is the approved, planned push", "Apply on each host, then run it again to prove nothing is left to change"],
+    ("gated", "checks"): ["Require every job to have ended as expected"],
+    ("drift", "drift"): ["Refuse outside a schedule or a manual run on the default branch", "Resolve the commit this workflow was called at", "Check out the shared actions at that commit", "Verify the checkout is that commit", "Check every host in check mode, red on any drift"],
+    ("drift", "alert"): ["Open the issue, or comment on the open one"],
+}
+PUSH_DECISION = "Decide whether any host is pushed to"
+PUSH_CHECKOUT = "Check out the repository with its whole history, to push it"
+PUSH_CONDITIONS = {"plan": "steps.push.outputs.push == 'true'", "drift": "steps.push.outputs.push == 'true'", "apply": "steps.guard.outputs.push == 'true'"}
+
+
+class PushOffTests(unittest.TestCase):
+    """With every push input empty, the callers that exist today run what they ran."""
+
+    def test_the_job_level_keys_and_the_existing_steps_of_every_job_are_the_ones_the_workflows_had(self) -> None:
+        for label, jobs in (("gated", JOBS), ("drift", DRIFT_JOBS)):
+            for name, job in jobs.items():
+                with self.subTest(workflow=label, job=name):
+                    self.assertEqual(sorted(k for k in job if k != "steps"), FROZEN_JOB_KEYS[label][name])
+                    steps = [step.get("name") for step in job["steps"]]
+                    added = {PUSH_DECISION, PUSH_CHECKOUT}
+                    self.assertEqual([s for s in steps if s not in added], FROZEN_STEP_NAMES[(label, name)])
+
+    def test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it(self) -> None:
+        for label, jobs in (("gated", JOBS), ("drift", DRIFT_JOBS)):
+            for name, job in jobs.items():
+                for step in job["steps"]:
+                    if step.get("name") == PUSH_DECISION:
+                        # Reads one secret, writes one output, reaches nothing.
+                        self.assertEqual(sorted(step["env"]), ["PUSH_HOSTS"])
+                        self.assertNotIn("uses", step)
+                        self.assertNotIn("if", step)
+                        self.assertNotRegex(step["run"], r"ssh|git |curl|gh ")
+                        self.assertEqual(re.findall(r">> \"\$GITHUB_OUTPUT\"", step["run"]), ['>> "$GITHUB_OUTPUT"'] * 2)
+                    elif step.get("name") == PUSH_CHECKOUT:
+                        self.assertEqual(step["if"], PUSH_CONDITIONS[name], f"{label}/{name}")
+                        self.assertNotIn("run", step)
+
+    def test_with_no_push_list_the_plan_and_apply_calls_are_byte_for_byte_the_pull_calls_with_nothing_on_stdin(self) -> None:
+        planned = push_sandbox(self)
+        for dest in (HOST_ONE, HOST_TWO):
+            planned.host(dest, 0, CLEAN)
+        elsewhere = planned.dir / "not-a-repository"
+        elsewhere.mkdir()
+        # The workspace is no repository, so any use of git by the push route would fail the step.
+        checked = planned.run(action_step("check"), check_env(PUSH_PLAYBOOK="ignored/without/a/list.yml"), {"GITHUB_WORKSPACE": str(elsewhere)})
+        self.assertEqual(checked.code, 0, checked.log)
+        applied = push_sandbox(self)
+        for dest in (HOST_ONE, HOST_TWO):
+            applied.host(dest, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = applied.run(find_step_named("apply", "Apply on each host"), apply_env(PUSH_PLAYBOOK="ignored/without/a/list.yml"), {"GITHUB_WORKSPACE": str(elsewhere)})
+        self.assertEqual(result.code, 0, result.log)
+        for sandbox, runs in ((planned, (1,)), (applied, (1, 2))):
+            for dest in (HOST_ONE, HOST_TWO):
+                for run in runs:
+                    self.assertEqual(named(argv_of(sandbox, dest, run)), expected_ssh_call(dest, SHA), (dest, run))
+                    self.assertEqual(stdin_of(sandbox, dest, run), b"", (dest, run))
+        self.assertFalse((planned.temp / "ansible-plan" / "push.bundle").exists())
+        self.assertFalse((applied.temp / "ansible-apply" / "push.bundle").exists())
+        routes = sorted(path.read_text().strip() for path in (planned.temp / "ansible-plan").glob("*.route"))
+        self.assertEqual(routes, ["pull", "pull"])
 
 
 if __name__ == "__main__":

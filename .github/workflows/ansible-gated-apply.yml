@@ -83,6 +83,24 @@ on:
         type: string
         required: false
         default: ''
+      push-playbook:
+        description: >-
+          With the ssh_push_hosts secret, the playbook the receiver of a pushed
+          host is asked to run: a relative path of letters, digits, dot,
+          underscore, dash and slash, with no '..'. Ignored when ssh_push_hosts
+          is empty.
+        type: string
+        required: false
+        default: ''
+      push-dry-run-stub:
+        description: >-
+          With dry-run and ssh_push_hosts, the executable, relative to
+          working-directory, that stands in for the receiver of a pushed host. It
+          receives the destination, the mode, the commit and the playbook, and
+          the bundle on standard input.
+        type: string
+        required: false
+        default: ''
       host-timeout-minutes:
         description: One host call is stopped after this many minutes.
         type: number
@@ -125,6 +143,16 @@ on:
           The hosts to plan and apply, one SSH destination per line in the form
           user@host. Each is reached only through the forced command. A secret,
           so the job log masks the names. Pass it from a repository secret.
+        required: false
+      ssh_push_hosts:
+        description: >-
+          Optional: pass from a secret. The hosts that never open a connection
+          themselves, one user@host per line, a subset of ssh_hosts. Each is
+          reached through ssh_jump_host, which is then required with
+          ssh_jump_key, and is sent a git bundle of the commit on standard input
+          with the command '<mode> <commit> <push-playbook>' instead of being
+          asked to fetch it. Needs push-playbook and a public repository. Empty
+          (the default) leaves every host on the pull route.
         required: false
       ssh_check_key:
         description: >-
@@ -555,12 +583,40 @@ jobs:
       has_changes: ${{ steps.ssh.outputs.has-changes }}
       sha: ${{ steps.guard.outputs.sha }}
       hosts_digest: ${{ steps.ssh.outputs.hosts-digest }}
+      push_hosts_digest: ${{ steps.ssh.outputs.push-hosts-digest }}
     steps:
+      # Whether any host is pushed to. A step condition cannot read a secret, so
+      # this step reads it and says so in an output. Everything else about the
+      # push route is judged by the action.
+      - name: Decide whether any host is pushed to
+        id: push
+        env:
+          PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PUSH_HOSTS" ]; then
+            echo "push=true" >> "$GITHUB_OUTPUT"
+            echo "Some hosts are pushed to, so the repository is checked out with its whole history."
+          else
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # Only a dry run reads a file of this repository, the stand-in for the host.
       - name: Checkout
         if: inputs.dry-run == true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      # A pushed host is sent a bundle of this repository at the commit, with the
+      # history the receiver needs for its own rules on order and on main. This
+      # runs before the shared actions are placed at .gw, so the pin step still
+      # sees a workspace with no .gw of the caller's.
+      - name: Check out the repository with its whole history, to push it
+        if: steps.push.outputs.push == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Refuse outside a push to the default branch, and check the inputs
@@ -686,6 +742,10 @@ jobs:
           check-key: ${{ secrets.ssh_check_key }}
           jump-host: ${{ secrets.ssh_jump_host }}
           jump-key: ${{ secrets.ssh_jump_key }}
+          push-hosts: ${{ secrets.ssh_push_hosts }}
+          push-playbook: ${{ inputs.push-playbook }}
+          push-dry-run-stub: ${{ inputs.push-dry-run-stub }}
+          push-repo-private: ${{ github.event.repository.private }}
           sha: ${{ steps.guard.outputs.sha }}
           # standards-allow-next-line CI-2 dry-run is the name of an action input in a with: map, not a run: body (the matcher reads the key as run:)
           dry-run: ${{ inputs.dry-run }}
@@ -732,6 +792,10 @@ jobs:
           HAS_CHANGES: ${{ needs.plan.outputs.has_changes }}
           PLANNED_DIGEST: ${{ needs.plan.outputs.hosts_digest }}
           HOSTS: ${{ secrets.ssh_hosts }}
+          PLANNED_PUSH_DIGEST: ${{ needs.plan.outputs.push_hosts_digest }}
+          PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}
+          PUSH_PLAYBOOK: ${{ inputs.push-playbook }}
+          PUSH_REPO_PRIVATE: ${{ github.event.repository.private }}
           ENVIRONMENT: ${{ inputs.environment }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: |
@@ -756,7 +820,44 @@ jobs:
           digest=$(printf '%s' "$list" | shasum -a 256 | cut -d ' ' -f 1)
           printf '%s' "$PLANNED_DIGEST" | grep -Eq '^[0-9a-f]{64}$' || fail "The planned host digest is missing."
           [ "$digest" = "$PLANNED_DIGEST" ] || fail "The hosts are not the hosts that were planned."
+          # The push list is held to the plan the same way. A list the plan did not
+          # have, a list the plan had and this run lacks, and a different list all
+          # differ from the planned digest, which is empty when the plan had none.
+          # The playbook goes into the command sent to the host, so it is held to
+          # the form the action held it to; this is a copy of that check and a
+          # test holds the two equal. A bundle carries the whole history of the
+          # repository, so a repository that is not public is refused here too.
+          push=false
+          push_list=""
+          while IFS= read -r dest; do
+            [ -n "$dest" ] || continue
+            push_list="${push_list:+$push_list }$dest"
+          done <<< "$PUSH_HOSTS"
+          push_digest=""
+          if [ -n "$push_list" ]; then
+            push_digest=$(printf '%s' "$push_list" | shasum -a 256 | cut -d ' ' -f 1)
+          fi
+          [ "$push_digest" = "$PLANNED_PUSH_DIGEST" ] || fail "The pushed hosts are not the pushed hosts that were planned."
+          if [ -n "$PUSH_HOSTS" ]; then
+            printf '%s' "$PLANNED_PUSH_DIGEST" | grep -Eq '^[0-9a-f]{64}$' || fail "The planned push digest is missing."
+            playbook_re='^[A-Za-z0-9_][A-Za-z0-9_./-]*$'
+            [[ "$PUSH_PLAYBOOK" =~ $playbook_re ]] || fail "push-playbook must be a relative path of letters, digits, dot, underscore, dash and slash."
+            case "$PUSH_PLAYBOOK" in *..*) fail "push-playbook must not contain '..'." ;; esac
+            [ "$PUSH_REPO_PRIVATE" = false ] || fail "Pushing refuses unless the repository is public: a bundle carries its whole history to the host."
+            push=true
+          fi
+          echo "push=$push" >> "$GITHUB_OUTPUT"
           echo "Applying the planned commit $PLANNED_SHA after the approval of $ENVIRONMENT."
+
+      # A pushed host is sent a bundle of this repository at the commit, with its
+      # whole history. Only a job that has passed the guard, and so the approval,
+      # reads the repository for it.
+      - name: Check out the repository with its whole history, to push it
+        if: steps.guard.outputs.push == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: Apply on each host, then run it again to prove nothing is left to change
         env:
@@ -767,6 +868,8 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.ssh_known_hosts }}
           JUMP_HOST: ${{ secrets.ssh_jump_host }}
           JUMP_KEY: ${{ secrets.ssh_jump_key }}
+          PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}
+          PUSH_PLAYBOOK: ${{ inputs.push-playbook }}
         run: |
           set -euo pipefail
           fail() {
@@ -787,6 +890,10 @@ jobs:
             case "$JUMP_HOST" in *$'\n'*) fail "ssh_jump_host is not of the form user@host." ;; esac
             printf '%s' "$JUMP_HOST" | grep -Eq "$destination_pattern" \
               || fail "ssh_jump_host is not of the form user@host."
+          fi
+          # A pushed host is reached only through the jump host.
+          if [ -n "$PUSH_HOSTS" ]; then
+            { [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "ssh_push_hosts needs ssh_jump_host and ssh_jump_key: a pushed host is reached only through the jump host."
           fi
           work="$RUNNER_TEMP/ansible-apply"
           mkdir "$work"
@@ -829,37 +936,87 @@ jobs:
             ssh_args+=(-F "$work/jump_config" -o ProxyJump=jump_hop)
           fi
           re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+          # The line of a pushed host. A copy of the one in the ssh-check-hosts
+          # action; a test holds the two equal. Each host is judged by its route
+          # and by the one line its route speaks.
+          push_re='^push-receiver verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply) commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+
+          # The bundle of a pushed host, made once before any host is asked and
+          # read from its start by each call. The same text as in the action.
+          push_bundle=""
+          if [ -n "$PUSH_HOSTS" ]; then
+            # --- bundle begin (this text is the same in ssh-check-hosts and in ansible-gated-apply.yml; a test holds the two equal)
+            make_bundle() {
+              local file="$1" sha="$2" head
+              [ "$(git -C "$GITHUB_WORKSPACE" rev-parse --is-shallow-repository)" = false ] \
+                || fail "The checkout of the repository is shallow, so its bundle would not carry the history the host needs."
+              head=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD) || fail "The checkout of the repository could not be read."
+              [ "$head" = "$sha" ] || fail "The checkout of the repository is not at the commit being delivered."
+              git -C "$GITHUB_WORKSPACE" bundle create "$file" HEAD > /dev/null 2>&1 || fail "The bundle of the commit could not be made."
+            }
+            # --- bundle end
+            push_bundle="$work/push.bundle"
+            make_bundle "$push_bundle" "$SHA"
+          fi
 
           # Run one request and require the answer to be one of the accepted
           # kinds. Arguments: host number, destination, label, then the accepted
           # answers as "exit:verdict" words. The playbook output is dropped: it
-          # is on the host, and the job log is public. The call takes its input
-          # from /dev/null: the host loop below reads the host list from its own
-          # standard input, and ssh would swallow the hosts after the first.
+          # is on the host, and the job log is public. A pulled host's call takes
+          # its input from /dev/null: the host loop below reads the host list from
+          # its own standard input, and ssh would swallow the hosts after the
+          # first. A pushed host's call takes the bundle from its file, from the
+          # start, so the second run gets a fresh stream.
           ask() {
-            local num="$1" dest="$2" label="$3"
+            local num="$1" dest="$2" label="$3" route=pull
             shift 3
-            local rc=0 out line accepted ok=1
-            out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" < /dev/null 2> /dev/null) || rc=$?
+            local rc=0 out line accepted ok=1 matched=no f_verdict="" f_exit="" f_reason="" f_commit="" f_changed=""
+            if [ -n "$PUSH_HOSTS" ] && grep -qxF -- "$dest" <<< "$PUSH_HOSTS"; then
+              route=push
+            fi
+            if [ "$route" = push ]; then
+              out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle" 2> /dev/null) || rc=$?
+            else
+              out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" < /dev/null 2> /dev/null) || rc=$?
+            fi
             line=$(printf '%s\n' "$out" | tr -d '\r' | head -n 1)
             if [ "$rc" = 255 ]; then
               fail "Host $num, $label: the SSH connection failed (exit 255)."
             fi
-            if [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" != 1 ] || ! [[ "$line" =~ $re ]]; then
+            if [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ]; then
+              if [ "$route" = push ]; then
+                if [[ "$line" =~ $push_re ]] && [ "${BASH_REMATCH[4]}" = apply ]; then
+                  matched=yes
+                  f_verdict="${BASH_REMATCH[1]}"
+                  f_exit="${BASH_REMATCH[2]}"
+                  f_reason="${BASH_REMATCH[3]}"
+                  f_commit="${BASH_REMATCH[5]}"
+                  f_changed="${BASH_REMATCH[6]}"
+                fi
+              elif [[ "$line" =~ $re ]]; then
+                matched=yes
+                f_verdict="${BASH_REMATCH[1]}"
+                f_exit="${BASH_REMATCH[2]}"
+                f_reason="${BASH_REMATCH[3]}"
+                f_commit="${BASH_REMATCH[4]}"
+                f_changed="${BASH_REMATCH[5]}"
+              fi
+            fi
+            if [ "$matched" != yes ]; then
               fail "Host $num, $label: the host did not answer with one summary line (exit $rc)."
             fi
-            if [ "${BASH_REMATCH[4]}" != "$SHA" ] || [ "${BASH_REMATCH[2]}" != "$rc" ]; then
+            if [ "$f_commit" != "$SHA" ] || [ "$f_exit" != "$rc" ]; then
               fail "Host $num, $label: the summary line names another commit or exit status (exit $rc)."
             fi
             for accepted in "$@"; do
-              if [ "$accepted" = "$rc:${BASH_REMATCH[1]}" ]; then
+              if [ "$accepted" = "$rc:$f_verdict" ]; then
                 ok=0
               fi
             done
-            if [ "$ok" -ne 0 ] || { [ "${BASH_REMATCH[1]}" = unchanged ] && [ "${BASH_REMATCH[5]}" != 0 ]; }; then
-              fail "Host $num, $label: verdict ${BASH_REMATCH[1]}, reason ${BASH_REMATCH[3]}, exit $rc."
+            if [ "$ok" -ne 0 ] || { [ "$f_verdict" = unchanged ] && [ "$f_changed" != 0 ]; }; then
+              fail "Host $num, $label: verdict $f_verdict, reason $f_reason, exit $rc."
             fi
-            REPLY_VERDICT="${BASH_REMATCH[1]}"
+            REPLY_VERDICT="$f_verdict"
           }
 
           i=0

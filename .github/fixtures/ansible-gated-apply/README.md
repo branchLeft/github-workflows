@@ -3,8 +3,13 @@
 A tiny Ansible project that `ansible-gated-apply-self.yml` passes to the
 reusable workflow as its `working-directory`. It holds one role with a
 container-only Molecule scenario, the lint configuration the workflow expects at
-the project root, the hash lock of the tools, and `stub/host.sh`, the stand-in
-for a host in the plan job's dry run. Nothing here is delivered to a host.
+the project root, the hash lock of the tools, `stub/host.sh`, the stand-in for a
+pulled host in the plan job's dry run, and `stub/push-receiver.sh`, the stand-in
+for a pushed host: it reads the git bundle from standard input, verifies it with
+git into a scratch repository, requires its `HEAD` to be the commit it was asked
+about and answers in the push receiver's format. A host name holding
+`wrong-line` makes either stand-in answer with the other route's line, so the
+self-test can show the judge refuses it. Nothing here is delivered to a host.
 
 ## The lock
 

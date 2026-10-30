@@ -100,7 +100,16 @@ jobs:
       working-directory: .github/fixtures/ansible-gated-apply
       dry-run: true
       dry-run-stub: stub/host.sh
+      push-playbook: ansible/playbooks/stub.yml
+      push-dry-run-stub: stub/push-receiver.sh
+    # The second host is pushed to: the plan job's dry run sends it a bundle of
+    # this repository at the pushed commit, and the stub reads and verifies it.
+    # The jump values are fakes; a dry run never connects.
     secrets:
       ssh_hosts: |
         ci@first-stub-host
         ci@second-stub-host
+      ssh_push_hosts: |
+        ci@second-stub-host
+      ssh_jump_host: ci@jump-stub
+      ssh_jump_key: STUB_JUMP_KEY
