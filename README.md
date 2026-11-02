@@ -502,7 +502,7 @@ README changes, so does this list.
 
 | Seen as | Cause | What to do |
 | --- | --- | --- |
-| Plan job red, `Plan failed:` first line | A host refused, was busy, failed, timed out, did not answer, or answered with a line this workflow cannot read or for another commit | Read the row for that host in the job summary, then the host's log. No approval was requested. |
+| Plan job red, `Plan failed: N of M hosts not clean` first line | A host refused, was busy, failed, timed out, did not answer, or answered with a line this workflow cannot read or for another commit | Read the `::error::host N` line for that host in the job log (it names the kind and the reason), then the row in the job summary. No approval was requested. |
 | Plan row says the diff matched a secret pattern | A line of the diff looks like a credential, or holds the check key | Fix the task with `no_log: true` and `diff: false` (ANS-16). The diff is withheld and the job fails. |
 | Plan row says the diff is too large | More than 300 KB for a host or 900 KB in all | Split the change. The approver must be able to read the whole plan. |
 | Apply job red, reason `rollback` | The host already ran a newer commit on main than the one approved | Nothing to do: the newer commit includes this one's changes. If that newer apply failed, fix forward with a new commit, as for any red host. |
@@ -694,6 +694,30 @@ and no dry run.
 The job summary names what each host answered, as `host 1`, `host 2` in the order
 of the list, and the first line says which kind of red it is. A host that would
 change is **drift**; every other red is not drift and says what it is instead.
+
+The job log carries the reason too, so a red run can be read without opening the
+summary. The first line reads `N of M hosts not clean (` the count of each kind `)`.
+Each host that is not clean then gets one line, in the order of the list:
+
+```text
+::error::host 2: kind=unreachable; note=the SSH connection failed (exit 255); scan-hits=none; playbook=-
+```
+
+- `host N` is the label; the host name and address are never printed.
+- `kind` is one of `unreachable`, `no-answer`, `failed`, `refused: <reason>`,
+  `withheld` or `drift`. A call stopped at its limit (exit 124) is `no-answer`,
+  and its note says so.
+- `note` is the fixed text of the summary row.
+- `scan-hits` holds the **names** of the secret patterns the diff matched, or
+  `none`. The text that matched, and the diff, are never printed.
+- `playbook` is the playbook named by the host's answer line, or `-` when the
+  host gave no line this workflow accepts.
+- A host that would change is a `::notice::` in a plan, where it is a result, and
+  an `::error::` in a drift check. GitHub shows at most ten annotations a step;
+  the log carries every line.
+
+The summary table (label, result, note) is printed to the log as well. The diffs
+are in the job summary only.
 
 | First line says | The host answered | Meaning | To clear |
 | --- | --- | --- | --- |
@@ -1040,7 +1064,7 @@ job loads the host check"), and it takes the secrets as inputs.
 | `host-timeout` | `65` | One host call is stopped after this many minutes. A whole number from 1. |
 | `total-timeout` | empty | Empty puts no bound on the hosts together. A whole number of minutes is the time all the calls share: each is stopped at the smaller of `host-timeout` and what is left, and a host reached after the time is spent is not asked and is judged `no-answer`. The caller's job bound must sit above it. The drift workflow passes its job bound less five minutes; the plan job passes nothing. |
 | `environment` | empty | The deployment environment named in the plan wording. Not read when `fail-on-changes` is `true`. |
-| `fail-on-changes` | `false` | `false` is the plan: a host that would change is a result, and the step fails only for a host that gave no usable answer. `true` is the drift check: any answer that is not clean also fails the step, and the summary names the kind. |
+| `fail-on-changes` | `false` | `false` is the plan: a host that would change is a result, and the step fails only for a host that is not clean for another reason (it did not answer, refused, failed or had its diff withheld). `true` is the drift check: any answer that is not clean also fails the step, and the summary names the kind. |
 
 | Output | Meaning |
 | --- | --- |

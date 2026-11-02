@@ -66,6 +66,7 @@ PAG = "PushApplyGuardTests"
 PA = "PushApplyTests"
 PPar = "PushParityTests"
 PO = "PushOffTests"
+RL = "ReportLogTests"
 
 CASES: list[Case] = [
     Case(
@@ -1040,6 +1041,67 @@ CASES: list[Case] = [
         "push: the old pull path gains a step that runs without a push list",
         [Edit(GATED, "      - name: Decide whether any host is pushed to\n        id: push\n", "      - name: Decide whether any host is pushed to\n        id: push\n        if: always()\n")],
         [f"{PO}.test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it"],
+    ),
+    # Issue 73: the report step prints each non-clean host's reason to the log, and nothing of the diff.
+    Case(
+        "log line: the diff is printed in the host's line",
+        [Edit(ACTION, 'scan-hits=${hits:-none}; playbook=$playbook")"', 'scan-hits=${hits:-none}; playbook=$playbook; diff=$(cat "$cleaned")")"')],
+        [f"{RL}.test_a_planted_secret_in_a_diff_never_reaches_the_log"],
+    ),
+    Case(
+        "log line: the text a pattern matched is printed with the pattern name",
+        [Edit(ACTION, 'hits="${hits:+$hits, }$name"\n', 'hits="${hits:+$hits, }$name $(grep -Eio -e "$regex" "$cleaned" | head -n 1)"\n')],
+        [f"{RL}.test_a_planted_secret_in_a_diff_never_reaches_the_log", f"{RL}.test_a_withheld_diff_prints_the_pattern_name_and_never_the_text_it_matched"],
+    ),
+    Case(
+        "log line: the destination is printed in the host's line",
+        [Edit(ACTION, 'scan-hits=${hits:-none}; playbook=$playbook")"', 'scan-hits=${hits:-none}; playbook=$playbook; dest=$dest")"')],
+        [f"{RL}.test_a_planted_secret_in_a_diff_never_reaches_the_log"],
+    ),
+    Case(
+        "log line: what the host wrote to standard error is printed in the host's line",
+        [Edit(ACTION, 'scan-hits=${hits:-none}; playbook=$playbook")"', 'scan-hits=${hits:-none}; playbook=$playbook; err=$(head -c 300 "$base.err")")"')],
+        [f"{RL}.test_a_planted_secret_in_a_diff_never_reaches_the_log", f"{RL}.test_an_unreachable_host_prints_its_kind_and_not_its_name_or_its_error_text"],
+    ),
+    Case(
+        "log line: the allow-list of characters is dropped",
+        [Edit(ACTION, "printf '%s' \"$1\" | tr -c 'A-Za-z0-9 _./:;,()=-' '?'", "printf '%s' \"$1\"")],
+        [f"{RL}.test_a_value_that_would_start_a_workflow_command_is_defanged"],
+    ),
+    Case(
+        "log line: the error line of a non-clean host is not printed",
+        [Edit(ACTION, 'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"', ":")],
+        [f"{RL}.test_an_unreachable_host_prints_its_kind_and_not_its_name_or_its_error_text", f"{RL}.test_a_clean_host_prints_no_line_and_each_other_host_prints_exactly_one"],
+    ),
+    Case(
+        "log line: a host that would change is an error in a plan",
+        [Edit(ACTION, "              level=notice\n", "              level=error\n")],
+        [f"{RL}.test_a_host_that_would_change_is_a_notice_in_a_plan_and_an_error_in_a_drift_check"],
+    ),
+    Case(
+        "log line: the failed plan headline is reverted",
+        [Edit(ACTION, 'first="Plan failed: $not_clean of $total hosts not clean ($detail), so no', 'first="Plan failed: $failed of $total host(s) gave no usable answer, so no')],
+        [f"{RL}.test_the_failed_plan_headline_counts_the_hosts_that_are_not_clean_by_kind"],
+    ),
+    Case(
+        "log line: the drift headline is reverted",
+        [Edit(ACTION, 'first="Not clean at commit $SHA: $not_clean of $total hosts not clean ($detail)."', 'first="Not clean at commit $SHA: $detail."')],
+        [f"{RL}.test_the_drift_headline_counts_the_hosts_that_are_not_clean_by_kind"],
+    ),
+    Case(
+        "log line: the playbook is not read from the answer",
+        [Edit(ACTION, '              playbook="${line##* playbook=}"\n              playbook="${playbook%% *}"\n', '              playbook="-"\n')],
+        [f"{RL}.test_an_answer_for_another_commit_shows_the_playbook_it_named"],
+    ),
+    Case(
+        "log line: a call stopped at its limit gets the generic note",
+        [Edit(ACTION, 'note="the call was stopped at its limit (exit 124)"', 'note="the host did not answer with one summary line (exit $rc)"')],
+        [f"{RL}.test_a_call_stopped_at_its_limit_is_a_no_answer_that_says_so"],
+    ),
+    Case(
+        "log line: the table is not printed to the log",
+        [Edit(ACTION, "        printf '| Host | Result | Note |\\n| --- | --- | --- |\\n'\n        cat \"$rows\"\n\n        if [ \"$failed\" -gt 0 ]; then", "        if [ \"$failed\" -gt 0 ]; then")],
+        [f"{RL}.test_the_table_is_on_the_log_and_the_diff_is_not"],
     ),
 ]
 

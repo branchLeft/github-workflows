@@ -422,6 +422,15 @@ runs:
         per_host_cap=300000
         total_cap=900000
 
+        # A log line is built only from the label, a fixed kind and note, the
+        # NAMES of the scan hits and a playbook path; never from the diff, a
+        # host's own output, a name or address, or the text a pattern matched.
+        # This is the last defence: any character outside letters, digits,
+        # space and _ . / : ; , ( ) = - becomes a question mark.
+        plain() {
+          printf '%s' "$1" | tr -c 'A-Za-z0-9 _./:;,()=-' '?'
+        }
+
         # A pattern is "name|extended regular expression". The list is a
         # backstop: the control is no_log and diff: false on the task (ANS-16).
         patterns=(
@@ -508,7 +517,11 @@ runs:
             note="the SSH connection failed (exit 255)"
             kind="unreachable"
           elif [ "$matched" != yes ]; then
-            note="the host did not answer with one summary line (exit $rc)"
+            if [ "$rc" = 124 ]; then
+              note="the call was stopped at its limit (exit 124)"
+            else
+              note="the host did not answer with one summary line (exit $rc)"
+            fi
           else
             if [ "$f_commit" != "$SHA" ] || [ "$f_exit" != "$rc" ]; then
               note="the summary line names another commit or exit status (exit $rc)"
@@ -597,7 +610,24 @@ runs:
           if [ "$FAIL_ON_CHANGES" = true ]; then
             result="$kind"
           fi
+          note=$(plain "$note")
           printf '| %s | %s | %s |\n' "$label" "$result" "${note:--}" >> "$rows"
+
+          # One line in the log for each host that is not clean, with its reason.
+          # The playbook is read from the one answer line, and only when the
+          # pattern above accepted that line, which bounds it to a path.
+          if [ "$kind" != ok ]; then
+            playbook="-"
+            if [ "$matched" = yes ]; then
+              playbook="${line##* playbook=}"
+              playbook="${playbook%% *}"
+            fi
+            level=error
+            if [ "$kind" = drift ] && [ "$FAIL_ON_CHANGES" != true ]; then
+              level=notice
+            fi
+            echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"
+          fi
           if [ "$show" = true ] && [ -s "$cleaned" ]; then
             fence=$(awk 'BEGIN { m = 2 } { s = $0; while (match(s, /`+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } } END { f = ""; for (k = 0; k <= m; k++) f = f "`"; print f }' "$cleaned")
             {
@@ -632,14 +662,15 @@ runs:
           *) outcome="mixed" ;;
         esac
 
+        not_clean=$((total - clean))
         if [ "$FAIL_ON_CHANGES" = true ]; then
           if [ "$outcome" = ok ]; then
             first="No drift: every host reports no change for commit $SHA."
           else
-            first="Not clean at commit $SHA: $detail."
+            first="Not clean at commit $SHA: $not_clean of $total hosts not clean ($detail)."
           fi
         elif [ "$failed" -gt 0 ]; then
-          first="Plan failed: $failed of $total host(s) gave no usable answer, so no approval is requested for commit $SHA."
+          first="Plan failed: $not_clean of $total hosts not clean ($detail), so no approval is requested for commit $SHA."
         elif [ "$changed" -eq 0 ]; then
           first="No changes: every host reports none for commit $SHA, so the apply is skipped and no approval is requested."
         else
@@ -657,6 +688,11 @@ runs:
         cat "$summary" >> "$GITHUB_STEP_SUMMARY"
         echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
         echo "detail=${detail:-none}" >> "$GITHUB_OUTPUT"
+
+        # The table goes to the log too. The rows hold a label, a result and a
+        # fixed note; the diffs stay in the job summary only.
+        printf '| Host | Result | Note |\n| --- | --- | --- |\n'
+        cat "$rows"
 
         if [ "$failed" -gt 0 ]; then
           echo "::error::$first"
