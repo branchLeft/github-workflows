@@ -186,6 +186,30 @@ on:
           private key for the jump host and nothing else, never the check key or
           the apply key. The jump host restricts it to port 22 of the listed hosts.
         required: false
+      ssh_jump2_host:
+        description: >-
+          Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key
+          and ssh_jump2_hosts, or none. A user@host, in the form ssh_hosts takes,
+          that the hosts in ssh_jump2_hosts are reached through after ssh_jump_host
+          (ssh ProxyJump, two hops), for hosts behind a gateway that only the first
+          jump host can reach. Needs ssh_jump_host and ssh_jump_key. Its host-key
+          line goes in ssh_known_hosts.
+        required: false
+      ssh_jump2_key:
+        description: >-
+          Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key
+          and ssh_jump2_hosts, or none. The private key for the second jump host and
+          nothing else, never the check key, the apply key or ssh_jump_key. The second
+          jump host restricts it to port 22 of the listed hosts.
+        required: false
+      ssh_jump2_hosts:
+        description: >-
+          Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key
+          and ssh_jump2_hosts, or none. The hosts that are reached through both
+          jump hosts, one user@host per line, a subset of ssh_hosts. Every other
+          host keeps the single hop. The second jump host's own address is not
+          listed: it is reached through the first hop alone.
+        required: false
 
 permissions:
   contents: read
@@ -589,6 +613,7 @@ jobs:
       sha: ${{ steps.guard.outputs.sha }}
       hosts_digest: ${{ steps.ssh.outputs.hosts-digest }}
       push_hosts_digest: ${{ steps.ssh.outputs.push-hosts-digest }}
+      jump2_hosts_digest: ${{ steps.ssh.outputs.jump2-hosts-digest }}
     steps:
       # Whether any host is pushed to. A step condition cannot read a secret, so
       # this step reads it and says so in an output. Everything else about the
@@ -747,6 +772,9 @@ jobs:
           check-key: ${{ secrets.ssh_check_key }}
           jump-host: ${{ secrets.ssh_jump_host }}
           jump-key: ${{ secrets.ssh_jump_key }}
+          jump2-host: ${{ secrets.ssh_jump2_host }}
+          jump2-key: ${{ secrets.ssh_jump2_key }}
+          jump2-hosts: ${{ secrets.ssh_jump2_hosts }}
           push-hosts: ${{ secrets.ssh_push_hosts }}
           push-playbook: ${{ inputs.push-playbook }}
           push-dry-run-stub: ${{ inputs.push-dry-run-stub }}
@@ -801,6 +829,8 @@ jobs:
           PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}
           PUSH_PLAYBOOK: ${{ inputs.push-playbook }}
           PUSH_REPO_PRIVATE: ${{ github.event.repository.private }}
+          PLANNED_JUMP2_DIGEST: ${{ needs.plan.outputs.jump2_hosts_digest }}
+          JUMP2_HOSTS: ${{ secrets.ssh_jump2_hosts }}
           ENVIRONMENT: ${{ inputs.environment }}
           DRY_RUN: ${{ inputs.dry-run }}
         run: |
@@ -851,6 +881,22 @@ jobs:
             [ "$PUSH_REPO_PRIVATE" = false ] || fail "Pushing refuses unless the repository is public: a bundle carries its whole history to the host."
             push=true
           fi
+          # The second-hop list is held to the plan the same way: the apply never
+          # takes the second hop to a host that was not planned, and never drops it
+          # for one that was. The digest is empty when the plan had no list.
+          jump2_list=""
+          while IFS= read -r dest; do
+            [ -n "$dest" ] || continue
+            jump2_list="${jump2_list:+$jump2_list }$dest"
+          done <<< "$JUMP2_HOSTS"
+          jump2_digest=""
+          if [ -n "$jump2_list" ]; then
+            jump2_digest=$(printf '%s' "$jump2_list" | shasum -a 256 | cut -d ' ' -f 1)
+          fi
+          [ "$jump2_digest" = "$PLANNED_JUMP2_DIGEST" ] || fail "The second-hop hosts are not the second-hop hosts that were planned."
+          if [ -n "$JUMP2_HOSTS" ]; then
+            printf '%s' "$PLANNED_JUMP2_DIGEST" | grep -Eq '^[0-9a-f]{64}$' || fail "The planned second-hop digest is missing."
+          fi
           echo "push=$push" >> "$GITHUB_OUTPUT"
           echo "Applying the planned commit $PLANNED_SHA after the approval of $ENVIRONMENT."
 
@@ -873,6 +919,9 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.ssh_known_hosts }}
           JUMP_HOST: ${{ secrets.ssh_jump_host }}
           JUMP_KEY: ${{ secrets.ssh_jump_key }}
+          JUMP2_HOST: ${{ secrets.ssh_jump2_host }}
+          JUMP2_KEY: ${{ secrets.ssh_jump2_key }}
+          JUMP2_HOSTS: ${{ secrets.ssh_jump2_hosts }}
           PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}
           PUSH_PLAYBOOK: ${{ inputs.push-playbook }}
         run: |
@@ -900,6 +949,42 @@ jobs:
           if [ -n "$PUSH_HOSTS" ]; then
             { [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "ssh_push_hosts needs ssh_jump_host and ssh_jump_key: a pushed host is reached only through the jump host."
           fi
+          # The second hop: host, key and list all set or all empty, the first hop
+          # present, the list inside the hosts, no duplicate, no self-jump and a key
+          # of its own. Before any file is written or host contacted. A copy of the
+          # block in the ssh-check-hosts action, input names aside; a test holds the
+          # two equal.
+          # --- jump2 begin (this text is the same in ssh-check-hosts and in ansible-gated-apply.yml, input names aside; a test holds the two equal)
+          jump2_list=""
+          jump2_count=0
+          if [ -n "$JUMP2_HOST" ] || [ -n "$JUMP2_KEY" ] || [ -n "$JUMP2_HOSTS" ]; then
+            { [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "A second hop needs ssh_jump_host and ssh_jump_key: it is reached through the first hop."
+            if [ -z "$JUMP2_HOST" ] && [ -z "$JUMP2_KEY" ]; then
+              fail "ssh_jump2_hosts is set but there is no second hop (ssh_jump2_host and ssh_jump2_key are empty): a listed host would fall back to one hop."
+            fi
+            [ -n "$JUMP2_HOST" ] || fail "ssh_jump2_key is set but ssh_jump2_host is empty: a second hop needs both or neither."
+            [ -n "$JUMP2_KEY" ] || fail "ssh_jump2_host is set but ssh_jump2_key is empty: a second hop needs both or neither."
+            [ -n "$JUMP2_HOSTS" ] || fail "ssh_jump2_host and ssh_jump2_key are set but ssh_jump2_hosts is empty: a second hop with no listed host routes nothing."
+            case "$JUMP2_HOST" in *$'\n'*) fail "ssh_jump2_host is not of the form user@host." ;; esac
+            printf '%s' "$JUMP2_HOST" | grep -Eq "$destination_pattern" \
+              || fail "ssh_jump2_host is not of the form user@host."
+            [ "$JUMP2_KEY" != "$JUMP_KEY" ] || fail "ssh_jump2_key is the same as ssh_jump_key: each hop has its own key."
+            [ "$JUMP2_KEY" != "$SSH_KEY" ] || fail "ssh_jump2_key is the same as this job's own key: the second hop has a key of its own."
+            jump2_gateway=$(printf '%s' "${JUMP2_HOST#*@}" | tr '[:upper:]' '[:lower:]')
+            while IFS= read -r dest; do
+              [ -n "$dest" ] || continue
+              # A listed host must equal a line of the hosts list, which was held to
+              # the form of a hosts line, so a malformed line matches nothing.
+              grep -qxF -- "$dest" <<< "$HOSTS" || fail "A line of ssh_jump2_hosts is not in the hosts list."
+              case " $jump2_list " in *" $dest "*) fail "A line of ssh_jump2_hosts is listed twice." ;; esac
+              [ "$(printf '%s' "${dest#*@}" | tr '[:upper:]' '[:lower:]')" != "$jump2_gateway" ] \
+                || fail "A line of ssh_jump2_hosts is the address of the second hop itself: that host is reached through the first hop alone."
+              jump2_list="${jump2_list:+$jump2_list }$dest"
+              jump2_count=$((jump2_count + 1))
+            done <<< "$JUMP2_HOSTS"
+            [ "$jump2_count" -ge 1 ] || fail "ssh_jump2_hosts lists no host."
+          fi
+          # --- jump2 end
           work="$RUNNER_TEMP/ansible-apply"
           mkdir "$work"
           # The key copies go on every way out of the step, a refusal included.
@@ -909,6 +994,7 @@ jobs:
             -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/known_hosts"
             -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
             -o ForwardAgent=no -o ClearAllForwardings=yes)
+          ssh_args_two=()
           if [ -n "$JUMP_HOST" ]; then
             # ssh gives a jump hop none of the options on the command line, so the
             # hop is a stanza of its own with its own key and strict options. The
@@ -939,7 +1025,45 @@ jobs:
               } > "$work/jump_config"
             )
             ssh_args+=(-F "$work/jump_config" -o ProxyJump=jump_hop)
+            # The second hop. A copy of the block in the ssh-check-hosts action
+            # (the key file is jump2_id there too); a test holds the two equal.
+            if [ -n "$JUMP2_HOST" ]; then
+              trap 'rm -f "$work/id" "$work/known_hosts" "$work/jump_id" "$work/jump_config" "$work/jump2_id"' EXIT
+              (
+                umask 077
+                printf '%s\n' "$JUMP2_KEY" > "$work/jump2_id"
+                {
+                  printf 'Host jump_hop2\n'
+                  printf '  HostName %s\n' "${JUMP2_HOST#*@}"
+                  printf '  User %s\n' "${JUMP2_HOST%%@*}"
+                  printf '  IdentityFile %s\n' "$work/jump2_id"
+                  printf '  IdentitiesOnly yes\n'
+                  printf '  BatchMode yes\n'
+                  printf '  StrictHostKeyChecking yes\n'
+                  printf '  UserKnownHostsFile %s\n' "$work/known_hosts"
+                  printf '  GlobalKnownHostsFile /dev/null\n'
+                  printf '  ConnectTimeout 30\n'
+                  printf '  ServerAliveInterval 30\n'
+                  printf '  ForwardAgent no\n'
+                  printf '  ClearAllForwardings yes\n'
+                } >> "$work/jump_config"
+              )
+              ssh_args_two=("${ssh_args[@]}")
+              ssh_args_two[$((${#ssh_args_two[@]} - 1))]=ProxyJump=jump_hop,jump_hop2
+            fi
           fi
+          # One ssh call: the chain of the host (one or two) picks the argument list.
+          # A copy of the function in the ssh-check-hosts action; a test holds the two
+          # equal. Arguments: chain, the time limit, then what follows the options.
+          ssh_via() {
+            local chain="$1" limit="$2"
+            shift 2
+            if [ "$chain" = two ]; then
+              timeout "$limit" ssh "${ssh_args_two[@]}" "$@"
+            else
+              timeout "$limit" ssh "${ssh_args[@]}" "$@"
+            fi
+          }
           re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-)$'
           # The line of a pushed host. A copy of the one in the ssh-check-hosts
           # action; a test holds the two equal. Each host is judged by its route
@@ -979,10 +1103,15 @@ jobs:
             if [ -n "$PUSH_HOSTS" ] && grep -qxF -- "$dest" <<< "$PUSH_HOSTS"; then
               route=push
             fi
+            # Only a host the second-hop list names takes the second hop.
+            local chain=one
+            if [ -n "$JUMP2_HOSTS" ] && grep -qxF -- "$dest" <<< "$JUMP2_HOSTS"; then
+              chain=two
+            fi
             if [ "$route" = push ]; then
-              out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle" 2> /dev/null) || rc=$?
+              out=$(ssh_via "$chain" "${HOST_TIMEOUT_MINUTES}m" -- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle" 2> /dev/null) || rc=$?
             else
-              out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA" < /dev/null 2> /dev/null) || rc=$?
+              out=$(ssh_via "$chain" "${HOST_TIMEOUT_MINUTES}m" -- "$dest" "$SHA" < /dev/null 2> /dev/null) || rc=$?
             fi
             line=$(printf '%s\n' "$out" | tr -d '\r' | head -n 1)
             if [ "$rc" = 255 ]; then
@@ -1024,6 +1153,13 @@ jobs:
             REPLY_VERDICT="$f_verdict"
           }
 
+          # A host listed for the second hop is never called without it. The block
+          # above has already refused a list with no second hop; this holds the step
+          # to the same, because an unset array expands to nothing and the host would
+          # be called with no options at all.
+          if [ -n "$JUMP2_HOSTS" ] && [ "${#ssh_args_two[@]}" -eq 0 ]; then
+            fail "ssh_jump2_hosts is set but no second hop is configured."
+          fi
           i=0
           while IFS= read -r dest; do
             [ -n "$dest" ] || continue

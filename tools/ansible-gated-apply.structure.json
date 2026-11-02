@@ -46,6 +46,21 @@
         "description": "The private key for the jump host only, never the check key or the apply key. The jump host restricts it to opening a connection to port 22 of the listed hosts. Pass it from a secret. A jump needs jump-host and jump-key both, or neither.",
         "required": false
       },
+      "jump2-host": {
+        "default": "",
+        "description": "Empty (the default) adds no second hop. A user@host, in the form the hosts input takes, is the second hop: the hosts listed in jump2-hosts are reached through jump-host and then this host (ssh ProxyJump), for hosts behind a gateway that only jump-host can reach. Needs jump2-key, jump2-hosts, jump-host and jump-key. Pass it from a secret so the job log masks the name. Its host-key line goes in known-hosts.",
+        "required": false
+      },
+      "jump2-hosts": {
+        "default": "",
+        "description": "Empty (the default) sends no host through a second hop. Otherwise a subset of hosts, one user@host per line, that are reached through the second hop. Every other host keeps the single hop. Every line must also be in hosts, and none may be on the second hop's own address. Pass it from a secret so the job log masks the names.",
+        "required": false
+      },
+      "jump2-key": {
+        "default": "",
+        "description": "The private key for the second hop only, never the check key, the apply key or jump-key. Pass it from a secret. A second hop needs jump2-host, jump2-key and jump2-hosts all, or none.",
+        "required": false
+      },
       "known-hosts": {
         "default": "",
         "description": "The known_hosts lines of the hosts. Pass it from a secret. Empty only in a dry run.",
@@ -100,6 +115,10 @@
         "description": "The SHA-256 of the validated host list, so a later job can prove it uses the same hosts.",
         "value": "${{ steps.validate.outputs.hosts_digest }}"
       },
+      "jump2-hosts-digest": {
+        "description": "The SHA-256 of the validated second-hop list, so a later job can prove it uses the same second-hop hosts. Empty when jump2-hosts is empty.",
+        "value": "${{ steps.validate.outputs.jump2_hosts_digest }}"
+      },
       "outcome": {
         "description": "ok, drift, refused, unreachable, no-answer, failed, withheld, or mixed when more than one of those occurred. Empty if the step stopped before it could judge.",
         "value": "${{ steps.report.outputs.outcome }}"
@@ -118,6 +137,9 @@
             "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
             "HOSTS": "${{ inputs.hosts }}",
             "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+            "JUMP2_HOST": "${{ inputs.jump2-host }}",
+            "JUMP2_HOSTS": "${{ inputs.jump2-hosts }}",
+            "JUMP2_KEY": "${{ inputs.jump2-key }}",
             "JUMP_HOST": "${{ inputs.jump-host }}",
             "JUMP_KEY": "${{ inputs.jump-key }}",
             "PUSH_DRY_RUN_STUB": "${{ inputs.push-dry-run-stub }}",
@@ -125,11 +147,12 @@
             "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
             "PUSH_REPO_PRIVATE": "${{ inputs.push-repo-private }}",
             "SHA": "${{ inputs.sha }}",
+            "SSH_KEY": "${{ inputs.check-key }}",
             "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}"
           },
           "id": "validate",
           "name": "Validate the host list and the inputs",
-          "run-sha256": "31aa473a8add4ae8839dddec39f5becb3502b18c39cdeac628522b0e585bae50",
+          "run-sha256": "db6f4fe690a8fd13b003f257cac37e61f1004e4adfccf14a05610ad41d17c2bd",
           "shell": "bash"
         },
         {
@@ -138,6 +161,9 @@
             "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
             "HOSTS": "${{ inputs.hosts }}",
             "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
+            "JUMP2_HOST": "${{ inputs.jump2-host }}",
+            "JUMP2_HOSTS": "${{ inputs.jump2-hosts }}",
+            "JUMP2_KEY": "${{ inputs.jump2-key }}",
             "JUMP_HOST": "${{ inputs.jump-host }}",
             "JUMP_KEY": "${{ inputs.jump-key }}",
             "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
@@ -151,7 +177,7 @@
           },
           "id": "check",
           "name": "Check every host in check mode",
-          "run-sha256": "23684117295f0e03c1d32a8f19ef64fdffa6fc17983763e0f200988b34028d52",
+          "run-sha256": "5778414eafea73713e3abecd95b1f36027b6699ff24d6e79945373c6c560afaf",
           "shell": "bash"
         },
         {
@@ -159,13 +185,14 @@
             "DRY_RUN": "${{ inputs.dry-run }}",
             "ENVIRONMENT": "${{ inputs.environment }}",
             "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
+            "JUMP2_HOST": "${{ inputs.jump2-host }}",
             "JUMP_HOST": "${{ inputs.jump-host }}",
             "SHA": "${{ inputs.sha }}",
             "SSH_KEY": "${{ inputs.check-key }}"
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "99aef3c2beb111c8427ef346bbd2e5bca2b6244f019e34f815ab25d6bb47668c",
+          "run-sha256": "c39d83edb84e7d7c242c6852dfbf8b8f0c1bc7ddf0fb818c8f2e4b094af379a3",
           "shell": "bash"
         }
       ],
@@ -435,6 +462,9 @@
               "hosts": "${{ secrets.ssh_hosts }}",
               "jump-host": "${{ secrets.ssh_jump_host }}",
               "jump-key": "${{ secrets.ssh_jump_key }}",
+              "jump2-host": "${{ secrets.ssh_jump2_host }}",
+              "jump2-hosts": "${{ secrets.ssh_jump2_hosts }}",
+              "jump2-key": "${{ secrets.ssh_jump2_key }}",
               "known-hosts": "${{ secrets.ssh_known_hosts }}",
               "push-hosts": "${{ secrets.ssh_push_hosts }}",
               "push-playbook": "${{ inputs.push-playbook }}",
@@ -484,6 +514,18 @@
             "description": "The hosts to check, one SSH destination per line in the form user@host. A secret, so the job log masks the names. Pass it from a repository secret.",
             "required": true
           },
+          "ssh_jump2_host": {
+            "description": "Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key and ssh_jump2_hosts, or none. A user@host, in the form ssh_hosts takes, that the hosts in ssh_jump2_hosts are reached through after ssh_jump_host (ssh ProxyJump, two hops). Needs ssh_jump_host and ssh_jump_key. Its host-key line goes in ssh_known_hosts.",
+            "required": false
+          },
+          "ssh_jump2_hosts": {
+            "description": "Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key and ssh_jump2_hosts, or none. The hosts that are reached through both jump hosts, one user@host per line, a subset of ssh_hosts. Every other host keeps the single hop. The second jump host's own address is not listed: it is reached through the first hop alone.",
+            "required": false
+          },
+          "ssh_jump2_key": {
+            "description": "Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key and ssh_jump2_hosts, or none. The private key for the second jump host and nothing else, never the check key or ssh_jump_key. The second jump host restricts it to port 22 of the listed hosts.",
+            "required": false
+          },
           "ssh_jump_host": {
             "description": "Optional: pass from a secret; both or neither with ssh_jump_key. A user@host, in the form ssh_hosts takes, that every host is reached through (ssh ProxyJump), for hosts with no public address. Its host-key line goes in ssh_known_hosts.",
             "required": false
@@ -532,7 +574,9 @@
               "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "IS_FORK": "${{ github.event.repository.fork }}",
+              "JUMP2_HOSTS": "${{ secrets.ssh_jump2_hosts }}",
               "PLANNED_DIGEST": "${{ needs.plan.outputs.hosts_digest }}",
+              "PLANNED_JUMP2_DIGEST": "${{ needs.plan.outputs.jump2_hosts_digest }}",
               "PLANNED_PUSH_DIGEST": "${{ needs.plan.outputs.push_hosts_digest }}",
               "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
               "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
@@ -543,7 +587,7 @@
             },
             "id": "guard",
             "name": "Refuse unless this is the approved, planned push",
-            "run-sha256": "2a683199b87c1e2458a7f0bf60466224f2f679b34f324ef68b4a2b9ed82be1bc"
+            "run-sha256": "0f4012b035699ef3cc5b90a5bc3e06e67a67fcb4a95d78e086794e3258b4f902"
           },
           {
             "if": "steps.guard.outputs.push == 'true'",
@@ -558,6 +602,9 @@
             "env": {
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
+              "JUMP2_HOST": "${{ secrets.ssh_jump2_host }}",
+              "JUMP2_HOSTS": "${{ secrets.ssh_jump2_hosts }}",
+              "JUMP2_KEY": "${{ secrets.ssh_jump2_key }}",
               "JUMP_HOST": "${{ secrets.ssh_jump_host }}",
               "JUMP_KEY": "${{ secrets.ssh_jump_key }}",
               "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
@@ -567,7 +614,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "0e135a87cb25840ddb2ce214c7498b9509bc59f8d8be1a813214653f7546dac2"
+            "run-sha256": "b3fc526e4ac61c665a316bcd28247801a16cd9042126e0c29d16f8ab0675f2cf"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -741,6 +788,7 @@
         "outputs": {
           "has_changes": "${{ steps.ssh.outputs.has-changes }}",
           "hosts_digest": "${{ steps.ssh.outputs.hosts-digest }}",
+          "jump2_hosts_digest": "${{ steps.ssh.outputs.jump2-hosts-digest }}",
           "push_hosts_digest": "${{ steps.ssh.outputs.push-hosts-digest }}",
           "sha": "${{ steps.guard.outputs.sha }}"
         },
@@ -831,6 +879,9 @@
               "hosts": "${{ secrets.ssh_hosts }}",
               "jump-host": "${{ secrets.ssh_jump_host }}",
               "jump-key": "${{ secrets.ssh_jump_key }}",
+              "jump2-host": "${{ secrets.ssh_jump2_host }}",
+              "jump2-hosts": "${{ secrets.ssh_jump2_hosts }}",
+              "jump2-key": "${{ secrets.ssh_jump2_key }}",
               "known-hosts": "${{ secrets.ssh_known_hosts }}",
               "push-dry-run-stub": "${{ inputs.push-dry-run-stub }}",
               "push-hosts": "${{ secrets.ssh_push_hosts }}",
@@ -1009,6 +1060,18 @@
           },
           "ssh_hosts": {
             "description": "The hosts to plan and apply, one SSH destination per line in the form user@host. Each is reached only through the forced command. A secret, so the job log masks the names. Pass it from a repository secret.",
+            "required": false
+          },
+          "ssh_jump2_host": {
+            "description": "Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key and ssh_jump2_hosts, or none. A user@host, in the form ssh_hosts takes, that the hosts in ssh_jump2_hosts are reached through after ssh_jump_host (ssh ProxyJump, two hops), for hosts behind a gateway that only the first jump host can reach. Needs ssh_jump_host and ssh_jump_key. Its host-key line goes in ssh_known_hosts.",
+            "required": false
+          },
+          "ssh_jump2_hosts": {
+            "description": "Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key and ssh_jump2_hosts, or none. The hosts that are reached through both jump hosts, one user@host per line, a subset of ssh_hosts. Every other host keeps the single hop. The second jump host's own address is not listed: it is reached through the first hop alone.",
+            "required": false
+          },
+          "ssh_jump2_key": {
+            "description": "Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key and ssh_jump2_hosts, or none. The private key for the second jump host and nothing else, never the check key, the apply key or ssh_jump_key. The second jump host restricts it to port 22 of the listed hosts.",
             "required": false
           },
           "ssh_jump_host": {

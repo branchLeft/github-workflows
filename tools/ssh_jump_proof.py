@@ -1,6 +1,8 @@
 """Proof, on real sshd, that the ssh-check-hosts jump hop works and its lock holds.
 Gateway sshd on 127.0.0.2, target on 127.0.0.3, both port 22 (the action's inputs carry no port).
-Runs the action's validate, check and report steps as written, with real ssh, and asserts both logs.
+The second hop adds a second gateway on 127.0.0.5 and a target behind it on 127.0.0.6, each with
+authorized_keys files of its own, as separate hosts have.
+Runs the action's validate, check and report steps as written, with real ssh, and asserts the logs.
 Needs root: re-runs itself under sudo, and removes every process, user and file it made on any exit.
 Exit: 0 every assertion held, 1 one failed, 2 setup failed. Run: python3 tools/ssh_jump_proof.py
 """
@@ -34,11 +36,14 @@ ACTION = REPO / ".github/actions/ssh-check-hosts/action.yml"
 GATEWAY_ADDRESS = "127.0.0.2"
 TARGET_ADDRESS = "127.0.0.3"
 OTHER_ADDRESS = "127.0.0.4"
+GATEWAY2_ADDRESS = "127.0.0.5"
+INNER_ADDRESS = "127.0.0.6"
 SSH_PORT = 22
 OTHER_PORT = 2222
 PROOF_SHA = "0123456789abcdef0123456789abcdef01234567"
 
 JUMP_USER = "proofjump"
+JUMP2_USER = "proofjumptwo"
 FORCED_ONLY_USER = "proofforced"
 SHELL_ONLY_USER = "proofnologin"
 CONTROL_USER = "proofopen"
@@ -49,7 +54,7 @@ LOGIN_SHELL = "/bin/sh"
 FORCED_COMMAND = NO_SHELL
 
 STEP_IDS = ("validate", "check", "report")
-LOCKED_PLAN_FILES = ("id", "known_hosts", "jump_id", "jump_config")
+LOCKED_PLAN_FILES = ("id", "known_hosts", "jump_id", "jump_config", "jump2_id")
 REFUSAL = "administratively prohibited"
 
 TARGET_COMMAND = (
@@ -158,6 +163,11 @@ class Fixture:
     gateway_host_key: KeyPair
     target_host_key: KeyPair
     wrong_host_key: KeyPair
+    gateway2: Server
+    inner: Server
+    jump2_key: KeyPair
+    gateway2_host_key: KeyPair
+    inner_host_key: KeyPair
 
 
 @dataclass(frozen=True)
@@ -210,21 +220,30 @@ GATEWAY_ACCOUNTS = (
 
 
 def gateway_authorized_keys_line(
-    target_address: str, port: int, public_key: str, forced_command: str | None = FORCED_COMMAND
+    target_address: str,
+    port: int,
+    public_key: str,
+    forced_command: str | None = FORCED_COMMAND,
+    also_permitted: Sequence[Endpoint] = (),
 ) -> str:
-    """Return the authorized_keys line of the jump key on the gateway: one allowed destination, no command.
+    """Return the authorized_keys line of the jump key on the gateway: the allowed destinations, no command.
+
+    The destination is one. A first hop that also carries a second hop lists that gateway's address as well,
+    one more permitopen each, and nothing else.
 
     Raises:
-        InvalidLineInput: the address is not a plain host name or address, the port is not 1 to 65535,
+        InvalidLineInput: an address is not a plain host name or address, a port is not 1 to 65535,
             or the public key is not one "type base64" pair.
     """
-    if not ADDRESS_PATTERN.fullmatch(target_address):
-        raise InvalidLineInput("the permitted address must be one plain host name or address, with no wildcard")
-    if not 1 <= port <= 65535:
-        raise InvalidLineInput("the permitted port must be from 1 to 65535")
+    destinations = [Endpoint(target_address, port), *also_permitted]
+    for destination in destinations:
+        if not ADDRESS_PATTERN.fullmatch(destination.host):
+            raise InvalidLineInput("the permitted address must be one plain host name or address, with no wildcard")
+        if not 1 <= destination.port <= 65535:
+            raise InvalidLineInput("the permitted port must be from 1 to 65535")
     if not PUBLIC_KEY_PATTERN.fullmatch(public_key):
         raise InvalidLineInput("the public key must be one 'type base64' pair")
-    options = ["restrict", "port-forwarding", f'permitopen="{target_address}:{port}"']
+    options = ["restrict", "port-forwarding", *(f'permitopen="{d.host}:{d.port}"' for d in destinations)]
     if forced_command is not None:
         options.append(f'command="{forced_command}"')
     return f"{','.join(options)} {public_key}"
@@ -386,13 +405,13 @@ def write_private(path: Path, text: str, mode: int) -> None:
     path.chmod(mode)
 
 
-def sshd_configuration(fixture_directory: Path, address: str, host_key: KeyPair) -> str:
+def sshd_configuration(keys_directory: Path, address: str, host_key: KeyPair) -> str:
     return "\n".join(
         [
             f"ListenAddress {address}",
             f"Port {SSH_PORT}",
             f"HostKey {host_key.private_path}",
-            f"AuthorizedKeysFile {fixture_directory}/authorized_keys.%u",
+            f"AuthorizedKeysFile {keys_directory}/authorized_keys.%u",
             "PasswordAuthentication no",
             "KbdInteractiveAuthentication no",
             "PubkeyAuthentication yes",
@@ -405,12 +424,18 @@ def sshd_configuration(fixture_directory: Path, address: str, host_key: KeyPair)
     )
 
 
-def start_server(stack: ExitStack, directory: Path, name: str, address: str, host_key: KeyPair) -> Server:
-    """Start one sshd in the foreground of a child process and wait until it accepts connections."""
+def start_server(
+    stack: ExitStack, directory: Path, name: str, address: str, host_key: KeyPair, keys_directory: Path | None = None
+) -> Server:
+    """Start one sshd in the foreground of a child process and wait until it accepts connections.
+
+    keys_directory holds the authorized_keys.<account> files this server reads; a server of its own host has
+    its own, so a key installed on one host is not accepted by another.
+    """
     ensure_port_free(address)
     config_path = directory / f"sshd_{name}.conf"
     log_path = directory / f"sshd_{name}.log"
-    write_private(config_path, sshd_configuration(directory, address, host_key), 0o600)
+    write_private(config_path, sshd_configuration(keys_directory or directory, address, host_key), 0o600)
     process = subprocess.Popen([find_sshd(), "-D", "-f", str(config_path), "-E", str(log_path)])
     stack.callback(stop_process, process)
     deadline = time.monotonic() + 10
@@ -434,9 +459,11 @@ def stop_process(process: subprocess.Popen[bytes]) -> None:
 
 
 def write_gateway_accounts(directory: Path, fixture_keys: KeyPair) -> None:
+    # The first gateway also permits the second gateway's address: the first hop of the second hop's chain.
+    second_gateway = Endpoint(GATEWAY2_ADDRESS, SSH_PORT)
     for account in GATEWAY_ACCOUNTS:
         forced = FORCED_COMMAND if account.has_forced_command else None
-        line = gateway_authorized_keys_line(TARGET_ADDRESS, SSH_PORT, fixture_keys.public_key, forced)
+        line = gateway_authorized_keys_line(TARGET_ADDRESS, SSH_PORT, fixture_keys.public_key, forced, [second_gateway])
         write_private(directory / f"authorized_keys.{account.name}", line + "\n", 0o644)
 
 
@@ -476,10 +503,14 @@ def proof_fixture() -> Iterator[Fixture]:
         gateway_host_key = generate_key(key_directory, "gateway_host_key")
         target_host_key = generate_key(key_directory, "target_host_key")
         wrong_host_key = generate_key(key_directory, "wrong_host_key")
+        jump2_key = generate_key(key_directory, "jump2_key")
+        gateway2_host_key = generate_key(key_directory, "gateway2_host_key")
+        inner_host_key = generate_key(key_directory, "inner_host_key")
 
         for account in GATEWAY_ACCOUNTS:
             add_user(stack, account.name, account.shell, directory)
         add_user(stack, DEPLOY_USER, LOGIN_SHELL, directory)
+        add_user(stack, JUMP2_USER, NO_SHELL, directory)
         write_gateway_accounts(directory, jump_key)
         command_path = directory / "target_command.sh"
         write_private(command_path, TARGET_COMMAND, 0o755)
@@ -489,8 +520,26 @@ def proof_fixture() -> Iterator[Fixture]:
             0o644,
         )
 
+        # The second gateway and the host behind it are separate hosts: their own authorized_keys files, so the
+        # first hop's key is unknown to them and the second hop's key is unknown to the first gateway.
+        second_directory = directory / "second"
+        second_directory.mkdir()
+        second_directory.chmod(0o755)
+        write_private(
+            second_directory / f"authorized_keys.{JUMP2_USER}",
+            gateway_authorized_keys_line(INNER_ADDRESS, SSH_PORT, jump2_key.public_key) + "\n",
+            0o644,
+        )
+        write_private(
+            second_directory / f"authorized_keys.{DEPLOY_USER}",
+            target_authorized_keys_line(command_path, check_key.public_key) + "\n",
+            0o644,
+        )
+
         gateway = start_server(stack, directory, "gateway", GATEWAY_ADDRESS, gateway_host_key)
         target = start_server(stack, directory, "target", TARGET_ADDRESS, target_host_key)
+        gateway2 = start_server(stack, directory, "gateway2", GATEWAY2_ADDRESS, gateway2_host_key, second_directory)
+        inner = start_server(stack, directory, "inner", INNER_ADDRESS, inner_host_key, second_directory)
         yield Fixture(
             directory,
             shim_directory,
@@ -503,11 +552,28 @@ def proof_fixture() -> Iterator[Fixture]:
             gateway_host_key,
             target_host_key,
             wrong_host_key,
+            gateway2,
+            inner,
+            jump2_key,
+            gateway2_host_key,
+            inner_host_key,
         )
 
 
-def run_action(fixture: Fixture, name: str, known_hosts: str, jump: bool) -> ActionRun:
-    """Run the validate, check and report steps of the action, as written, against the two servers."""
+def run_action(
+    fixture: Fixture,
+    name: str,
+    known_hosts: str,
+    jump: bool,
+    hosts: str | None = None,
+    jump2: bool = False,
+    jump2_hosts: str = "",
+) -> ActionRun:
+    """Run the validate, check and report steps of the action, as written, against the servers.
+
+    hosts defaults to the one target. jump2 sets the second hop's host and key; jump2_hosts is the list sent
+    through it.
+    """
     defaults, steps = load_action(ACTION)
     runner_temp = fixture.directory / "runs" / name
     runner_temp.mkdir(parents=True)
@@ -519,7 +585,7 @@ def run_action(fixture: Fixture, name: str, known_hosts: str, jump: bool) -> Act
     summary_file.write_text("")
     inputs = {
         **defaults,
-        "hosts": f"{DEPLOY_USER}@{TARGET_ADDRESS}",
+        "hosts": hosts if hosts is not None else f"{DEPLOY_USER}@{TARGET_ADDRESS}",
         "known-hosts": known_hosts,
         "check-key": fixture.check_key.private_text(),
         "sha": PROOF_SHA,
@@ -527,6 +593,10 @@ def run_action(fixture: Fixture, name: str, known_hosts: str, jump: bool) -> Act
     if jump:
         inputs["jump-host"] = f"{JUMP_USER}@{GATEWAY_ADDRESS}"
         inputs["jump-key"] = fixture.jump_key.private_text()
+    if jump2:
+        inputs["jump2-host"] = f"{JUMP2_USER}@{GATEWAY2_ADDRESS}"
+        inputs["jump2-key"] = fixture.jump2_key.private_text()
+    inputs["jump2-hosts"] = jump2_hosts
     base_environment = {
         "PATH": f"{fixture.shim_directory}:{os.environ['PATH']}",
         "HOME": str(home),
@@ -569,15 +639,24 @@ def run_action(fixture: Fixture, name: str, known_hosts: str, jump: bool) -> Act
 
 
 def jump_key_ssh(
-    fixture: Fixture, known_hosts: Path, account: str, remote: Sequence[str], extra: Sequence[str] = ()
+    fixture: Fixture,
+    known_hosts: Path,
+    account: str,
+    remote: Sequence[str],
+    extra: Sequence[str] = (),
+    key: KeyPair | None = None,
+    address: str = GATEWAY_ADDRESS,
 ) -> list[str]:
-    """Return the argv of a direct ssh to the gateway with the jump key and the strict options of the hop."""
+    """Return the argv of a direct ssh to a gateway with a hop key and the strict options of the hop.
+
+    The key is the first hop's and the address the first gateway's unless the caller names the second's.
+    """
     return [
         "ssh",
         "-F",
         "none",
         "-i",
-        str(fixture.jump_key.private_path),
+        str((key or fixture.jump_key).private_path),
         "-o",
         "IdentitiesOnly=yes",
         "-o",
@@ -591,7 +670,7 @@ def jump_key_ssh(
         "-o",
         "ConnectTimeout=10",
         *extra,
-        f"{account}@{GATEWAY_ADDRESS}",
+        f"{account}@{address}",
         *remote,
     ]
 
@@ -644,7 +723,8 @@ def known_hosts_text(gateway_key: KeyPair | None, target_key: KeyPair | None) ->
 
 
 def names_in(text: str) -> list[str]:
-    return [name for name in (GATEWAY_ADDRESS, TARGET_ADDRESS, JUMP_USER, DEPLOY_USER) if name in text]
+    names = (GATEWAY_ADDRESS, TARGET_ADDRESS, JUMP_USER, DEPLOY_USER, GATEWAY2_ADDRESS, INNER_ADDRESS, JUMP2_USER)
+    return [name for name in names if name in text]
 
 
 def plan_files_left(run: ActionRun) -> list[str]:
@@ -926,6 +1006,183 @@ def prove_failed_run(
         )
 
 
+def all_known_hosts(fixture: Fixture) -> str:
+    """The known_hosts lines of both gateways and both targets."""
+    return "\n".join(
+        [
+            known_hosts_text(fixture.gateway_host_key, fixture.target_host_key),
+            fixture.gateway2_host_key.known_hosts_line(GATEWAY2_ADDRESS),
+            fixture.inner_host_key.known_hosts_line(INNER_ADDRESS),
+        ]
+    )
+
+
+def fingerprints(log: str) -> set[str]:
+    return {login.fingerprint for login in accepted_logins(log)}
+
+
+def prove_second_hop(fixture: Fixture, report: Report) -> None:
+    report.section("(6) the second hop: only the listed host goes through the second gateway")
+    target_host = f"{DEPLOY_USER}@{TARGET_ADDRESS}"
+    inner_host = f"{DEPLOY_USER}@{INNER_ADDRESS}"
+    servers = (fixture.gateway, fixture.gateway2, fixture.target, fixture.inner)
+    marks = [len(log_text(server)) for server in servers]
+    run = run_action(
+        fixture,
+        "twohop",
+        all_known_hosts(fixture),
+        jump=True,
+        hosts=f"{target_host}\n{inner_host}",
+        jump2=True,
+        jump2_hosts=inner_host,
+    )
+    gateway_log, gateway2_log, target_log, inner_log = (
+        log_since(server, mark) for server, mark in zip(servers, marks, strict=True)
+    )
+    report.observe(f"steps: {run.steps}; outputs: {run.outputs}")
+    report.assert_that(
+        run.every_step_succeeded() and run.outputs.get("outcome") == "ok",
+        "(6) validate, check and report all succeed, and both hosts answer clean",
+    )
+    one_hop = run.ssh_calls[0] if len(run.ssh_calls) > 0 else []
+    two_hop = run.ssh_calls[1] if len(run.ssh_calls) > 1 else []
+    report.observe("one-hop host ssh argv:\n" + " ".join(one_hop) + "\ntwo-hop host ssh argv:\n" + " ".join(two_hop))
+    report.assert_that(
+        "ProxyJump=jump_hop" in one_hop and not any("jump_hop2" in argument for argument in one_hop),
+        "(6) the host not on the list is called through the first hop alone",
+    )
+    report.assert_that(
+        "ProxyJump=jump_hop,jump_hop2" in two_hop, "(6) the listed host is called through both hops, first then second"
+    )
+    report.assert_that(
+        "ClearAllForwardings=yes" in one_hop and "ClearAllForwardings=yes" in two_hop,
+        "(6) both calls ran with -o ClearAllForwardings=yes, and the chain still reaches the targets",
+    )
+    report.observe(
+        f"first gateway forwards: {requested_forwards(gateway_log)}; second gateway forwards: "
+        f"{requested_forwards(gateway2_log)}, refused: {denied_forwards(gateway2_log)}"
+    )
+    report.assert_that(
+        sorted(permitted_forwards(gateway_log)) == sorted([Endpoint(TARGET_ADDRESS, SSH_PORT), Endpoint(GATEWAY2_ADDRESS, SSH_PORT)]),
+        "(6) the first gateway carried one forward to the one-hop target and one to the second gateway",
+    )
+    report.assert_that(
+        count_connections(gateway2_log) == 1 and permitted_forwards(gateway2_log) == [Endpoint(INNER_ADDRESS, SSH_PORT)],
+        "(6) the second gateway saw one connection, for the listed host, and none for the one-hop host",
+    )
+    report.assert_that(
+        [login.user for login in accepted_logins(target_log)] == [DEPLOY_USER]
+        and [login.user for login in accepted_logins(inner_log)] == [DEPLOY_USER],
+        "(6) each target logged one login of the deploy account",
+    )
+    jump, jump2, check = fixture.jump_key.fingerprint, fixture.jump2_key.fingerprint, fixture.check_key.fingerprint
+    report.assert_that(
+        offered_fingerprints(gateway_log) == {jump} and fingerprints(gateway_log) == {jump},
+        "(6) the first gateway was offered and accepted the first hop's key and nothing else",
+    )
+    report.assert_that(
+        offered_fingerprints(gateway2_log) == {jump2} and fingerprints(gateway2_log) == {jump2},
+        "(6) the second gateway was offered and accepted the second hop's key and nothing else",
+    )
+    report.assert_that(
+        offered_fingerprints(target_log) == {check} and offered_fingerprints(inner_log) == {check},
+        "(6) each target was offered the check key and nothing else",
+    )
+    report.assert_that(
+        jump2 not in gateway_log + target_log + inner_log and jump not in gateway2_log + inner_log + target_log,
+        "(6) the second hop's key is offered to nobody else, and the first hop's key never reaches the second gateway",
+    )
+    report.assert_that(
+        not names_in(run.log + run.summary), "(6) neither the job log nor the summary holds a host or account name"
+    )
+    report.assert_that(not plan_files_left(run), "(6) the keys, known_hosts and config files are gone after the steps")
+    prove_second_hop_cross_use(fixture, report)
+    prove_second_gateway_lock(fixture, report)
+    prove_second_hop_dropped(fixture, report)
+
+
+def prove_second_hop_cross_use(fixture: Fixture, report: Report) -> None:
+    known_hosts = fixture.directory / "known_hosts_all"
+    known_hosts.write_text(all_known_hosts(fixture) + "\n")
+    options = [
+        "-F", "none", "-o", "IdentitiesOnly=yes", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes",
+        "-o", f"UserKnownHostsFile={known_hosts}", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
+    ]  # fmt: skip
+    attempts = [
+        ("the first hop's key to the second gateway", fixture.jump_key, f"{JUMP2_USER}@{GATEWAY2_ADDRESS}"),
+        ("the first hop's key as its own account to the second gateway", fixture.jump_key, f"{JUMP_USER}@{GATEWAY2_ADDRESS}"),
+        ("the second hop's key to the first gateway", fixture.jump2_key, f"{JUMP_USER}@{GATEWAY_ADDRESS}"),
+        ("the second hop's key to the host behind it", fixture.jump2_key, f"{DEPLOY_USER}@{INNER_ADDRESS}"),
+        ("the first hop's key to the host behind the second gateway", fixture.jump_key, f"{DEPLOY_USER}@{INNER_ADDRESS}"),
+    ]  # fmt: skip
+    for why, key, destination in attempts:
+        result = run_command(["ssh", *options, "-i", str(key.private_path), destination, "true"])
+        report.observe(f"{why}: status {result.exit_status}: {result.stderr.strip()}")
+        report.assert_that(
+            "Permission denied (publickey)" in result.stderr, f"(6) {why} is refused"
+        )
+
+
+def prove_second_gateway_lock(fixture: Fixture, report: Report) -> None:
+    report.section("(6b) the second gateway opens the host behind it and no other")
+    known_hosts = fixture.directory / "known_hosts_gateway2"
+    known_hosts.write_text(fixture.gateway2_host_key.known_hosts_line(GATEWAY2_ADDRESS) + "\n")
+
+    def forward(destination: Endpoint) -> tuple[ForwardResult, str]:
+        mark = len(log_text(fixture.gateway2))
+        argv = jump_key_ssh(
+            fixture, known_hosts, JUMP2_USER, [], ["-W", f"{destination.host}:{destination.port}"],
+            key=fixture.jump2_key, address=GATEWAY2_ADDRESS,
+        )  # fmt: skip
+        result = open_forward(argv)
+        return result, log_since(fixture.gateway2, mark)
+
+    allowed, allowed_log = forward(Endpoint(INNER_ADDRESS, SSH_PORT))
+    report.assert_that(
+        allowed.banner.startswith("SSH-2.0-") and permitted_forwards(allowed_log) == [Endpoint(INNER_ADDRESS, SSH_PORT)],
+        "(6b) positive control: the host behind the second gateway is reached",
+    )
+    for destination, why in (
+        (Endpoint(TARGET_ADDRESS, SSH_PORT), "a host of the first hop"),
+        (Endpoint(INNER_ADDRESS, OTHER_PORT), "the host behind it on another port"),
+        (Endpoint(GATEWAY_ADDRESS, SSH_PORT), "the first gateway"),
+    ):
+        result, gateway_log = forward(destination)
+        report.assert_that(
+            result.exit_status != 0 and not result.banner and REFUSAL in result.stderr
+            and Endpoint(destination.host, destination.port) in denied_forwards(gateway_log)
+            and not permitted_forwards(gateway_log),
+            f"(6b) {why} is refused by the second gateway",
+        )
+
+
+def prove_second_hop_dropped(fixture: Fixture, report: Report) -> None:
+    report.section("(6c) controls: a listed host with no second hop fails loudly, and a half-set hop is refused")
+    inner_host = f"{DEPLOY_USER}@{INNER_ADDRESS}"
+    servers = (fixture.gateway, fixture.gateway2, fixture.inner)
+    marks = [len(log_text(server)) for server in servers]
+    run = run_action(fixture, "dropped", all_known_hosts(fixture), jump=True, hosts=inner_host)
+    gateway_log, gateway2_log, inner_log = (log_since(s, m) for s, m in zip(servers, marks, strict=True))
+    report.observe(f"steps: {run.steps}; outcome {run.outputs.get('outcome')!r}")
+    report.assert_that(
+        run.status_of("report") == 1 and run.outputs.get("outcome") == "unreachable",
+        "(6c) with the second hop dropped, the host behind it is unreachable and the report step fails",
+    )
+    report.assert_that(
+        Endpoint(INNER_ADDRESS, SSH_PORT) in denied_forwards(gateway_log)
+        and count_connections(gateway2_log) == 0
+        and count_connections(inner_log) == 0,
+        "(6c) the first gateway refused the destination, and neither the second gateway nor the host was reached",
+    )
+    marks = [len(log_text(server)) for server in servers]
+    half = run_action(fixture, "listonly", all_known_hosts(fixture), jump=True, hosts=inner_host, jump2_hosts=inner_host)
+    after = [log_since(server, mark) for server, mark in zip(servers, marks, strict=True)]
+    report.assert_that(
+        half.status_of("validate") == 1 and not half.ssh_calls and all(count_connections(log) == 0 for log in after),
+        "(6c) a list with no second hop is refused by the validate step before any connection is made",
+    )
+
+
 def ensure_root() -> None:
     """Run this script again under sudo when it is not root: the servers need port 22 and system accounts."""
     if os.geteuid() != 0:
@@ -946,6 +1203,7 @@ def main() -> int:
             prove_forwarding_lock(fixture, report)
             prove_no_command(fixture, report)
             prove_host_key_checks(fixture, report)
+            prove_second_hop(fixture, report)
     except ProofError as error:
         print(f"ERROR: {error}", file=sys.stderr, flush=True)
         return 2
