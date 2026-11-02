@@ -355,6 +355,9 @@ Any failure stops the job before the key is read.
 | `ssh_apply_key` | not passed: an environment secret | Private key of the apply job. It is read because the apply job runs in the environment, so a job that has not passed the approval cannot read it. |
 | `ssh_jump_host` | the caller, optional | A `user@host` that every host is reached through. Both or neither with `ssh_jump_key`. Its host-key line goes in `ssh_known_hosts`. |
 | `ssh_jump_key` | the caller, optional | Private key for the jump host and nothing else, never the check key or the apply key. Both or neither with `ssh_jump_host`. |
+| `ssh_jump2_host` | the caller, optional | A `user@host` that only the hosts in `ssh_jump2_hosts` are reached through, after `ssh_jump_host`: the second hop. All three of `ssh_jump2_host`, `ssh_jump2_key` and `ssh_jump2_hosts`, or none. Its host-key line goes in `ssh_known_hosts`. |
+| `ssh_jump2_key` | the caller, optional | Private key for the second hop and nothing else, never the check key, the apply key or `ssh_jump_key`. |
+| `ssh_jump2_hosts` | the caller, optional | The hosts reached through both hops, one `user@host` per line, each one a line of `ssh_hosts`. Every other host keeps the one hop. The list is part of the digest that ties the apply to the plan. |
 
 A caller may pass the two jump secrets to reach hosts that have no public address
 through a gateway host; the gateway host is only this input. The plan job hands both
@@ -363,6 +366,10 @@ same jump, with the same strict options on every hop. One without the other fail
 before any host is contacted and names the one that is missing; with neither,
 nothing changes. What the host operator provides on the gateway is in "Reaching a
 private host through a jump host" under `ssh-check-hosts` below, not restated here.
+A host behind a second gateway is reached with the three `ssh_jump2_` secrets (see
+"Reaching a host through two hops" under `ssh-check-hosts` below). They need the
+first hop and are all three or none: a partial set fails before any host is
+contacted and names what is missing.
 The jump host is not part of the digest that ties the apply to the plan: the digest
 binds the target hosts, which strict host-key checking pins.
 
@@ -682,7 +689,9 @@ Three secrets are required and are the same secrets as the plan job's:
 `ssh_hosts`, `ssh_known_hosts` and `ssh_check_key`. Two more are optional, both or
 neither: `ssh_jump_host` and `ssh_jump_key`, which reach hosts that have no public
 address through a gateway host (see "Reaching a private host through a jump host"
-under `ssh-check-hosts` below). A third optional secret, `ssh_push_hosts`, puts a
+under `ssh-check-hosts` below). Three more, all three or none, add a second hop:
+`ssh_jump2_host`, `ssh_jump2_key` and `ssh_jump2_hosts` (see "Reaching a host
+through two hops" under `ssh-check-hosts` below). A further optional secret, `ssh_push_hosts`, puts a
 subset of the hosts on the push route, which sends the commit as a bundle with the
 command `check <commit> <playbook>` (see "Pushed hosts" under
 `ansible-gated-apply.yml`); it needs `push-playbook` and checks the repository out
@@ -1029,6 +1038,9 @@ job loads the host check"), and it takes the secrets as inputs.
 | `check-key` | empty | The private key of the check route, from a secret. Empty only in a dry run. |
 | `jump-host` | empty | A `user@host`, in the form `hosts` takes, from a secret. Set, every host is reached through this one host (see "Reaching a private host through a jump host"). Needs `jump-key`: one without the other fails the validate step, naming the one that is missing. Its host-key line goes in `known-hosts`. |
 | `jump-key` | empty | The private key for the jump host and nothing else, from a secret. Never the check key or the apply key. |
+| `jump2-host` | empty | A `user@host`, from a secret: the second hop, reached through `jump-host`. Needs `jump2-key`, `jump2-hosts`, `jump-host` and `jump-key` (see "Reaching a host through two hops"). Its host-key line goes in `known-hosts`. |
+| `jump2-key` | empty | The private key for the second hop and nothing else, from a secret. Never any other key the action holds. |
+| `jump2-hosts` | empty | The subset of `hosts`, from a secret, that is reached through both hops. Every other host keeps the one hop. |
 | `push-hosts` | empty | A subset of `hosts`, from a secret, that is sent a git bundle of the checked-out commit on standard input with the command `<mode> <commit> <push-playbook>` instead of being asked to fetch it (see "Pushed hosts" under `ansible-gated-apply.yml`). Needs `push-playbook`, `jump-host` and `jump-key`, a checkout of the caller's repository at `sha` with its whole history, and a public repository. Empty puts no host on the push route and ignores the other `push-` inputs. |
 | `push-playbook` | empty | With `push-hosts`, a relative path of letters, digits, dot, underscore, dash and slash, with no `..`. |
 | `push-dry-run-stub` | empty | With `dry-run` and `push-hosts`, the executable, relative to `working-directory`, that stands in for the receiver. |
@@ -1118,6 +1130,45 @@ The jump host is one input. It is today a public edge host of the platform, and 
 dedicated gateway host can replace it by changing the one input, `jump-host`, and
 the one key, `jump-key` (and its host-key line in `known-hosts`), with no change to
 the action.
+
+#### Reaching a host through two hops
+
+A host whose only route is a second gateway behind the first is reached by naming
+that gateway in `jump2-host` and the hosts behind it in `jump2-hosts`. A listed host
+is called through both hops (`-o ProxyJump=jump_hop,jump_hop2`); every other host
+is called exactly as it is with one hop, so the second hop widens no existing route.
+All of `jump2-host`, `jump2-key` and `jump2-hosts` or none: the validate step
+refuses, before any host is contacted and without echoing a value, a partial set, a
+second hop without the first, a `jump2-key` equal to `jump-key`, a listed host that
+is not a line of `hosts`, a host listed twice, a list that holds the second hop's
+own address, and a list with no host in it. A step that reached a listed host with
+no second hop configured would fall back to one hop, so the check also refuses that
+case before the first connection.
+
+The second stanza is added to the same private config file with its own key file
+and the same strict options as the first, so the options of the outer call reach
+neither hop and the check key is offered to neither gateway. Each key is offered to
+its own hop only, and the second hop's name is replaced in any host text that
+reaches the summary, as the first is. The apply step holds the same text, and the
+apply guard recomputes the digest of the second-hop list, so a list that was not the
+planned one refuses the apply.
+
+- **What the host operator provides on the first hop.** The first hop's
+  `authorized_keys` line permits the second gateway's address as one more
+  `permitopen`, and nothing else beyond what it already permits:
+
+  ```text
+  restrict,port-forwarding,permitopen="GATEWAY_ONE_TARGET:22",permitopen="SECOND_GATEWAY:22",command="/usr/sbin/nologin" ssh-ed25519 AAAA... jump-key
+  ```
+
+- **What the host operator provides on the second hop.** The same as for the first:
+  a dedicated account with no shell, whose `authorized_keys` holds the second key
+  and nothing else, restricted to a connection to port 22 of the listed hosts only.
+
+The real-sshd proof (`tools/ssh_jump_proof.py`) adds a second gateway and an inner
+host on two more loopback addresses: the listed host answers through both hops,
+the second key opens only its listed destinations, each key is refused by the
+other's server, and with the second hop dropped the listed host is not reached.
 
 The self-test is `.github/workflows/ssh-check-hosts-self.yml`: it runs the action on a
 real runner against the stand-in host in the fixture, with `fail-on-changes` both

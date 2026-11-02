@@ -66,6 +66,10 @@ PAG = "PushApplyGuardTests"
 PA = "PushApplyTests"
 PPar = "PushParityTests"
 PO = "PushOffTests"
+SJ2 = "SshJump2Tests"
+AJ2 = "ApplyJump2Tests"
+JAG = "Jump2ApplyGuardTests"
+JPar = "Jump2ParityTests"
 
 CASES: list[Case] = [
     Case(
@@ -556,27 +560,27 @@ CASES: list[Case] = [
     ),
     Case(
         "jump hop stanza drops StrictHostKeyChecking",
-        [Edit(ACTION, "                printf '  StrictHostKeyChecking yes\\n'\n", "")],
+        [Edit(ACTION, "\n                printf '  StrictHostKeyChecking yes\\n'", "")],
         [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones", f"{SJ}.test_the_config_file_is_exactly_one_stanza_for_the_hop"],
     ),
     Case(
         "jump hop stanza drops IdentitiesOnly",
-        [Edit(ACTION, "                printf '  IdentitiesOnly yes\\n'\n", "")],
+        [Edit(ACTION, "\n                printf '  IdentitiesOnly yes\\n'", "")],
         [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
     ),
     Case(
         "jump hop stanza drops BatchMode",
-        [Edit(ACTION, "                printf '  BatchMode yes\\n'\n", "")],
+        [Edit(ACTION, "\n                printf '  BatchMode yes\\n'", "")],
         [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
     ),
     Case(
         "jump hop stanza reads the global known hosts",
-        [Edit(ACTION, "                printf '  GlobalKnownHostsFile /dev/null\\n'\n", "")],
+        [Edit(ACTION, "\n                printf '  GlobalKnownHostsFile /dev/null\\n'", "")],
         [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
     ),
     Case(
         "jump hop stanza drops ClearAllForwardings",
-        [Edit(ACTION, "                printf '  ClearAllForwardings yes\\n'\n", "")],
+        [Edit(ACTION, "\n                printf '  ClearAllForwardings yes\\n'", "")],
         [f"{SJ}.test_the_hop_has_its_own_strict_options_because_ssh_passes_none_of_the_outer_ones"],
     ),
     Case(
@@ -641,7 +645,7 @@ CASES: list[Case] = [
     ),
     Case(
         "jump proof line permits any destination",
-        [Edit(PROOF, "\"port-forwarding\", f'permitopen=\"{target_address}:{port}\"'", "\"port-forwarding\", 'permitopen=\"*:*\"'")],
+        [Edit(PROOF, "*(f'permitopen=\"{d.host}:{d.port}\"' for d in destinations)", "*('permitopen=\"*:*\"' for d in destinations)")],
         [f"{SP}.test_the_line_is_restrict_then_port_forwarding_one_permitopen_and_a_forced_command", f"{SP}.test_permitopen_is_exactly_one_destination_with_no_wildcard_and_no_list"],
     ),
     Case(
@@ -656,7 +660,7 @@ CASES: list[Case] = [
     ),
     Case(
         "jump proof line accepts a port out of range",
-        [Edit(PROOF, "    if not 1 <= port <= 65535:", "    if not 0 <= port <= 70000:")],
+        [Edit(PROOF, "        if not 1 <= destination.port <= 65535:", "        if not 0 <= destination.port <= 70000:")],
         [f"{SP}.test_a_wildcard_a_list_or_an_injected_option_is_refused_before_it_reaches_the_line"],
     ),
     Case(
@@ -699,7 +703,7 @@ CASES: list[Case] = [
     # apply step's copy of the hop.
     Case(
         "apply jump hop stanza drops StrictHostKeyChecking",
-        [Edit(GATED, "                printf '  StrictHostKeyChecking yes\\n'\n", "")],
+        [Edit(GATED, "\n                printf '  StrictHostKeyChecking yes\\n'", "")],
         [
             f"{AJ}.test_the_hop_has_its_own_strict_options_in_the_apply_too",
             f"{AJ}.test_the_stanza_the_destination_pattern_and_the_trap_in_the_apply_step_equal_the_actions",
@@ -772,12 +776,12 @@ CASES: list[Case] = [
     ),
     Case(
         "apply jump hop stanza drops ClearAllForwardings",
-        [Edit(GATED, "                printf '  ClearAllForwardings yes\\n'\n", "")],
+        [Edit(GATED, "\n                printf '  ClearAllForwardings yes\\n'", "")],
         [f"{AJ}.test_the_hop_has_its_own_strict_options_in_the_apply_too"],
     ),
     Case(
         "apply jump hop stanza drops IdentitiesOnly",
-        [Edit(GATED, "                printf '  IdentitiesOnly yes\\n'\n", "")],
+        [Edit(GATED, "\n                printf '  IdentitiesOnly yes\\n'", "")],
         [f"{AJ}.test_the_hop_has_its_own_strict_options_in_the_apply_too"],
     ),
     Case(
@@ -1040,6 +1044,177 @@ CASES: list[Case] = [
         "push: the old pull path gains a step that runs without a push list",
         [Edit(GATED, "      - name: Decide whether any host is pushed to\n        id: push\n", "      - name: Decide whether any host is pushed to\n        id: push\n        if: always()\n")],
         [f"{PO}.test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it"],
+    ),
+    # The second hop. The control is that the second hop applies to the
+    # listed hosts and only to them; the rest hold its validation, its keys and its
+    # silence. The widened and dropped cases are the pair the ticket names.
+    Case(
+        "second hop: the chain is applied to every host",
+        [Edit(ACTION, '          if [ -n "$JUMP2_HOSTS" ] && grep -qxF -- "$dest" <<< "$JUMP2_HOSTS"; then', '          if [ -n "$JUMP2_HOSTS" ]; then')],
+        [f"{SJ2}.test_only_listed_hosts_get_the_two_hop_chain"],
+    ),
+    Case(
+        "second hop: the chain is dropped for the listed hosts",
+        [Edit(ACTION, "=ProxyJump=jump_hop,jump_hop2", "=ProxyJump=jump_hop")],
+        [f"{SJ2}.test_a_listed_host_is_called_through_both_hops"],
+    ),
+    Case(
+        "second hop: a listed host is called without the second hop when none is set",
+        [Edit(ACTION, '        if [ "$DRY_RUN" != true ] && [ -n "$JUMP2_HOSTS" ] && [ "${#ssh_args_two[@]}" -eq 0 ]; then\n          fail "jump2-hosts is set but no second hop is configured."\n        fi\n', "")],
+        [f"{SJ2}.test_a_second_hop_listed_with_no_hop_set_fails_closed_even_if_validation_were_skipped"],
+    ),
+    Case(
+        "second hop: a host with no key is accepted",
+        [Edit(ACTION, '          [ -n "$JUMP2_KEY" ] || fail "jump2-host is set but jump2-key is empty: a second hop needs both or neither."\n', "")],
+        [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: a key with no host is accepted",
+        [Edit(ACTION, '          [ -n "$JUMP2_HOST" ] || fail "jump2-key is set but jump2-host is empty: a second hop needs both or neither."\n', "")],
+        [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: a second hop without the first hop is accepted",
+        [Edit(ACTION, '          { [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "A second hop needs jump-host and jump-key: it is reached through the first hop."\n', "")],
+        [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: a list with no second hop is accepted",
+        [
+            Edit(
+                ACTION,
+                '          if [ -z "$JUMP2_HOST" ] && [ -z "$JUMP2_KEY" ]; then\n            fail "jump2-hosts is set but there is no second hop (jump2-host and jump2-key are empty): a listed host would fall back to one hop."\n          fi\n',
+                "",
+            )
+        ],
+        [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: the second hop's own address is accepted as a target",
+        [
+            Edit(
+                ACTION,
+                '            [ "$(printf \'%s\' "${dest#*@}" | tr \'[:upper:]\' \'[:lower:]\')" != "$jump2_gateway" ] \\\n              || fail "A line of jump2-hosts is the address of the second hop itself: that host is reached through the first hop alone."\n',
+                "",
+            )
+        ],
+        [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: the first hop's key is accepted as the second hop's",
+        [Edit(ACTION, '          [ "$JUMP2_KEY" != "$JUMP_KEY" ] || fail "jump2-key is the same as jump-key: each hop has its own key."\n', "")],
+        [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: a listed host outside the hosts list is accepted",
+        [Edit(ACTION, '            grep -qxF -- "$dest" <<< "$HOSTS" || fail "A line of jump2-hosts is not in the hosts list."\n', "")],
+        [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: the second key and the config are written with the runner umask",
+        [Edit(ACTION, "                umask 077\n                printf '%s\\n' \"$JUMP2_KEY\"", "                printf '%s\\n' \"$JUMP2_KEY\"")],
+        [f"{SJ2}.test_the_second_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out"],
+    ),
+    Case(
+        "second hop: the trap leaves the second key behind",
+        [Edit(ACTION, '              trap \'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir/jump_id" "$plan_dir/jump_config" "$plan_dir/jump2_id"\' EXIT\n', "")],
+        [f"{SJ2}.test_the_second_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out"],
+    ),
+    Case(
+        "second hop: the second hop's name is left in the text of a host",
+        [Edit(ACTION, '                    if (jd2 != "") { s = mark(mark(s, jd2, "\\003"), jh2, "\\003") }\n', "")],
+        [f"{SJ2}.test_the_second_hops_name_is_replaced_in_a_host_text_that_reaches_the_summary"],
+    ),
+    Case(
+        "second hop: the second stanza drops IdentitiesOnly",
+        [Edit(ACTION, "\"$plan_dir/jump2_id\"\n                  printf '  IdentitiesOnly yes\\n'\n", "\"$plan_dir/jump2_id\"\n")],
+        [f"{SJ2}.test_the_second_hop_has_its_own_strict_options_and_its_own_key_file"],
+    ),
+    Case(
+        "second hop: the second stanza uses the first hop's key file",
+        [Edit(ACTION, "printf '  IdentityFile %s\\n' \"$plan_dir/jump2_id\"", "printf '  IdentityFile %s\\n' \"$plan_dir/jump_id\"")],
+        [f"{SJ2}.test_the_second_hop_has_its_own_strict_options_and_its_own_key_file"],
+    ),
+    Case(
+        "second hop: the second stanza reads the global known hosts",
+        [Edit(ACTION, "                  printf '  GlobalKnownHostsFile /dev/null\\n'\n                  printf '  ConnectTimeout 30\\n'\n                  printf '  ServerAliveInterval 30\\n'\n                  printf '  ForwardAgent no\\n'\n                  printf '  ClearAllForwardings yes\\n'\n                } >> ", "                  printf '  ConnectTimeout 30\\n'\n                  printf '  ServerAliveInterval 30\\n'\n                  printf '  ForwardAgent no\\n'\n                  printf '  ClearAllForwardings yes\\n'\n                } >> ")],
+        [f"{SJ2}.test_the_second_hop_has_its_own_strict_options_and_its_own_key_file"],
+    ),
+    Case(
+        "second hop: the drift check passes no second-hop list",
+        [Edit(DRIFT, "          jump2-hosts: ${{ secrets.ssh_jump2_hosts }}\n", "")],
+        [f"{S}.test_the_drift_workflow_is_two_jobs_and_the_key_job_never_applies"],
+    ),
+    Case(
+        "second hop: the apply digest check is removed",
+        [Edit(GATED, '          [ "$jump2_digest" = "$PLANNED_JUMP2_DIGEST" ] || fail "The second-hop hosts are not the second-hop hosts that were planned."\n', "")],
+        [f"{JAG}.test_a_list_the_plan_did_not_have_a_list_the_plan_had_and_a_different_list_are_refused"],
+    ),
+    Case(
+        "second hop: the apply guard accepts a missing planned digest",
+        [Edit(GATED, "            printf '%s' \"$PLANNED_JUMP2_DIGEST\" | grep -Eq '^[0-9a-f]{64}$' || fail \"The planned second-hop digest is missing.\"\n", "")],
+        [f"{JAG}.test_a_list_with_no_host_in_it_is_refused_whatever_the_plan_said"],
+    ),
+    Case(
+        "second hop: the plan job drops the second-hop digest",
+        [Edit(GATED, "      jump2_hosts_digest: ${{ steps.ssh.outputs.jump2-hosts-digest }}\n", "")],
+        [f"{S}.test_the_plan_job_outputs_come_from_the_steps_that_make_them"],
+    ),
+    Case(
+        "second hop: the apply chain is applied to every host",
+        [Edit(GATED, '            if [ -n "$JUMP2_HOSTS" ] && grep -qxF -- "$dest" <<< "$JUMP2_HOSTS"; then', '            if [ -n "$JUMP2_HOSTS" ]; then')],
+        [f"{AJ2}.test_a_listed_host_is_called_through_both_hops_and_every_other_host_through_the_first_alone"],
+    ),
+    Case(
+        "second hop: the action's one-call function drifts from the apply step's",
+        [Edit(ACTION, '            timeout "$limit" ssh "${ssh_args_two[@]}" "$@"\n', '            timeout "$limit" ssh "${ssh_args[@]}" "$@"\n')],
+        [f"{JPar}.test_the_one_call_function_is_the_same_text_in_the_action_and_in_the_apply_step"],
+    ),
+    Case(
+        "second hop: the apply chain is dropped for the listed hosts",
+        [Edit(GATED, "=ProxyJump=jump_hop,jump_hop2", "=ProxyJump=jump_hop")],
+        [f"{AJ2}.test_a_listed_host_is_called_through_both_hops_and_every_other_host_through_the_first_alone"],
+    ),
+    Case(
+        "second hop: the apply accepts a host with no key",
+        [Edit(GATED, '            [ -n "$JUMP2_KEY" ] || fail "ssh_jump2_host is set but ssh_jump2_key is empty: a second hop needs both or neither."\n', "")],
+        [f"{AJ2}.test_each_refusal_of_the_second_hop_comes_before_any_file_or_host_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: the apply accepts a second hop without the first hop",
+        [Edit(GATED, '            { [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "A second hop needs ssh_jump_host and ssh_jump_key: it is reached through the first hop."\n', "")],
+        [f"{AJ2}.test_each_refusal_of_the_second_hop_comes_before_any_file_or_host_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: the apply accepts a self-jump",
+        [
+            Edit(
+                GATED,
+                '              [ "$(printf \'%s\' "${dest#*@}" | tr \'[:upper:]\' \'[:lower:]\')" != "$jump2_gateway" ] \\\n                || fail "A line of ssh_jump2_hosts is the address of the second hop itself: that host is reached through the first hop alone."\n',
+                "",
+            )
+        ],
+        [f"{AJ2}.test_each_refusal_of_the_second_hop_comes_before_any_file_or_host_and_echoes_no_value"],
+    ),
+    Case(
+        "second hop: the apply writes the second key with the runner umask",
+        [Edit(GATED, "                umask 077\n                printf '%s\\n' \"$JUMP2_KEY\"", "                printf '%s\\n' \"$JUMP2_KEY\"")],
+        [f"{AJ2}.test_the_keys_and_the_config_are_private_while_ssh_runs_and_removed_on_every_way_out"],
+    ),
+    Case(
+        "second hop: the apply trap leaves the second key behind",
+        [Edit(GATED, '              trap \'rm -f "$work/id" "$work/known_hosts" "$work/jump_id" "$work/jump_config" "$work/jump2_id"\' EXIT\n', "")],
+        [f"{AJ2}.test_the_keys_and_the_config_are_private_while_ssh_runs_and_removed_on_every_way_out"],
+    ),
+    Case(
+        "second hop: the apply second stanza drops IdentitiesOnly",
+        [Edit(GATED, "\"$work/jump2_id\"\n                  printf '  IdentitiesOnly yes\\n'\n", "\"$work/jump2_id\"\n")],
+        [f"{AJ2}.test_the_config_file_is_the_first_stanza_then_one_stanza_for_the_second_hop"],
+    ),
+    Case(
+        "second hop: the apply second stanza uses the first hop's key file",
+        [Edit(GATED, "printf '  IdentityFile %s\\n' \"$work/jump2_id\"", "printf '  IdentityFile %s\\n' \"$work/jump_id\"")],
+        [f"{AJ2}.test_each_key_is_offered_to_its_own_hop_only_and_none_reaches_an_argv"],
     ),
 ]
 
