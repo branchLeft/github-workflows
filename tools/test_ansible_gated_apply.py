@@ -3301,6 +3301,262 @@ class DriftReportTests(unittest.TestCase):
         self.assertEqual(result.outputs["detail"], "refused: busy (1); refused: rollback (1)")
 
 
+class ReportLogTests(unittest.TestCase):
+    """The report step prints, for each host that is not clean, one line with the reason (issue 73).
+
+    The log is public and the diff is not: a line carries the label, the kind, a fixed note, the
+    NAMES of the scan hits and the playbook path, and never a host name or address, a diff line,
+    the text a pattern matched or anything a host wrote to standard error.
+    """
+
+    HOST_LINE = re.compile(r"^::(error|notice)::host [0-9]+: ")
+    STRICT = re.compile(
+        r"^::(error|notice)::host [0-9]+: kind=(unreachable|no-answer|failed|refused: [a-z-]+|withheld|drift); "
+        r"note=[A-Za-z0-9 _./:;,()=-]+; scan-hits=(none|[a-z-]+(, [a-z-]+)*); playbook=([A-Za-z0-9_./-]+|-)$"
+    )
+    PLAYBOOK = "ansible/playbooks/host.yml"
+    SECRET_LINES = {
+        "private-key": "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "aws-access-key": "AKIA" + "ABCDEFGHIJKLMNOP",
+        "github-token": "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        "slack-token": "xoxb-0123456789-abcdefghij",
+        "payment-key": "sk_" + "live_0123456789abcdefghijABCD",
+        "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.",
+        "credential-assignment": "api_token = 0123456789abcdef",
+        "ci-key-material": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
+    }
+
+    def report(
+        self,
+        answers: dict[str, tuple[int, str, str]],
+        fail_on_changes: str = "false",
+        jump_host: str = "",
+        tamper: Any = None,
+    ) -> tuple[Sandbox, Result]:
+        sandbox = Sandbox(self)
+        for dest, (code, out, err) in answers.items():
+            sandbox.host(dest, code, out, err)
+        checked = sandbox.run(action_step("check"), check_env(HOSTS="".join(f"{dest}\n" for dest in answers)))
+        self.assertEqual(checked.code, 0, checked.log)
+        if tamper is not None:
+            tamper(sandbox)
+        return sandbox, sandbox.run(action_step("report"), report_env(FAIL_ON_CHANGES=fail_on_changes, JUMP_HOST=jump_host))
+
+    def host_lines(self, result: Result) -> list[str]:
+        return [line for line in result.proc.stdout.splitlines() if self.HOST_LINE.match(line)]
+
+    def second_host_line(self, answer: tuple[int, str, str], fail_on_changes: str = "false") -> str:
+        _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=answer), fail_on_changes)
+        lines = self.host_lines(result)
+        self.assertEqual(len(lines), 1, result.log)
+        self.assertRegex(lines[0], self.STRICT)
+        return lines[0]
+
+    def test_an_unreachable_host_prints_its_kind_and_not_its_name_or_its_error_text(self) -> None:
+        answer = (255, "", "ssh: connect to host bravo port 22: STDERR_PLANT refused\n")
+        _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=answer))
+        self.assertEqual(
+            self.host_lines(result),
+            ["::error::host 2: kind=unreachable; note=the SSH connection failed (exit 255); scan-hits=none; playbook=-"],
+        )
+        for text in ("bravo", "STDERR_PLANT", "port 22"):
+            self.assertNotIn(text, result.log)
+
+    def test_a_call_stopped_at_its_limit_is_a_no_answer_that_says_so(self) -> None:
+        self.assertEqual(
+            self.second_host_line((124, "", "")),
+            "::error::host 2: kind=no-answer; note=the call was stopped at its limit (exit 124); scan-hits=none; playbook=-",
+        )
+
+    def test_a_host_reached_after_the_time_was_spent_says_it_was_not_asked(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        for dest in hosts:
+            sandbox.host(dest, 0, CLEAN)
+        sandbox.clock(1000, 1000, 1060, 1130)
+        checked = sandbox.run(action_step("check"), check_env(HOSTS="".join(f"{h}\n" for h in hosts), TOTAL_TIMEOUT_MINUTES="2"))
+        self.assertEqual(checked.code, 0, checked.log)
+        result = sandbox.run(action_step("report"), report_env())
+        self.assertEqual(
+            self.host_lines(result),
+            [
+                "::error::host 3: kind=no-answer; note=not asked: the time given to the check was spent before this host; "
+                "scan-hits=none; playbook=-"
+            ],
+        )
+
+    def test_an_answer_for_another_commit_shows_the_playbook_it_named(self) -> None:
+        answer = (0, summary_line("unchanged", 0, "check", OTHER_SHA, 0), "")
+        self.assertEqual(
+            self.second_host_line(answer),
+            f"::error::host 2: kind=no-answer; note=the summary line names another commit or exit status (exit 0); "
+            f"scan-hits=none; playbook={self.PLAYBOOK}",
+        )
+
+    def test_an_answer_that_is_not_one_summary_line_prints_no_playbook_and_none_of_its_text(self) -> None:
+        _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=(0, "garbage OUTPUT_PLANT\n", "")))
+        self.assertEqual(
+            self.host_lines(result),
+            ["::error::host 2: kind=no-answer; note=the host did not answer with one summary line (exit 0); scan-hits=none; playbook=-"],
+        )
+        self.assertNotIn("OUTPUT_PLANT", result.log)
+
+    def test_a_refusal_a_busy_host_and_a_failure_print_their_kind_and_reason(self) -> None:
+        cases = [
+            (refused(20, "refused", "rollback"), "refused: rollback", "verdict refused, reason rollback, exit 20"),
+            (refused(20, "refused", "an-unlisted-reason"), "refused: other", "verdict refused, reason an-unlisted-reason, exit 20"),
+            (refused(21, "busy", "ok"), "refused: busy", "verdict busy, reason ok, exit 21"),
+            ((20, real_refusal("refused", 20, "check", "unsigned"), ""), "refused: unsigned", "verdict refused, reason unsigned, exit 20"),
+            ((21, real_refusal("busy", 21, "check", "ok"), ""), "refused: busy", "verdict busy, reason ok, exit 21"),
+            (
+                (30, summary_line("failed", 30, "check", "@SHA@", 0, "playbook-failed"), "fatal: ERR_PLANT\n"),
+                "failed",
+                "verdict failed, reason playbook-failed, exit 30",
+            ),
+        ]
+        for answer, kind, note in cases:
+            with self.subTest(kind=kind, note=note):
+                self.assertEqual(
+                    self.second_host_line(answer),
+                    f"::error::host 2: kind={kind}; note={note}; scan-hits=none; playbook={self.PLAYBOOK}",
+                )
+
+    def test_a_withheld_diff_prints_the_pattern_name_and_never_the_text_it_matched(self) -> None:
+        answer = (11, summary_line("would-change", 11, "check", "@SHA@", 1), "+api_token = 0123456789abcdef\n")
+        _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=answer))
+        self.assertEqual(
+            self.host_lines(result),
+            [
+                "::error::host 2: kind=withheld; note=the diff matched a secret pattern (credential-assignment) and is withheld; "
+                f"scan-hits=credential-assignment; playbook={self.PLAYBOOK}"
+            ],
+        )
+        self.assertNotIn("0123456789abcdef", result.log)
+
+    def test_a_diff_too_large_to_show_prints_its_kind_with_no_hits(self) -> None:
+        answer = (11, summary_line("would-change", 11, "check", "@SHA@", 1), "+line of changed text\n" * 20000)
+        _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=answer))
+        self.assertEqual(
+            self.host_lines(result),
+            [
+                "::error::host 2: kind=withheld; note=the diff is too large to show whole, so it cannot be approved from here; "
+                f"scan-hits=none; playbook={self.PLAYBOOK}"
+            ],
+        )
+        self.assertNotIn("line of changed text", result.log)
+
+    def test_a_clean_host_prints_no_line_and_each_other_host_prints_exactly_one(self) -> None:
+        answers = drift_answers(
+            alpha=DRIFT_CLEAN, bravo=(255, "", ""), charlie=refused(21, "busy", "ok"), delta=DRIFT_CLEAN, echo=drifted(), foxtrot=(0, "", "")
+        )
+        for fail_on_changes in ("false", "true"):
+            with self.subTest(fail_on_changes=fail_on_changes):
+                _, result = self.report(answers, fail_on_changes)
+                lines = self.host_lines(result)
+                labels = sorted(re.match(r"^::[a-z]+::(host [0-9]+):", line).group(1) for line in lines)  # type: ignore[union-attr]
+                self.assertEqual(labels, ["host 2", "host 3", "host 5", "host 6"], lines)
+                for line in lines:
+                    self.assertRegex(line, self.STRICT)
+
+    def test_a_host_that_would_change_is_a_notice_in_a_plan_and_an_error_in_a_drift_check(self) -> None:
+        answers = drift_answers(alpha=DRIFT_CLEAN, bravo=drifted())
+        tail = f"host 2: kind=drift; note=-; scan-hits=none; playbook={self.PLAYBOOK}"
+        _, plan = self.report(answers, "false")
+        self.assertEqual(plan.code, 0, plan.log)
+        self.assertEqual(self.host_lines(plan), [f"::notice::{tail}"])
+        _, drift = self.report(answers, "true")
+        self.assertNotEqual(drift.code, 0)
+        self.assertEqual(self.host_lines(drift), [f"::error::{tail}"])
+
+    def test_the_failed_plan_headline_counts_the_hosts_that_are_not_clean_by_kind(self) -> None:
+        answers = drift_answers(alpha=DRIFT_CLEAN, bravo=(255, "", ""), charlie=refused(21, "busy", "ok"))
+        _, result = self.report(answers)
+        first = f"Plan failed: 2 of 3 hosts not clean (refused: busy (1); unreachable (1)), so no approval is requested for commit {SHA}."
+        self.assertEqual(result.summary.splitlines()[0], first)
+        self.assertIn(f"::error::{first}", result.proc.stdout.splitlines())
+        self.assertNotIn("gave no usable answer", result.summary + result.log)
+        mixed = drift_answers(alpha=DRIFT_CLEAN, bravo=drifted(), charlie=(255, "", ""))
+        _, result = self.report(mixed)
+        self.assertEqual(
+            result.summary.splitlines()[0],
+            f"Plan failed: 2 of 3 hosts not clean (drift: 1 changed; unreachable (1)), so no approval is requested for commit {SHA}.",
+        )
+
+    def test_the_drift_headline_counts_the_hosts_that_are_not_clean_by_kind(self) -> None:
+        answers = drift_answers(alpha=DRIFT_CLEAN, bravo=(255, "", ""), charlie=refused(21, "busy", "ok"))
+        _, result = self.report(answers, "true")
+        first = f"Not clean at commit {SHA}: 2 of 3 hosts not clean (refused: busy (1); unreachable (1))."
+        self.assertEqual(result.summary.splitlines()[0], first)
+        self.assertIn(f"::error::{first}", result.proc.stdout.splitlines())
+
+    def test_the_table_is_on_the_log_and_the_diff_is_not(self) -> None:
+        answers = drift_answers(alpha=DRIFT_CLEAN, bravo=drifted(), charlie=(255, "", ""))
+        _, result = self.report(answers)
+        lines = result.proc.stdout.splitlines()
+        for row in ("| Host | Result | Note |", "| host 1 | clean | - |", "| host 2 | changes | - |", "| host 3 | failed | the SSH connection failed (exit 255) |"):
+            self.assertIn(row, lines)
+        self.assertIn("+greeting = NEW", result.summary)
+        for text in ("+greeting = NEW", "-greeting = OLD", "--- before", "+++ after"):
+            self.assertNotIn(text, result.log)
+
+    def test_a_planted_secret_in_a_diff_never_reaches_the_log(self) -> None:
+        key = check_env()["SSH_KEY"]
+        self.assertEqual(self.SECRET_LINES["ci-key-material"], key)
+        planted = [
+            "--- before",
+            "+++ after",
+            "connecting to ci@alpha as deploy: alpha is changing, via gateway.example",
+            "+PLANTED_DIFF_BODY_LINE",
+            *(f"+x: {text}" for name, text in self.SECRET_LINES.items() if name != "credential-assignment"),
+            f"+{self.SECRET_LINES['credential-assignment']}",
+        ]
+        answers = {
+            "ci@alpha": (11, summary_line("would-change", 11, "check", "@SHA@", 1), "\n".join(planted) + "\n"),
+            "ci@bravo": (30, summary_line("failed", 30, "check", "@SHA@", 0, "playbook-failed"), "fatal: STDERR_PLANT at ci@bravo\n"),
+            "ci@charlie": (0, "garbage OUTPUT_PLANT ci@charlie\n", ""),
+            "ci@delta": (255, "", "ssh: connect to host delta port 22: STDERR_PLANT\n"),
+        }
+        names = ", ".join(self.SECRET_LINES)
+        for fail_on_changes in ("false", "true"):
+            with self.subTest(fail_on_changes=fail_on_changes):
+                _, result = self.report(answers, fail_on_changes, jump_host="hop@gateway.example")
+                log = result.proc.stdout + result.proc.stderr
+                self.assertIn(f"scan-hits={names}; playbook={self.PLAYBOOK}", log)
+                for text in (
+                    *self.SECRET_LINES.values(),
+                    "BEGIN OPENSSH",
+                    "PLANTED_DIFF_BODY_LINE",
+                    "--- before",
+                    "+++ after",
+                    "is changing",
+                    "ci@",
+                    "alpha",
+                    "bravo",
+                    "charlie",
+                    "delta",
+                    "gateway.example",
+                    "hop@",
+                    "STDERR_PLANT",
+                    "OUTPUT_PLANT",
+                    "fatal:",
+                ):
+                    self.assertNotIn(text, log, text)
+                for line in self.host_lines(result):
+                    self.assertRegex(line, self.STRICT)
+
+    def test_a_value_that_would_start_a_workflow_command_is_defanged(self) -> None:
+        def forge(sandbox: Sandbox) -> None:
+            (sandbox.temp / "ansible-plan" / "02.rc").write_text("7\n::error::forged-line%0A::error::more\n")
+
+        _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=(0, "hello\n", "")), tamper=forge)
+        lines = result.proc.stdout.splitlines()
+        self.assertEqual([line for line in lines if line.startswith(("::error::forged", "::error::more"))], [])
+        self.assertEqual(len(self.host_lines(result)), 1, result.log)
+        for line in lines:
+            if line.startswith("::") or line.startswith("| host"):
+                self.assertNotIn("%", line)
+
+
 ALERT_GH_STUB = """#!/usr/bin/env bash
 echo "$*" >> "$STUB_DIR/gh.log"
 previous=""
