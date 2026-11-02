@@ -349,6 +349,7 @@ def composite_validate_env(**changes: str) -> dict[str, str]:
     values = {
         "HOSTS": f"{HOST_ONE}\n{HOST_TWO}\n",
         "SHA": SHA,
+        "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
         "DRY_RUN": "false",
         "DRY_RUN_STUB": "",
         "FAIL_ON_CHANGES": "false",
@@ -855,6 +856,7 @@ class StructureTests(unittest.TestCase):
             "validate": {
                 "HOSTS": "${{ inputs.hosts }}",
                 "SHA": "${{ inputs.sha }}",
+                "SSH_KEY": "${{ inputs.check-key }}",
                 "DRY_RUN": "${{ inputs.dry-run }}",
                 "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
                 "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
@@ -2437,6 +2439,16 @@ class ApplyJumpTests(unittest.TestCase):
     def seen(self, sandbox: Sandbox, name: str) -> str:
         return (sandbox.stubs / name).read_text()
 
+    def test_the_apply_key_is_refused_as_the_second_hop_key_before_any_file_or_host(self) -> None:
+        sandbox = self.sandbox()
+        result = self.jump_apply(sandbox, JUMP2_HOST=JUMP2_HOST, JUMP2_KEY=APPLY_KEY, JUMP2_HOSTS=f"{HOST_TWO}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("ssh_jump2_key is the same as this job's own key", result.log)
+        self.assertEqual(sandbox.ssh_log(), [])
+        self.assertFalse((sandbox.temp / "ansible-apply").exists(), "no file is written before the check")
+        for value in (APPLY_KEY, JUMP2_KEY, JUMP_KEY):
+            self.assertNotIn(value, result.log + result.summary, value)
+
     def test_a_jump_adds_the_config_file_and_the_proxy_jump_option_after_the_unchanged_options(self) -> None:
         sandbox = self.sandbox()
         result = self.jump_apply(sandbox)
@@ -3039,6 +3051,17 @@ class SshJump2Tests(unittest.TestCase):
                 self.assertNotIn("jump2_hosts_digest", result.outputs)
                 for value in (JUMP2_HOST, JUMP2_KEY, JUMP_KEY, HOST_THREE, "edge-t"):
                     self.assertNotIn(value, result.log, value)
+
+    def test_the_check_key_is_refused_as_the_second_hop_key_before_any_file_or_host(self) -> None:
+        result = Sandbox(self).run(
+            action_step("validate"),
+            composite_validate_env(SSH_KEY=CHECK_KEY, **two_hop_values(JUMP2_KEY=CHECK_KEY)),
+        )
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("::error::", result.log)
+        self.assertIn("jump2-key is the same as this job's own key", result.log)
+        for value in (CHECK_KEY, JUMP2_KEY, JUMP_KEY):
+            self.assertNotIn(value, result.log, value)
 
     def test_the_second_hop_host_is_without_a_second_line_and_in_the_form_of_a_hosts_line(self) -> None:
         for value in SshJumpTests.MALFORMED_JUMP_HOSTS:

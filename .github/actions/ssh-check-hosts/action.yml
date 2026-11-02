@@ -193,6 +193,7 @@ runs:
         FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
         HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout }}
         TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
+        SSH_KEY: ${{ inputs.check-key }}
         JUMP_HOST: ${{ inputs.jump-host }}
         JUMP_KEY: ${{ inputs.jump-key }}
         JUMP2_HOST: ${{ inputs.jump2-host }}
@@ -305,6 +306,7 @@ runs:
           printf '%s' "$JUMP2_HOST" | grep -Eq "$destination_pattern" \
             || fail "jump2-host is not of the form user@host."
           [ "$JUMP2_KEY" != "$JUMP_KEY" ] || fail "jump2-key is the same as jump-key: each hop has its own key."
+          [ "$JUMP2_KEY" != "$SSH_KEY" ] || fail "jump2-key is the same as this job's own key: the second hop has a key of its own."
           jump2_gateway=$(printf '%s' "${JUMP2_HOST#*@}" | tr '[:upper:]' '[:lower:]')
           while IFS= read -r dest; do
             [ -n "$dest" ] || continue

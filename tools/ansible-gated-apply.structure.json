@@ -147,11 +147,12 @@
             "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
             "PUSH_REPO_PRIVATE": "${{ inputs.push-repo-private }}",
             "SHA": "${{ inputs.sha }}",
+            "SSH_KEY": "${{ inputs.check-key }}",
             "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}"
           },
           "id": "validate",
           "name": "Validate the host list and the inputs",
-          "run-sha256": "0459581ac3b0544b03faae7121c398175181dc88b236f5742021216de9e8c4ba",
+          "run-sha256": "db6f4fe690a8fd13b003f257cac37e61f1004e4adfccf14a05610ad41d17c2bd",
           "shell": "bash"
         },
         {
@@ -613,7 +614,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "98cf2fa6678bc30fa58e3ff971c4b713cc6477002121dc126aafde643ba6bd9a"
+            "run-sha256": "b3fc526e4ac61c665a316bcd28247801a16cd9042126e0c29d16f8ab0675f2cf"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"

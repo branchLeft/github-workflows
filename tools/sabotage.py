@@ -1106,6 +1106,16 @@ CASES: list[Case] = [
         [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
     ),
     Case(
+        "second hop: the check key is accepted as the second hop's",
+        [Edit(ACTION, '          [ "$JUMP2_KEY" != "$SSH_KEY" ] || fail "jump2-key is the same as this job\'s own key: the second hop has a key of its own."\n', "")],
+        [f"{SJ2}.test_the_check_key_is_refused_as_the_second_hop_key_before_any_file_or_host"],
+    ),
+    Case(
+        "second hop: the apply key is accepted as the second hop's",
+        [Edit(GATED, '            [ "$JUMP2_KEY" != "$SSH_KEY" ] || fail "ssh_jump2_key is the same as this job\'s own key: the second hop has a key of its own."\n', "")],
+        [f"{AJ}.test_the_apply_key_is_refused_as_the_second_hop_key_before_any_file_or_host"],
+    ),
+    Case(
         "second hop: a listed host outside the hosts list is accepted",
         [Edit(ACTION, '            grep -qxF -- "$dest" <<< "$HOSTS" || fail "A line of jump2-hosts is not in the hosts list."\n', "")],
         [f"{SJ2}.test_each_refusal_of_the_second_hop_names_what_is_wrong_and_echoes_no_value"],
