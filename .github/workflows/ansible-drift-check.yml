@@ -81,6 +81,29 @@ on:
           private key for the jump host and nothing else, never the check key.
           The jump host restricts it to port 22 of the listed hosts.
         required: false
+      ssh_jump2_host:
+        description: >-
+          Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key
+          and ssh_jump2_hosts, or none. A user@host, in the form ssh_hosts takes,
+          that the hosts in ssh_jump2_hosts are reached through after ssh_jump_host
+          (ssh ProxyJump, two hops). Needs ssh_jump_host and ssh_jump_key. Its
+          host-key line goes in ssh_known_hosts.
+        required: false
+      ssh_jump2_key:
+        description: >-
+          Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key
+          and ssh_jump2_hosts, or none. The private key for the second jump host and
+          nothing else, never the check key or ssh_jump_key. The second jump host
+          restricts it to port 22 of the listed hosts.
+        required: false
+      ssh_jump2_hosts:
+        description: >-
+          Optional: pass from a secret; all three of ssh_jump2_host, ssh_jump2_key
+          and ssh_jump2_hosts, or none. The hosts that are reached through both
+          jump hosts, one user@host per line, a subset of ssh_hosts. Every other
+          host keeps the single hop. The second jump host's own address is not
+          listed: it is reached through the first hop alone.
+        required: false
 
 permissions:
   contents: read
@@ -264,6 +287,9 @@ jobs:
           check-key: ${{ secrets.ssh_check_key }}
           jump-host: ${{ secrets.ssh_jump_host }}
           jump-key: ${{ secrets.ssh_jump_key }}
+          jump2-host: ${{ secrets.ssh_jump2_host }}
+          jump2-key: ${{ secrets.ssh_jump2_key }}
+          jump2-hosts: ${{ secrets.ssh_jump2_hosts }}
           push-hosts: ${{ secrets.ssh_push_hosts }}
           push-playbook: ${{ inputs.push-playbook }}
           push-repo-private: ${{ github.event.repository.private }}

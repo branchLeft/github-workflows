@@ -1,8 +1,8 @@
 name: SSH jump (self-test)
 
-# The proof, on two real sshd instances, that the jump hop of the
-# ssh-check-hosts action works under ClearAllForwardings=yes and that the key
-# of the jump host opens one destination and nothing else. It runs the steps of
+# The proof, on real sshd instances, that the jump hops of the
+# ssh-check-hosts action work under ClearAllForwardings=yes and that the key
+# of a jump host opens its destinations and nothing else. It runs the steps of
 # the action in this working copy, so a pull request that changes the action is
 # checked by the change itself. It runs on every pull request, with no path
 # filter, so a change elsewhere in the repo cannot skip it.
