@@ -1619,6 +1619,52 @@ class PlanTests(unittest.TestCase):
         self.assertNotEqual(result.code, 0, result.log)
         self.assertIn("matched a secret pattern (aws-access-key)", result.summary)
 
+    def test_a_secret_in_a_default_or_a_command_is_withheld_and_never_printed(self) -> None:
+        # Each line holds a secret inside a ${...} default, a $(...) command or an unbalanced ${. The
+        # shape rules take out only a ${NAME} reference and $(cat PATH), so each line stays withheld.
+        secret = "Zx9Qm2LpVt7Rw4Ks"
+        lines = [
+            "+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-" + secret + "}",
+            '+: "${DB_PASSWORD:=' + secret + '}"',
+            "+count=$(mysql -u root --password=" + secret + " -N -e 'select 1')",
+            '+ok=$(curl -s -H "X-Api-Key: ' + secret + '" https://example.invalid/health)',
+            "+admin_password_hash=$(htpasswd -nbB admin " + secret + ")",
+            "+PASSWORD=$(cat /run/x 2>/dev/null || echo " + secret + ")",
+            '+echo "${"; password=' + secret + '; echo "}"',
+        ]
+        for index, line in enumerate(lines):
+            with self.subTest(line=index):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n" + line + "\n")
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("credential-assignment", result.summary)
+                self.assertNotIn(secret, result.summary + result.log)
+
+    def test_a_secret_beside_a_flag_word_a_file_key_or_a_sudoers_tag_is_withheld_and_never_printed(self) -> None:
+        # Each line holds a secret that the flag, file-key or sudoers shapes sit beside. None of these
+        # shapes covers a value that is not a bare flag, a location or a permission, so each stays withheld.
+        secret = "Zx9Qm2LpVt7Rw4Ks"
+        lines = [
+            "+ -e EXAMPLE_TOKEN_FILE=" + secret,
+            "+db_password: True!" + secret,
+            "+password: none-" + secret,
+            '+  "password": "null.' + secret + '",',
+            "+password: false " + secret,
+            "+ROOT_NOPASSWD: " + secret,
+            "+password=" + secret + "_path=x",
+        ]
+        for index, line in enumerate(lines):
+            with self.subTest(line=index):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n" + line + "\n")
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("credential-assignment", result.summary)
+                self.assertNotIn(secret, result.summary + result.log)
+
     def test_a_diff_too_large_to_show_whole_fails_the_job(self) -> None:
         sandbox = Sandbox(self)
         sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "+line of changed text\n" * 20000)

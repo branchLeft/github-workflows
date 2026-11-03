@@ -732,21 +732,25 @@ runs:
           # The credential-assignment pattern reads a copy of the diff from which four shapes
           # that are never a credential have been taken out (README, "What the scan reads").
           # The copy is lower-cased first, because the scan ignores case. Only the shape is
-          # removed, so a credential later on the same line is still read. The shapes are:
-          #   the sudoers tag "NOPASSWD:", which is a permission and not a password;
-          #   a ${...} or $(...) reference, which names where a value comes from;
-          #   a key whose name ends in file, filename, path or dir (after a _, . or -),
-          #     whose value is a location and not the secret;
-          #   a value that is true, false, null or none, which is a flag.
+          # removed, so a credential later on the same line is still read. Each shape is narrow,
+          # so a credential written inside or beside one is still read. The shapes are:
+          #   the sudoers tag "NOPASSWD:", a permission and not a password, when a word or the
+          #     start of the line comes before it;
+          #   a ${NAME} or ${NAME:?...} reference, and $(cat PATH), which name where a value comes
+          #     from. A ${NAME:-...} or ${NAME:=...} default and any other $(...) can hold a value, so
+          #     they are read whole;
+          #   a key whose name ends in file, filename, path or dir (after a _, . or -) whose value
+          #     starts with / or ~, so the value is a location and not the secret;
+          #   a value that is true, false, null or none, followed by , } ] or the end of the line.
           # Every other pattern reads the diff whole. The text shown is the diff whole too.
           scanned="$base.scan"
           LC_ALL=C tr '[:upper:]' '[:lower:]' < "$cleaned" \
             | LC_ALL=C sed -E \
-              -e 's/nopasswd://g' \
-              -e 's/\$\{[^}]*\}//g' \
-              -e 's/\$\([^)]*\)//g' \
-              -e 's/[a-z0-9_.-]*[_.-](file|filename|path|dir)"?[[:space:]]*[:=]//g' \
-              -e 's/[:=][[:space:]]*"?(true|false|null|none)"?([^a-z0-9_]|$)/ \2/g' \
+              -e 's/(^|[[:space:])])nopasswd:/\1/g' \
+              -e 's/\$\{[a-z_][a-z0-9_]*(:?\?[^}]*)?\}//g' \
+              -e 's/\$\(cat [^[:space:])]+\)//g' \
+              -e 's/[a-z0-9_.-]*[_.-](file|filename|path|dir)"?[[:space:]]*[:=]([[:space:]]*"?[/~])/\1/g' \
+              -e 's/[:=][[:space:]]*"?(true|false|null|none)"?[[:space:]]*([],}]|$)/ \2/g' \
             > "$scanned"
 
           hits=""

@@ -711,14 +711,15 @@ a copy of the diff from which four shapes have first been taken out, lower-cased
 
 | Shape taken out | Why it is not a credential | Example (synthetic) |
 | --- | --- | --- |
-| `NOPASSWD:` | The sudoers tag that lets a command run without a password. It is a permission. | `deploy ALL=(root) NOPASSWD: /usr/local/sbin/example-program` |
-| `${...}` and `$(...)` | A reference to where a value comes from, not the value. | `EXAMPLE_TOKEN: ${EXAMPLE_TOKEN:?set it in /etc/example/app.env}` |
-| A key that ends in `_file`, `_filename`, `_path` or `_dir` (also after `.` or `-`), with its `:` or `=` | The value is a location. | `password_file: /etc/example/db-password` |
-| A value that is `true`, `false`, `null` or `none` | A flag. | `"example_password": true,` |
+| `NOPASSWD:`, after a word or the start of the line | The sudoers tag that lets a command run without a password. It is a permission. | `deploy ALL=(root) NOPASSWD: /usr/local/sbin/example-program` |
+| `${NAME}`, `${NAME:?...}` and `$(cat PATH)` | A reference to where a value comes from, not the value. A `${NAME:-...}` or `${NAME:=...}` default and any other `$(...)` are read whole. | `EXAMPLE_TOKEN: ${EXAMPLE_TOKEN:?set it in /etc/example/app.env}` |
+| A key that ends in `_file`, `_filename`, `_path` or `_dir` (also after `.` or `-`), with its `:` or `=` and a value that starts with `/` or `~` | The value is a location. | `password_file: /etc/example/db-password` |
+| A value that is `true`, `false`, `null` or `none`, followed by `,`, `}`, `]` or the end of the line | A flag. | `"example_password": true,` |
 
 Only the shape is removed. A credential later on the same line is still read, and
-so is a key that only ends like a file key (`token_profile`) or a value that only
-starts like a flag. Prose such as `token: how to use it` still matches, and the
+so is a key that only ends like a file key (`token_profile`), a file key whose value
+is not a location (`EXAMPLE_TOKEN_FILE=<secret>`), or a value that only starts like
+a flag. Prose such as `token: how to use it` still matches, and the
 fix for it is to reword the text, as before. The text shown to the approver is the
 diff whole, and the log never carries the text that matched. A shape that is not in
 the table is still withheld until the task hides it (`no_log: true` and

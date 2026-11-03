@@ -1324,59 +1324,92 @@ CASES: list[Case] = [
     ),
     Case(
         "scan: the sudoers tag is no longer taken out",
-        [Edit(ACTION, "              -e 's/nopasswd://g' \\\n", "")],
+        [Edit(ACTION, "              -e 's/(^|[[:space:])])nopasswd:/\\1/g' \\\n", "")],
         [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
     ),
     Case(
-        "scan: a ${...} reference is no longer taken out",
-        [Edit(ACTION, "              -e 's/\\$\\{[^}]*\\}//g' \\\n", "")],
+        "scan: a ${NAME} reference is no longer taken out",
+        [Edit(ACTION, "              -e 's/\\$\\{[a-z_][a-z0-9_]*(:?\\?[^}]*)?\\}//g' \\\n", "")],
         [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
     ),
     Case(
-        "scan: a $(...) reference is no longer taken out",
-        [Edit(ACTION, "              -e 's/\\$\\([^)]*\\)//g' \\\n", "")],
+        "scan: a $(cat PATH) reference is no longer taken out",
+        [Edit(ACTION, "              -e 's/\\$\\(cat [^[:space:])]+\\)//g' \\\n", "")],
         [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
     ),
     Case(
         "scan: a key that names a file or a path is no longer taken out",
-        [Edit(ACTION, "              -e 's/[a-z0-9_.-]*[_.-](file|filename|path|dir)\"?[[:space:]]*[:=]//g' \\\n", "")],
+        [
+            Edit(
+                ACTION,
+                "              -e 's/[a-z0-9_.-]*[_.-](file|filename|path|dir)\"?[[:space:]]*[:=]([[:space:]]*\"?[/~])/\\1/g' \\\n",
+                "",
+            )
+        ],
         [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
     ),
     Case(
-        "scan: a true, false, null or none value is no longer taken out",
-        [Edit(ACTION, "              -e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?([^a-z0-9_]|$)/ \\2/g' \\\n", "")],
+        "scan: a true, false, null or none flag is no longer taken out",
+        [
+            Edit(
+                ACTION,
+                "              -e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?[[:space:]]*([],}]|$)/ \\2/g' \\\n",
+                "",
+            )
+        ],
         [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
     ),
     Case(
         "scan: the sudoers tag takes the rest of its line with it",
-        [Edit(ACTION, "-e 's/nopasswd://g'", "-e 's/nopasswd:.*//g'")],
+        [Edit(ACTION, "-e 's/(^|[[:space:])])nopasswd:/\\1/g'", "-e 's/(^|[[:space:])])nopasswd:.*/\\1/g'")],
         [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
     ),
     Case(
-        "scan: a ${...} reference takes the rest of its line with it",
-        [Edit(ACTION, "-e 's/\\$\\{[^}]*\\}//g'", "-e 's/\\$\\{[^}]*\\}.*//g'")],
-        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
-    ),
-    Case(
-        "scan: a key that names a file takes the rest of its line with it",
+        "scan: a ${NAME} reference takes the rest of its line with it",
         [
             Edit(
                 ACTION,
-                "(file|filename|path|dir)\"?[[:space:]]*[:=]//g'",
-                "(file|filename|path|dir)\"?[[:space:]]*[:=].*//g'",
+                "-e 's/\\$\\{[a-z_][a-z0-9_]*(:?\\?[^}]*)?\\}//g'",
+                "-e 's/\\$\\{[a-z_][a-z0-9_]*(:?\\?[^}]*)?\\}.*//g'",
             )
         ],
         [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
     ),
     Case(
-        "scan: a key that only ends like a file is taken out",
-        [Edit(ACTION, "[a-z0-9_.-]*[_.-](file|filename|path|dir)", "[a-z0-9_.-]*(file|filename|path|dir)")],
+        "scan: a key that names a file takes the rest of its line with it",
+        [Edit(ACTION, "[:=]([[:space:]]*\"?[/~])/\\1/g'", "[:=].*/\\1/g'")],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a key that only ends like a file, with any value, is taken out",
+        [
+            Edit(
+                ACTION,
+                "[a-z0-9_.-]*[_.-](file|filename|path|dir)\"?[[:space:]]*[:=]([[:space:]]*\"?[/~])/\\1/g'",
+                "[a-z0-9_.-]*(file|filename|path|dir)\"?[[:space:]]*[:=]/\\1/g'",
+            )
+        ],
         [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
     ),
     Case(
         "scan: a value that only starts like a flag is taken out",
-        [Edit(ACTION, '(true|false|null|none)"?([^a-z0-9_]|$)/ \\2/g', '(true|false|null|none)"?()/ \\2/g')],
+        [Edit(ACTION, '"?[[:space:]]*([],}]|$)/ \\2/g\'', '"?()/ \\2/g\'')],
         [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: the ${...} rule takes out a default again (the old broad rule)",
+        [Edit(ACTION, "-e 's/\\$\\{[a-z_][a-z0-9_]*(:?\\?[^}]*)?\\}//g'", "-e 's/\\$\\{[^}]*\\}//g'")],
+        [f"{P}.test_a_secret_in_a_default_or_a_command_is_withheld_and_never_printed"],
+    ),
+    Case(
+        "scan: the $(...) rule takes out a command again (the old broad rule)",
+        [Edit(ACTION, "-e 's/\\$\\(cat [^[:space:])]+\\)//g'", "-e 's/\\$\\([^)]*\\)//g'")],
+        [f"{P}.test_a_secret_in_a_default_or_a_command_is_withheld_and_never_printed"],
+    ),
+    Case(
+        "scan: the flag rule accepts any punctuation after the flag word",
+        [Edit(ACTION, "-e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?[[:space:]]*([],}]|$)/ \\2/g'", "-e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?([^a-z0-9_]|$)/ \\2/g'")],
+        [f"{P}.test_a_secret_beside_a_flag_word_a_file_key_or_a_sudoers_tag_is_withheld_and_never_printed"],
     ),
 ]
 
