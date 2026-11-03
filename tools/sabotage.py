@@ -1293,6 +1293,91 @@ CASES: list[Case] = [
         [Edit(GATED, "printf '  IdentityFile %s\\n' \"$work/jump2_id\"", "printf '  IdentityFile %s\\n' \"$work/jump_id\"")],
         [f"{AJ2}.test_each_key_is_offered_to_its_own_hop_only_and_none_reaches_an_argv"],
     ),
+    # The credential-assignment pattern reads a copy of the diff with four non-credential shapes taken out.
+    # First the fix reverted and the pattern broken to match nothing, then each rule dropped (a harmless line
+    # is withheld again) and each rule widened (a credential beside the shape is let through).
+    Case(
+        "scan: the credential-assignment pattern reads the diff whole again",
+        [Edit(ACTION, 'target="$scanned"', 'target="$cleaned"')],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: the credential-assignment pattern matches nothing",
+        [
+            Edit(
+                ACTION,
+                "'credential-assignment|(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)"
+                '[A-Za-z0-9_.-]*"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]"]{4,}\'',
+                "'credential-assignment|x^x'",
+            )
+        ],
+        [
+            f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line",
+            f"{P}.test_a_secret_looking_string_in_the_diff_is_withheld_and_fails_the_job",
+            f"{RL}.test_a_withheld_diff_prints_the_pattern_name_and_never_the_text_it_matched",
+        ],
+    ),
+    Case(
+        "scan: every pattern reads the copy with the shapes taken out",
+        [Edit(ACTION, 'if [ "$name" = credential-assignment ]; then', "if true; then")],
+        [f"{P}.test_the_other_patterns_read_the_diff_whole_even_beside_a_shape_the_assignment_pattern_lets_through"],
+    ),
+    Case(
+        "scan: the sudoers tag is no longer taken out",
+        [Edit(ACTION, "              -e 's/nopasswd://g' \\\n", "")],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: a ${...} reference is no longer taken out",
+        [Edit(ACTION, "              -e 's/\\$\\{[^}]*\\}//g' \\\n", "")],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: a $(...) reference is no longer taken out",
+        [Edit(ACTION, "              -e 's/\\$\\([^)]*\\)//g' \\\n", "")],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: a key that names a file or a path is no longer taken out",
+        [Edit(ACTION, "              -e 's/[a-z0-9_.-]*[_.-](file|filename|path|dir)\"?[[:space:]]*[:=]//g' \\\n", "")],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: a true, false, null or none value is no longer taken out",
+        [Edit(ACTION, "              -e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?([^a-z0-9_]|$)/ \\2/g' \\\n", "")],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: the sudoers tag takes the rest of its line with it",
+        [Edit(ACTION, "-e 's/nopasswd://g'", "-e 's/nopasswd:.*//g'")],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a ${...} reference takes the rest of its line with it",
+        [Edit(ACTION, "-e 's/\\$\\{[^}]*\\}//g'", "-e 's/\\$\\{[^}]*\\}.*//g'")],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a key that names a file takes the rest of its line with it",
+        [
+            Edit(
+                ACTION,
+                "(file|filename|path|dir)\"?[[:space:]]*[:=]//g'",
+                "(file|filename|path|dir)\"?[[:space:]]*[:=].*//g'",
+            )
+        ],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a key that only ends like a file is taken out",
+        [Edit(ACTION, "[a-z0-9_.-]*[_.-](file|filename|path|dir)", "[a-z0-9_.-]*(file|filename|path|dir)")],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a value that only starts like a flag is taken out",
+        [Edit(ACTION, '(true|false|null|none)"?([^a-z0-9_]|$)/ \\2/g', '(true|false|null|none)"?()/ \\2/g')],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
 ]
 
 

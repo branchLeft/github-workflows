@@ -729,11 +729,35 @@ runs:
           size=$(wc -c < "$cleaned" | tr -d ' ')
           total_bytes=$((total_bytes + size))
 
+          # The credential-assignment pattern reads a copy of the diff from which four shapes
+          # that are never a credential have been taken out (README, "What the scan reads").
+          # The copy is lower-cased first, because the scan ignores case. Only the shape is
+          # removed, so a credential later on the same line is still read. The shapes are:
+          #   the sudoers tag "NOPASSWD:", which is a permission and not a password;
+          #   a ${...} or $(...) reference, which names where a value comes from;
+          #   a key whose name ends in file, filename, path or dir (after a _, . or -),
+          #     whose value is a location and not the secret;
+          #   a value that is true, false, null or none, which is a flag.
+          # Every other pattern reads the diff whole. The text shown is the diff whole too.
+          scanned="$base.scan"
+          LC_ALL=C tr '[:upper:]' '[:lower:]' < "$cleaned" \
+            | LC_ALL=C sed -E \
+              -e 's/nopasswd://g' \
+              -e 's/\$\{[^}]*\}//g' \
+              -e 's/\$\([^)]*\)//g' \
+              -e 's/[a-z0-9_.-]*[_.-](file|filename|path|dir)"?[[:space:]]*[:=]//g' \
+              -e 's/[:=][[:space:]]*"?(true|false|null|none)"?([^a-z0-9_]|$)/ \2/g' \
+            > "$scanned"
+
           hits=""
           for entry in "${patterns[@]}"; do
             name="${entry%%|*}"
             regex="${entry#*|}"
-            if grep -Eiq -e "$regex" "$cleaned"; then
+            target="$cleaned"
+            if [ "$name" = credential-assignment ]; then
+              target="$scanned"
+            fi
+            if grep -Eiq -e "$regex" "$target"; then
               hits="${hits:+$hits, }$name"
             fi
           done
