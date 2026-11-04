@@ -1561,6 +1561,115 @@ class PlanTests(unittest.TestCase):
             self.assertNotIn(line.strip().lstrip("+"), result.summary + result.log, name)
             self.assertNotIn("--- before", result.summary, name)
 
+    def test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job(self) -> None:
+        # Synthetic look-alikes of the shapes a rendered plan has shown, each with no value in it:
+        # the sudoers tag, a ${...} or $(...) reference, a key that names a file or a path, a flag.
+        shapes = {
+            "the sudoers tag": "+deploy ALL=(root) NOPASSWD: /usr/local/sbin/example-program --mode apply, /usr/local/sbin/example-program --mode check",
+            "a compose reference": "+      EXAMPLE_PASSWORD: ${EXAMPLE_PASSWORD:?set EXAMPLE_PASSWORD in /etc/example/app.env}",
+            "a quoted compose reference": "+      EXAMPLE_TOKEN: '${EXAMPLE_TOKEN:?set it in /etc/example/app.env}'",
+            "a command reference": "+password = $(cat /etc/example/value)",
+            "a key that names a file": "+password_file: /etc/example/db-password",
+            "a variable that names a file": "+ -e EXAMPLE_TOKEN_FILE=/state/example.pat",
+            "a constant that names a path": '+PASSWD_PATH = "/etc/passwd"',
+            "a flag": '+            "example_password": true,',
+        }
+        for name, line in shapes.items():
+            with self.subTest(shape=name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n" + line + "\n")
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs["has_changes"], "true")
+                self.assertNotIn("matched a secret pattern", result.summary)
+                self.assertIn(line, result.summary)
+
+    def test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line(self) -> None:
+        # Each line must still be withheld. The first four are plain shapes. The rest put a credential
+        # beside one of the shapes the scan lets through, to show that only the shape is let through.
+        shapes = [
+            ("a password", "+db_password: Zx9Qm2LpVt7Rw4Ks", "Zx9Qm2LpVt7Rw4Ks"),
+            ("an api token", "+api_token = 0123456789abcdef", "0123456789abcdef"),
+            ("a quoted secret", '+  "client_secret": "aB3dE5fG7hJ9kL1m",', "aB3dE5fG7hJ9kL1m"),
+            ("a camel-case key", "+bulkEmail__mailgun__apiKey: 'Zx9Qm2LpVt7Rw4Ks'", "Zx9Qm2LpVt7Rw4Ks"),
+            ("beside the sudoers tag", "+deploy ALL=(root) NOPASSWD: /bin/example password=Zx9Qm2LpVt7R", "Zx9Qm2LpVt7R"),
+            ("after a key that names a file", "+example_file: /etc/example/a, token: 0123456789abcdef", "0123456789abcdef"),
+            ("after a reference", "+PASSWORD=${EXAMPLE} api_key=0123456789abcdef", "0123456789abcdef"),
+            ("a key that only ends like a file", "+token_profile = 0123456789abcdef", "0123456789abcdef"),
+            ("a value that only starts like a flag", "+password: truefalsehunter", "truefalsehunter"),
+        ]
+        for name, line, value in shapes:
+            with self.subTest(shape=name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n" + line + "\n")
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("matched a secret pattern (credential-assignment)", result.summary)
+                self.assertNotIn(value, result.summary + result.log)
+
+    def test_the_other_patterns_read_the_diff_whole_even_beside_a_shape_the_assignment_pattern_lets_through(self) -> None:
+        # The key sits inside a ${...} reference, which the assignment pattern's copy drops whole.
+        line = "+EXAMPLE=${EXAMPLE:?" + "AKIA" + "ABCDEFGHIJKLMNOP}"
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n" + line + "\n")
+        sandbox.host(HOST_TWO, 0, CLEAN)
+        _, result = self.plan(sandbox)
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("matched a secret pattern (aws-access-key)", result.summary)
+
+    def test_a_secret_in_a_default_or_a_command_is_withheld_and_never_printed(self) -> None:
+        # Each line holds a secret inside a ${...} default, a $(...) command or an unbalanced ${. The
+        # shape rules take out only a ${NAME} reference and $(cat PATH), so each line stays withheld.
+        # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
+        secret = "Zx9Qm2LpVt7Rw4Ks"
+        lines = [
+            "+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-" + secret + "}",
+            '+: "${DB_PASSWORD:=' + secret + '}"',
+            # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
+            "+count=$(mysql -u root --password=" + secret + " -N -e 'select 1')",
+            '+ok=$(curl -s -H "X-Api-Key: ' + secret + '" https://example.invalid/health)',
+            "+admin_password_hash=$(htpasswd -nbB admin " + secret + ")",
+            "+PASSWORD=$(cat /run/x 2>/dev/null || echo " + secret + ")",
+            # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
+            '+echo "${"; password=' + secret + '; echo "}"',
+        ]
+        for index, line in enumerate(lines):
+            with self.subTest(line=index):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n" + line + "\n")
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("credential-assignment", result.summary)
+                self.assertNotIn(secret, result.summary + result.log)
+
+    def test_a_secret_beside_a_flag_word_a_file_key_or_a_sudoers_tag_is_withheld_and_never_printed(self) -> None:
+        # Each line holds a secret that the flag, file-key or sudoers shapes sit beside. None of these
+        # shapes covers a value that is not a bare flag, a location or a permission, so each stays withheld.
+        # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
+        secret = "Zx9Qm2LpVt7Rw4Ks"
+        lines = [
+            "+ -e EXAMPLE_TOKEN_FILE=" + secret,
+            "+db_password: True!" + secret,
+            "+password: none-" + secret,
+            '+  "password": "null.' + secret + '",',
+            "+password: false " + secret,
+            "+ROOT_NOPASSWD: " + secret,
+            # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
+            "+password=" + secret + "_path=x",
+        ]
+        for index, line in enumerate(lines):
+            with self.subTest(line=index):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n" + line + "\n")
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("credential-assignment", result.summary)
+                self.assertNotIn(secret, result.summary + result.log)
+
     def test_a_diff_too_large_to_show_whole_fails_the_job(self) -> None:
         sandbox = Sandbox(self)
         sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "+line of changed text\n" * 20000)

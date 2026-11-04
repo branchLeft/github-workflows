@@ -1293,6 +1293,124 @@ CASES: list[Case] = [
         [Edit(GATED, "printf '  IdentityFile %s\\n' \"$work/jump2_id\"", "printf '  IdentityFile %s\\n' \"$work/jump_id\"")],
         [f"{AJ2}.test_each_key_is_offered_to_its_own_hop_only_and_none_reaches_an_argv"],
     ),
+    # The credential-assignment pattern reads a copy of the diff with four non-credential shapes taken out.
+    # First the fix reverted and the pattern broken to match nothing, then each rule dropped (a harmless line
+    # is withheld again) and each rule widened (a credential beside the shape is let through).
+    Case(
+        "scan: the credential-assignment pattern reads the diff whole again",
+        [Edit(ACTION, 'target="$scanned"', 'target="$cleaned"')],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: the credential-assignment pattern matches nothing",
+        [
+            Edit(
+                ACTION,
+                "'credential-assignment|(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)"
+                '[A-Za-z0-9_.-]*"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]"]{4,}\'',
+                "'credential-assignment|x^x'",
+            )
+        ],
+        [
+            f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line",
+            f"{P}.test_a_secret_looking_string_in_the_diff_is_withheld_and_fails_the_job",
+            f"{RL}.test_a_withheld_diff_prints_the_pattern_name_and_never_the_text_it_matched",
+        ],
+    ),
+    Case(
+        "scan: every pattern reads the copy with the shapes taken out",
+        [Edit(ACTION, 'if [ "$name" = credential-assignment ]; then', "if true; then")],
+        [f"{P}.test_the_other_patterns_read_the_diff_whole_even_beside_a_shape_the_assignment_pattern_lets_through"],
+    ),
+    Case(
+        "scan: the sudoers tag is no longer taken out",
+        [Edit(ACTION, "              -e 's/(^|[[:space:])])nopasswd:/\\1/g' \\\n", "")],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: a ${NAME} reference is no longer taken out",
+        [Edit(ACTION, "              -e 's/\\$\\{[a-z_][a-z0-9_]*(:?\\?[^}]*)?\\}//g' \\\n", "")],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: a $(cat PATH) reference is no longer taken out",
+        [Edit(ACTION, "              -e 's/\\$\\(cat [^[:space:])]+\\)//g' \\\n", "")],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: a key that names a file or a path is no longer taken out",
+        [
+            Edit(
+                ACTION,
+                "              -e 's/[a-z0-9_.-]*[_.-](file|filename|path|dir)\"?[[:space:]]*[:=]([[:space:]]*\"?[/~])/\\1/g' \\\n",
+                "",
+            )
+        ],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: a true, false, null or none flag is no longer taken out",
+        [
+            Edit(
+                ACTION,
+                "              -e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?[[:space:]]*([],}]|$)/ \\2/g' \\\n",
+                "",
+            )
+        ],
+        [f"{P}.test_a_line_that_only_looks_like_a_credential_assignment_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: the sudoers tag takes the rest of its line with it",
+        [Edit(ACTION, "-e 's/(^|[[:space:])])nopasswd:/\\1/g'", "-e 's/(^|[[:space:])])nopasswd:.*/\\1/g'")],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a ${NAME} reference takes the rest of its line with it",
+        [
+            Edit(
+                ACTION,
+                "-e 's/\\$\\{[a-z_][a-z0-9_]*(:?\\?[^}]*)?\\}//g'",
+                "-e 's/\\$\\{[a-z_][a-z0-9_]*(:?\\?[^}]*)?\\}.*//g'",
+            )
+        ],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a key that names a file takes the rest of its line with it",
+        [Edit(ACTION, "[:=]([[:space:]]*\"?[/~])/\\1/g'", "[:=].*/\\1/g'")],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a key that only ends like a file, with any value, is taken out",
+        [
+            Edit(
+                ACTION,
+                "[a-z0-9_.-]*[_.-](file|filename|path|dir)\"?[[:space:]]*[:=]([[:space:]]*\"?[/~])/\\1/g'",
+                "[a-z0-9_.-]*(file|filename|path|dir)\"?[[:space:]]*[:=]/\\1/g'",
+            )
+        ],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: a value that only starts like a flag is taken out",
+        [Edit(ACTION, '"?[[:space:]]*([],}]|$)/ \\2/g\'', '"?()/ \\2/g\'')],
+        [f"{P}.test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line"],
+    ),
+    Case(
+        "scan: the ${...} rule takes out a default again (the old broad rule)",
+        [Edit(ACTION, "-e 's/\\$\\{[a-z_][a-z0-9_]*(:?\\?[^}]*)?\\}//g'", "-e 's/\\$\\{[^}]*\\}//g'")],
+        [f"{P}.test_a_secret_in_a_default_or_a_command_is_withheld_and_never_printed"],
+    ),
+    Case(
+        "scan: the $(...) rule takes out a command again (the old broad rule)",
+        [Edit(ACTION, "-e 's/\\$\\(cat [^[:space:])]+\\)//g'", "-e 's/\\$\\([^)]*\\)//g'")],
+        [f"{P}.test_a_secret_in_a_default_or_a_command_is_withheld_and_never_printed"],
+    ),
+    Case(
+        "scan: the flag rule accepts any punctuation after the flag word",
+        [Edit(ACTION, "-e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?[[:space:]]*([],}]|$)/ \\2/g'", "-e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?([^a-z0-9_]|$)/ \\2/g'")],
+        [f"{P}.test_a_secret_beside_a_flag_word_a_file_key_or_a_sudoers_tag_is_withheld_and_never_printed"],
+    ),
 ]
 
 

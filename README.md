@@ -510,7 +510,7 @@ README changes, so does this list.
 | Seen as | Cause | What to do |
 | --- | --- | --- |
 | Plan job red, `Plan failed: N of M hosts not clean` first line | A host refused, was busy, failed, timed out, did not answer, or answered with a line this workflow cannot read or for another commit | Read the `::error::host N` line for that host in the job log (it names the kind and the reason), then the row in the job summary. No approval was requested. |
-| Plan row says the diff matched a secret pattern | A line of the diff looks like a credential, or holds the check key | Fix the task with `no_log: true` and `diff: false` (ANS-16). The diff is withheld and the job fails. |
+| Plan row says the diff matched a secret pattern | A line of the diff looks like a credential (see "What the scan reads" for the shapes that do not count), or holds the check key | Fix the task with `no_log: true` and `diff: false` (ANS-16). The diff is withheld and the job fails. |
 | Plan row says the diff is too large | More than 300 KB for a host or 900 KB in all | Split the change. The approver must be able to read the whole plan. |
 | Apply job red, reason `rollback` | The host already ran a newer commit on main than the one approved | Nothing to do: the newer commit includes this one's changes. If that newer apply failed, fix forward with a new commit, as for any red host. |
 | Apply job red, "second run" | The apply left something to change, so the role is not idempotent (ANS-11) | Fix the role. The host is already at the applied state. |
@@ -536,7 +536,8 @@ README changes, so does this list.
   repository, and the playbook's output reaches it. The scan is a backstop with a
   fixed list of patterns; the control is `no_log` and `diff: false` on a task that
   handles a secret (ANS-16). A pattern hit on a harmless line fails the job until
-  the task hides its value.
+  the task hides its value, unless the line is one of the shapes listed under
+  "What the scan reads".
 - **The plan cannot show a change before the merge.** The host takes only a commit
   of its own `main`, so the plan runs after the merge and before the approval,
   which is the order ANS-17 describes. A pull request is checked by lint and
@@ -697,6 +698,33 @@ command `check <commit> <playbook>` (see "Pushed hosts" under
 `ansible-gated-apply.yml`); it needs `push-playbook` and checks the repository out
 with its whole history, only when it is set. There is no input for a host or a key,
 and no dry run.
+
+#### What the scan reads
+
+Each host's diff is read for seven patterns before it is shown. Six name a key or
+a token by its own form (a private key block, an AWS access key, a GitHub token, a
+Slack token, a payment key, a JWT) and read the diff whole. The seventh,
+`credential-assignment`, finds a word such as `password`, `secret`, `token`,
+`api_key` or `credential` followed by `:` or `=` and a value of four characters or
+more. That form also occurs in text that holds no credential, so this pattern reads
+a copy of the diff from which four shapes have first been taken out, lower-cased:
+
+| Shape taken out | Why it is not a credential | Example (synthetic) |
+| --- | --- | --- |
+| `NOPASSWD:`, after a word or the start of the line | The sudoers tag that lets a command run without a password. It is a permission. | `deploy ALL=(root) NOPASSWD: /usr/local/sbin/example-program` |
+| `${NAME}`, `${NAME:?...}` and `$(cat PATH)` | A reference to where a value comes from, not the value. A `${NAME:-...}` or `${NAME:=...}` default and any other `$(...)` are read whole. | `EXAMPLE_TOKEN: ${EXAMPLE_TOKEN:?set it in /etc/example/app.env}` |
+| A key that ends in `_file`, `_filename`, `_path` or `_dir` (also after `.` or `-`), with its `:` or `=` and a value that starts with `/` or `~` | The value is a location. | `password_file: /etc/example/db-password` |
+| A value that is `true`, `false`, `null` or `none`, followed by `,`, `}`, `]` or the end of the line | A flag. | `"example_password": true,` |
+
+Only the shape is removed. A credential later on the same line is still read, and
+so is a key that only ends like a file key (`token_profile`), a file key whose value
+is not a location (`EXAMPLE_TOKEN_FILE=<secret>`), or a value that only starts like
+a flag. Prose such as `token: how to use it` still matches, and the
+fix for it is to reword the text, as before. The text shown to the approver is the
+diff whole, and the log never carries the text that matched. A shape that is not in
+the table is still withheld until the task hides it (`no_log: true` and
+`diff: false`, ANS-16) or this table gains a row, with a test that shows the row
+lets through that shape alone.
 
 #### What a red run means, and how to clear it
 
