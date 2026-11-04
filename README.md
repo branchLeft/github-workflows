@@ -254,6 +254,16 @@ apply lands its planned commit even when main has moved on. The host is the
 authority on order. It refuses a commit older than the one it last applied, and
 this job then fails with reason `rollback`.
 
+**A list of several hosts can partly apply.** The apply job runs host 1, then host 2. The plan
+job asks every host in check mode and the same floor check refuses there, but a host can move past
+the planned commit between the plan and the apply. Then host 1 takes the planned commit and host 2
+refuses with `rollback`: the hosts before a red host were applied. The job no longer compares the
+default branch head with the plan, so this window is a little wider than when that check stopped a
+stale run before any host was touched. The answer is to fix forward, as for any red host. A
+pre-pass in the apply job that asks every host in check mode again after the approval, and refuses
+before the first apply if any host answers `rollback`, would close it; that is a change to the
+workflow, not made here.
+
 #### How a repository calls it
 
 Add one caller, pinned to an exact tag (see Versioning). The workflow is not in
@@ -512,7 +522,7 @@ README changes, so does this list.
 | Plan job red, `Plan failed: N of M hosts not clean` first line | A host refused, was busy, failed, timed out, did not answer, or answered with a line this workflow cannot read or for another commit | Read the `::error::host N` line for that host in the job log (it names the kind and the reason), then the row in the job summary. No approval was requested. |
 | Plan row says the diff matched a secret pattern | A line of the diff looks like a credential (see "What the scan reads" for the shapes that do not count), or holds the check key | Fix the task with `no_log: true` and `diff: false` (ANS-16). The diff is withheld and the job fails. |
 | Plan row says the diff is too large | More than 300 KB for a host or 900 KB in all | Split the change. The approver must be able to read the whole plan. |
-| Apply job red, reason `rollback` | The host already ran a newer commit on main than the one approved | Nothing to do: the newer commit includes this one's changes. If that newer apply failed, fix forward with a new commit, as for any red host. |
+| Apply job red, reason `rollback` | The host already ran a newer commit on main than the one approved. The planned commit is in the job log (the guard step prints "Applying the planned commit"); the host's last applied commit is not, because the host's one summary line has no floor field and its stderr is withheld from the public log. Read the floor from the host's journal. | Nothing to do on a linear main: the newer commit includes this one's changes. With a merge commit the floor can be a mainline commit that does not contain a planned side-branch commit, so check before relying on that. If that newer apply failed, fix forward with a new commit, as for any red host. |
 | Apply job red, "second run" | The apply left something to change, so the role is not idempotent (ANS-11) | Fix the role. The host is already at the applied state. |
 | Apply job red on one host | Hosts after it were not touched; hosts before it were applied | Read the host's log, fix forward with a new commit. |
 | Gate job red, "expected skipped" | A plan or apply ran in a run that cannot reach a host | A defect in a caller's use of the workflow. |
