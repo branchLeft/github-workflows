@@ -1622,14 +1622,17 @@ class PlanTests(unittest.TestCase):
     def test_a_secret_in_a_default_or_a_command_is_withheld_and_never_printed(self) -> None:
         # Each line holds a secret inside a ${...} default, a $(...) command or an unbalanced ${. The
         # shape rules take out only a ${NAME} reference and $(cat PATH), so each line stays withheld.
+        # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
         secret = "Zx9Qm2LpVt7Rw4Ks"
         lines = [
             "+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-" + secret + "}",
             '+: "${DB_PASSWORD:=' + secret + '}"',
+            # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
             "+count=$(mysql -u root --password=" + secret + " -N -e 'select 1')",
             '+ok=$(curl -s -H "X-Api-Key: ' + secret + '" https://example.invalid/health)',
             "+admin_password_hash=$(htpasswd -nbB admin " + secret + ")",
             "+PASSWORD=$(cat /run/x 2>/dev/null || echo " + secret + ")",
+            # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
             '+echo "${"; password=' + secret + '; echo "}"',
         ]
         for index, line in enumerate(lines):
@@ -1645,6 +1648,7 @@ class PlanTests(unittest.TestCase):
     def test_a_secret_beside_a_flag_word_a_file_key_or_a_sudoers_tag_is_withheld_and_never_printed(self) -> None:
         # Each line holds a secret that the flag, file-key or sudoers shapes sit beside. None of these
         # shapes covers a value that is not a bare flag, a location or a permission, so each stays withheld.
+        # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
         secret = "Zx9Qm2LpVt7Rw4Ks"
         lines = [
             "+ -e EXAMPLE_TOKEN_FILE=" + secret,
@@ -1653,6 +1657,7 @@ class PlanTests(unittest.TestCase):
             '+  "password": "null.' + secret + '",',
             "+password: false " + secret,
             "+ROOT_NOPASSWD: " + secret,
+            # opv-disable-next-line OPV004 synthetic leak fixture, not a real secret; the test asserts it is withheld
             "+password=" + secret + "_path=x",
         ]
         for index, line in enumerate(lines):
