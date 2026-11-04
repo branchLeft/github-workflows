@@ -379,6 +379,10 @@
         "timeout-minutes": 10
       },
       "drift": {
+        "concurrency": {
+          "cancel-in-progress": false,
+          "group": "ansible-plan-${{ github.repository }}"
+        },
         "name": "Check every host for drift (check mode)",
         "outputs": {
           "detail": "${{ steps.check.outputs.detail }}",
@@ -650,6 +654,10 @@
         "timeout-minutes": 5
       },
       "discover": {
+        "concurrency": {
+          "cancel-in-progress": true,
+          "group": "ansible-ci-discover-${{ github.repository }}-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}"
+        },
         "name": "Discover the Ansible checks",
         "outputs": {
           "delivery": "${{ steps.context.outputs.delivery }}",
@@ -706,6 +714,10 @@
         "timeout-minutes": 10
       },
       "lint": {
+        "concurrency": {
+          "cancel-in-progress": true,
+          "group": "ansible-ci-lint-${{ github.repository }}-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}"
+        },
         "defaults": {
           "run": {
             "working-directory": "${{ inputs.working-directory }}"
@@ -778,7 +790,11 @@
         "timeout-minutes": 20
       },
       "plan": {
-        "if": "${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}",
+        "concurrency": {
+          "cancel-in-progress": false,
+          "group": "ansible-plan-${{ github.repository }}"
+        },
+        "if": "${{ !cancelled() && needs.discover.result == 'success' && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.shard.result == 'success' || needs.shard.result == 'skipped') && needs.discover.outputs.delivery == 'true' }}",
         "name": "Plan the apply (check mode on each host)",
         "needs": [
           "discover",
@@ -895,6 +911,10 @@
         "timeout-minutes": "${{ inputs.plan-timeout-minutes }}"
       },
       "shard": {
+        "concurrency": {
+          "cancel-in-progress": true,
+          "group": "ansible-ci-shard-${{ github.repository }}-${{ inputs.environment }}-${{ matrix.name }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}"
+        },
         "defaults": {
           "run": {
             "working-directory": "${{ inputs.working-directory }}"

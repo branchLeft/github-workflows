@@ -483,6 +483,35 @@ Named limits of the push route:
   `stub/push-receiver.sh`, which verifies it with git and answers; it proves the
   sender's side only.
 
+#### Concurrency: a newer push replaces an older one
+
+Only job-level groups are used. A workflow-level group would queue a newer run
+behind an older run that is waiting for approval.
+
+- `discover`, `lint` and each `Molecule: <role>` leg have a group each, with
+  `cancel-in-progress`. On a delivery run (a push to the default branch of the
+  repository itself) the group name ends in `delivery`, so a newer push cancels
+  the checks of an older one. Every other run (pull request, merge queue, fork)
+  gets a group named for its own run id and attempt, so it cancels nothing and
+  nothing cancels it. The leg's group holds its role name, so the legs do not
+  cancel one another.
+- The older run ends red, with the `Ansible checks passed` job saying that a job
+  reported `cancelled`. That is deliberate: the run never planned or applied.
+  The plan job starts only when `discover` succeeded and `lint` and `shard`
+  each succeeded or were skipped.
+- `plan` has one group per repository, `ansible-plan-<repository>`, without
+  cancelling. A plan that has started runs out. A plan waiting behind it is
+  replaced by a newer one, so overlapping plans do not meet the host's lock
+  (busy, exit 21). The nightly drift check is in the same group.
+- `apply` keeps its own group, per repository and environment, and is never
+  cancelled. An apply that is waiting for approval is not replaced: a newer
+  apply queues behind it, and the owner approves or rejects the older one first.
+
+Named limits of this: a plan and an apply are in different groups, so a plan can
+still meet an apply on the host lock. A nightly drift check that arrives while a
+plan runs can replace a plan that is waiting, and a plan can replace a waiting
+drift check, which the alert then reports as `cancelled`.
+
 #### Setup the owner does once per repository
 
 These are settings and keys, not a script, and the commands belong in the

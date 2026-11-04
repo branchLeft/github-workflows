@@ -113,6 +113,11 @@ jobs:
     name: Check every host for drift (check mode)
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.check-timeout-minutes }}
+    # The same group as the plan job of ansible-gated-apply.yml: both ask the
+    # host for a check, and the host refuses a second one while one holds its lock.
+    concurrency:
+      group: ansible-plan-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: read

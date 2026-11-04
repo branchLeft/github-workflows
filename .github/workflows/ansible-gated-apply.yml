@@ -11,6 +11,19 @@ name: Ansible gated apply
 # gate and then asks each host to apply that same commit. The job named
 # `Ansible checks passed` is the one a caller requires.
 #
+# Concurrency (job groups only; there is no workflow-level group, which would
+# queue a newer run behind a run that waits for approval). On a delivery run
+# (a push to the default branch of the repository itself) discover, lint and
+# each Molecule leg sit in a group of their own with cancel-in-progress, so a
+# newer push cancels the checks of an older one that has not reached a host.
+# Every other event gets a group unique to the run and behaves as before. The
+# plan job has one group per repository and is never cancelled: a queued plan
+# replaces an older queued plan, and a running plan finishes. A superseded run
+# ends red ("reported cancelled, expected success") and plans nothing. The
+# apply job keeps its own group, is never cancelled, and an approval that is
+# waiting is never replaced: a newer apply queues behind it. The drift check
+# shares the plan group, since both ask the same host lock.
+#
 # CI never holds a root shell. The only host access is an SSH key whose
 # authorized_keys line on the host runs one forced command, and that command
 # takes one commit id and nothing else. The plan job holds the check key. The
@@ -219,6 +232,9 @@ jobs:
     name: Discover the Ansible checks
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    concurrency:
+      group: ansible-ci-discover-${{ github.repository }}-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: true
     outputs:
       delivery: ${{ steps.context.outputs.delivery }}
       recheck: ${{ steps.context.outputs.rerun }}
@@ -457,6 +473,9 @@ jobs:
     if: needs.discover.outputs.recheck == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    concurrency:
+      group: ansible-ci-lint-${{ github.repository }}-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -530,6 +549,9 @@ jobs:
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.shard-timeout-minutes }}
+    concurrency:
+      group: ansible-ci-shard-${{ github.repository }}-${{ inputs.environment }}-${{ matrix.name }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
+      cancel-in-progress: true
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -602,9 +624,22 @@ jobs:
     needs: [discover, lint, shard]
     # lint and shard are skipped when the merge queue already ran them; a
     # skipped need would skip this job, so the condition names the statuses.
-    if: ${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}
+    # A need that a newer run cancelled (see the concurrency note at the top)
+    # is neither success nor skipped, so this run plans nothing.
+    if: >-
+      ${{ !cancelled()
+      && needs.discover.result == 'success'
+      && (needs.lint.result == 'success' || needs.lint.result == 'skipped')
+      && (needs.shard.result == 'success' || needs.shard.result == 'skipped')
+      && needs.discover.outputs.delivery == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.plan-timeout-minutes }}
+    # One plan at a time per repository, because the host refuses a second
+    # check while one holds its lock (busy, exit 21). Not cancelled: a queued
+    # plan replaces an older queued one, and a plan that has started runs out.
+    concurrency:
+      group: ansible-plan-${{ github.repository }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: read
