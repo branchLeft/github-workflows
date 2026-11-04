@@ -71,6 +71,7 @@ SJ2 = "SshJump2Tests"
 AJ2 = "ApplyJump2Tests"
 JAG = "Jump2ApplyGuardTests"
 JPar = "Jump2ParityTests"
+CC = "ConcurrencyTests"
 
 CASES: list[Case] = [
     Case(
@@ -551,8 +552,8 @@ CASES: list[Case] = [
     ),
     Case(
         "plan runs after a failed lint",
-        [Edit(GATED, "!cancelled() && !failure() && needs.discover", "!cancelled() && needs.discover")],
-        [f"{S}.test_the_plan_job_runs_only_for_delivery"],
+        [Edit(GATED, "      && (needs.lint.result == 'success' || needs.lint.result == 'skipped')\n", "")],
+        [f"{S}.test_the_plan_job_runs_only_for_delivery_and_only_after_every_need_succeeded_or_was_skipped"],
     ),
     Case(
         "apply has no leading status function, so a skipped lint skips it",
@@ -1410,6 +1411,62 @@ CASES: list[Case] = [
         "scan: the flag rule accepts any punctuation after the flag word",
         [Edit(ACTION, "-e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?[[:space:]]*([],}]|$)/ \\2/g'", "-e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?([^a-z0-9_]|$)/ \\2/g'")],
         [f"{P}.test_a_secret_beside_a_flag_word_a_file_key_or_a_sudoers_tag_is_withheld_and_never_printed"],
+    ),
+    Case(
+        "apply job group cancels a running apply",
+        [Edit(GATED, "      group: ansible-apply-${{ github.repository }}-${{ inputs.environment }}\n      cancel-in-progress: false", "      group: ansible-apply-${{ github.repository }}-${{ inputs.environment }}\n      cancel-in-progress: true")],
+        [f"{CC}.test_the_apply_job_has_its_own_group_that_never_cancels", f"{CC}.test_no_job_that_holds_a_key_or_an_environment_or_applies_can_be_cancelled_by_a_group"],
+    ),
+    Case(
+        "apply job group is shared with the plan job",
+        [Edit(GATED, "      group: ansible-apply-${{ github.repository }}-${{ inputs.environment }}\n", "      group: ansible-plan-${{ github.repository }}\n")],
+        [f"{CC}.test_the_apply_job_has_its_own_group_that_never_cancels", f"{CC}.test_no_other_job_shares_the_apply_group"],
+    ),
+    Case(
+        "apply job group dropped",
+        [Edit(GATED, "    concurrency:\n      group: ansible-apply-${{ github.repository }}-${{ inputs.environment }}\n      cancel-in-progress: false\n", "")],
+        [f"{CC}.test_the_apply_job_has_its_own_group_that_never_cancels"],
+    ),
+    Case(
+        "Molecule legs share one group",
+        [Edit(GATED, "-${{ inputs.environment }}-${{ matrix.name }}-${{ github.event_name", "-${{ inputs.environment }}-${{ github.event_name")],
+        [f"{CC}.test_a_molecule_leg_has_a_group_of_its_own_so_the_legs_do_not_cancel_each_other"],
+    ),
+    Case(
+        "plan job cancels a running plan",
+        [Edit(GATED, "      group: ansible-plan-${{ github.repository }}\n      cancel-in-progress: false", "      group: ansible-plan-${{ github.repository }}\n      cancel-in-progress: true")],
+        [f"{CC}.test_plan_and_the_drift_check_share_one_group_that_never_cancels", f"{CC}.test_no_job_that_holds_a_key_or_an_environment_or_applies_can_be_cancelled_by_a_group"],
+    ),
+    Case(
+        "drift job leaves the plan group",
+        [Edit(DRIFT, "      group: ansible-plan-${{ github.repository }}\n", "      group: ansible-drift-${{ github.repository }}\n")],
+        [f"{CC}.test_plan_and_the_drift_check_share_one_group_that_never_cancels"],
+    ),
+    Case(
+        "a workflow-level group is added",
+        [Edit(GATED, "permissions:\n  contents: read\n\njobs:", "permissions:\n  contents: read\n\nconcurrency:\n  group: ansible-${{ github.repository }}\n  cancel-in-progress: true\n\njobs:")],
+        [f"{CC}.test_neither_workflow_has_a_workflow_level_group"],
+    ),
+    Case(
+        "lint stops cancelling a superseded run",
+        [Edit(GATED, "-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: true\n    defaults:", "-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: false\n    defaults:")],
+        [f"{CC}.test_only_discover_lint_and_shard_cancel_and_each_has_the_group_pinned_here"],
+    ),
+    Case(
+        "a pull request run shares the delivery group of discover",
+        [
+            Edit(
+                GATED,
+                "ansible-ci-discover-${{ github.repository }}-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}",
+                "ansible-ci-discover-${{ github.repository }}-${{ inputs.environment }}-delivery",
+            )
+        ],
+        [f"{CC}.test_only_discover_lint_and_shard_cancel_and_each_has_the_group_pinned_here"],
+    ),
+    Case(
+        "plan runs for a superseded run (the old condition)",
+        [Edit(GATED, "      ${{ !cancelled()\n      && needs.discover.result == 'success'\n      && (needs.lint.result == 'success' || needs.lint.result == 'skipped')\n      && (needs.shard.result == 'success' || needs.shard.result == 'skipped')\n      && needs.discover.outputs.delivery == 'true' }}", "      ${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}")],
+        [f"{S}.test_the_plan_job_runs_only_for_delivery_and_only_after_every_need_succeeded_or_was_skipped"],
     ),
 ]
 

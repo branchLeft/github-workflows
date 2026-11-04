@@ -631,10 +631,16 @@ class StructureTests(unittest.TestCase):
         ):
             self.assertIn(named, condition)
 
-    def test_the_plan_job_runs_only_for_delivery(self) -> None:
+    def test_the_plan_job_runs_only_for_delivery_and_only_after_every_need_succeeded_or_was_skipped(self) -> None:
+        # A need that a newer run cancelled is neither success nor skipped, so the
+        # plan of a superseded run never starts. !failure() alone would not catch it.
         self.assertEqual(
             " ".join(str(JOBS["plan"]["if"]).split()),
-            "${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}",
+            "${{ !cancelled() "
+            "&& needs.discover.result == 'success' "
+            "&& (needs.lint.result == 'success' || needs.lint.result == 'skipped') "
+            "&& (needs.shard.result == 'success' || needs.shard.result == 'skipped') "
+            "&& needs.discover.outputs.delivery == 'true' }}",
         )
         self.assertNotIn("environment", JOBS["plan"])
 
@@ -5812,15 +5818,15 @@ class PushParityTests(unittest.TestCase):
 # none away, and a caller that passes none of its inputs runs what it ran.
 FROZEN_JOB_KEYS = {
     "gated": {
-        "discover": ["name", "outputs", "runs-on", "timeout-minutes"],
-        "lint": ["defaults", "if", "name", "needs", "runs-on", "timeout-minutes"],
-        "shard": ["defaults", "env", "if", "name", "needs", "runs-on", "strategy", "timeout-minutes"],
-        "plan": ["if", "name", "needs", "outputs", "permissions", "runs-on", "timeout-minutes"],
+        "discover": ["concurrency", "name", "outputs", "runs-on", "timeout-minutes"],
+        "lint": ["concurrency", "defaults", "if", "name", "needs", "runs-on", "timeout-minutes"],
+        "shard": ["concurrency", "defaults", "env", "if", "name", "needs", "runs-on", "strategy", "timeout-minutes"],
+        "plan": ["concurrency", "if", "name", "needs", "outputs", "permissions", "runs-on", "timeout-minutes"],
         "apply": ["concurrency", "environment", "if", "name", "needs", "runs-on", "timeout-minutes"],
         "checks": ["if", "name", "needs", "runs-on", "timeout-minutes"],
     },
     "drift": {
-        "drift": ["name", "outputs", "permissions", "runs-on", "timeout-minutes"],
+        "drift": ["concurrency", "name", "outputs", "permissions", "runs-on", "timeout-minutes"],
         "alert": ["concurrency", "if", "name", "needs", "permissions", "runs-on", "timeout-minutes"],
     },
 }
@@ -5889,6 +5895,91 @@ class PushOffTests(unittest.TestCase):
         self.assertFalse((applied.temp / "ansible-apply" / "push.bundle").exists())
         routes = sorted(path.read_text().strip() for path in (planned.temp / "ansible-plan").glob("*.route"))
         self.assertEqual(routes, ["pull", "pull"])
+
+
+# The delivery suffix of the checks' groups: a push to the default branch of the
+# repository itself shares one suffix, so a newer push cancels an older one;
+# every other run gets a suffix of its own, so it cancels nothing and is
+# cancelled by nothing.
+DELIVERY_SUFFIX = (
+    "${{ github.event_name == 'push' "
+    "&& github.ref == format('refs/heads/{0}', github.event.repository.default_branch) "
+    "&& github.event.repository.fork != true "
+    "&& 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}"
+)
+PLAN_GROUP = "ansible-plan-${{ github.repository }}"
+APPLY_GROUP = "ansible-apply-${{ github.repository }}-${{ inputs.environment }}"
+CHECK_GROUPS = {
+    "discover": "ansible-ci-discover-${{ github.repository }}-${{ inputs.environment }}-" + DELIVERY_SUFFIX,
+    "lint": "ansible-ci-lint-${{ github.repository }}-${{ inputs.environment }}-" + DELIVERY_SUFFIX,
+    "shard": "ansible-ci-shard-${{ github.repository }}-${{ inputs.environment }}-${{ matrix.name }}-" + DELIVERY_SUFFIX,
+}
+
+
+class ConcurrencyTests(unittest.TestCase):
+    """A newer delivery run cancels the checks of an older one, and never an apply that has started."""
+
+    def test_the_apply_job_has_its_own_group_that_never_cancels(self) -> None:
+        concurrency = JOBS["apply"]["concurrency"]
+        self.assertEqual(concurrency["group"], APPLY_GROUP)
+        self.assertIs(concurrency["cancel-in-progress"], False)
+
+    def test_no_other_job_shares_the_apply_group(self) -> None:
+        apply_group = JOBS["apply"]["concurrency"]["group"]
+        for label, jobs in (("gated", JOBS), ("drift", DRIFT_JOBS)):
+            for name, job in jobs.items():
+                if (label, name) != ("gated", "apply"):
+                    with self.subTest(workflow=label, job=name):
+                        self.assertNotEqual(job.get("concurrency", {}).get("group"), apply_group)
+
+    def test_no_job_that_holds_a_key_or_an_environment_or_applies_can_be_cancelled_by_a_group(self) -> None:
+        for label, jobs in (("gated", JOBS), ("drift", DRIFT_JOBS)):
+            for name, job in jobs.items():
+                text = json.dumps(job)
+                if "environment" in job or "ssh_apply_key" in text or "ssh_check_key" in text or "Apply on each host" in text:
+                    with self.subTest(workflow=label, job=name):
+                        self.assertIsNot(job.get("concurrency", {}).get("cancel-in-progress", False), True)
+
+    def test_only_discover_lint_and_shard_cancel_and_each_has_the_group_pinned_here(self) -> None:
+        cancelling = {name for name, job in JOBS.items() if job.get("concurrency", {}).get("cancel-in-progress") is True}
+        self.assertEqual(cancelling, set(CHECK_GROUPS))
+        for name, group in CHECK_GROUPS.items():
+            with self.subTest(job=name):
+                self.assertEqual(JOBS[name]["concurrency"], {"group": group, "cancel-in-progress": True})
+
+    def test_a_molecule_leg_has_a_group_of_its_own_so_the_legs_do_not_cancel_each_other(self) -> None:
+        self.assertIn("${{ matrix.name }}", JOBS["shard"]["concurrency"]["group"])
+
+    def test_the_checks_groups_are_distinct_from_each_other(self) -> None:
+        self.assertEqual(len(set(CHECK_GROUPS.values())), len(CHECK_GROUPS))
+
+    def test_the_suffix_is_the_same_decision_as_the_discover_step_makes(self) -> None:
+        # Both the suffix and the delivery decision read the same three facts.
+        decision = find_step("discover", "context")["run"]
+        for fact in ('"$EVENT_NAME" = push', '"$REF" = "refs/heads/$DEFAULT_BRANCH"', '"$IS_FORK" != true'):
+            self.assertIn(fact, decision)
+
+    def test_plan_and_the_drift_check_share_one_group_that_never_cancels(self) -> None:
+        for label, job in (("plan", JOBS["plan"]), ("drift", DRIFT_JOBS["drift"])):
+            with self.subTest(job=label):
+                self.assertEqual(job["concurrency"], {"group": PLAN_GROUP, "cancel-in-progress": False})
+        self.assertEqual(JOBS["plan"]["concurrency"]["group"], DRIFT_JOBS["drift"]["concurrency"]["group"])
+
+    def test_neither_workflow_has_a_workflow_level_group(self) -> None:
+        # One would queue a newer run behind a run that is waiting for approval.
+        for label, doc in (("gated", DOC), ("drift", DRIFT_DOC)):
+            with self.subTest(workflow=label):
+                self.assertNotIn("concurrency", doc)
+
+    def test_the_drift_alert_group_is_unchanged(self) -> None:
+        self.assertEqual(
+            DRIFT_JOBS["alert"]["concurrency"],
+            {"group": "ansible-drift-alert-${{ github.repository }}-${{ inputs.host-label }}", "cancel-in-progress": False},
+        )
+
+    def test_the_checks_job_has_no_group_and_is_not_conditional_on_one(self) -> None:
+        self.assertNotIn("concurrency", JOBS["checks"])
+        self.assertEqual(JOBS["checks"]["if"], "always()")
 
 
 if __name__ == "__main__":
