@@ -363,6 +363,8 @@ Any failure stops the job before the key is read.
 | `ssh_known_hosts` | the caller | The hosts' public keys in `known_hosts` form. Host key checking is on and the global file is not read. |
 | `ssh_check_key` | the caller | Private key of the plan job. On the host it may run the forced command in check mode only. |
 | `ssh_apply_key` | not passed: an environment secret | Private key of the apply job. It is read because the apply job runs in the environment, so a job that has not passed the approval cannot read it. |
+| `ssh_host_check_keys` | the caller, optional | One JSON object `{"user@host": "<private key text>"}`: the check key of each host that has one of its own. A host with no entry keeps `ssh_check_key`. See "Per-host keys". |
+| `ssh_host_apply_keys` | not passed: an environment secret, optional | The same shape, for the apply key of each host that has one of its own. A host with no entry keeps `ssh_apply_key`. See "Per-host keys". |
 | `ssh_jump_host` | the caller, optional | A `user@host` that every host is reached through. Both or neither with `ssh_jump_key`. Its host-key line goes in `ssh_known_hosts`. |
 | `ssh_jump_key` | the caller, optional | Private key for the jump host and nothing else, never the check key or the apply key. Both or neither with `ssh_jump_host`. |
 | `ssh_jump2_host` | the caller, optional | A `user@host` that only the hosts in `ssh_jump2_hosts` are reached through, after `ssh_jump_host`: the second hop. All three of `ssh_jump2_host`, `ssh_jump2_key` and `ssh_jump2_hosts`, or none. Its host-key line goes in `ssh_known_hosts`. |
@@ -382,6 +384,57 @@ first hop and are all three or none: a partial set fails before any host is
 contacted and names what is missing.
 The jump host is not part of the digest that ties the apply to the plan: the digest
 binds the target hosts, which strict host-key checking pins.
+
+#### Per-host keys
+
+By default one check key and one apply key serve every host, so a leaked key
+reaches every host. A host can have a key pair of its own instead, so that a leaked
+key reaches that host only. Two optional secrets carry them, each one JSON object
+whose keys are exact lines of `ssh_hosts` and whose values are the private key
+text:
+
+```json
+{"deploy@host-two": "-----BEGIN OPENSSH PRIVATE KEY-----\n...\n-----END OPENSSH PRIVATE KEY-----"}
+```
+
+- `ssh_host_check_keys` is a repository secret the caller passes, and is read by
+  the plan job and by the nightly drift check (`ansible-drift-check.yml` takes it
+  the same way, or a host that trusts only its own key fails the nightly check).
+- `ssh_host_apply_keys` is a secret of the deployment environment, so its name
+  there is `SSH_HOST_APPLY_KEYS` (names match without regard to case). The caller
+  does not pass it, and only the apply job reads it.
+- A host with an entry is called with that key and no other, in the plan and in
+  both runs of the apply. A host with no entry keeps the shared key, so a repository
+  that sets neither secret behaves exactly as before: the same ssh arguments, the
+  same files, the same removals.
+- Build the value from the key files on your own machine, so a key is never typed
+  or edited by hand. For one host, with the key in `./demo1_check_key`:
+  `jq -n --rawfile key ./demo1_check_key '{"deploy@host-two": $key}'`. The trailing
+  newline of the file is dropped when the key is used.
+- Before any file is written or host asked, the steps refuse a value that is not a
+  JSON object, an empty object, a key that is not a non-empty string, a key whose
+  host is not a line of `ssh_hosts` (so a typo cannot silently fall back to the
+  shared key), a key shared by two hosts, a key equal to the shared key, and a key
+  equal to a jump key. No message holds a key.
+- A host with no entry and no shared key fails with `Host N has no key`. With an
+  entry for every host the shared key may be empty. With no map and no shared key
+  the message is the one it always was.
+- A key is written to a private file `id.NN` (`NN` being the host's place in
+  `ssh_hosts`) and removed on every way out of the step, as the shared key is. Each
+  line of a key is masked in the log, and the report step withholds a diff that
+  quotes one, as it does for the shared key. A key is read from the environment
+  inside `jq`, so it is never on a command line.
+- The map is not part of the digest that ties the apply to the plan. It holds
+  credentials, not targets; the host's forced command is what binds a key to the
+  check or the apply mode.
+
+The names of the secrets in a calling repository are its own choice. For
+`branchLeft/shared-infra`, once it pins a release that carries this, the repository
+secret `ANSIBLE_HOST_CHECK_KEYS` is passed as `ssh_host_check_keys` by both
+`ansible-delivery.yml` and `ansible-drift-check.yml`, and the secret
+`SSH_HOST_APPLY_KEYS` of its `ansible-hosts` environment is read by the apply job
+under the name `ssh_host_apply_keys`. Its shared `ANSIBLE_CHECK_KEY` and
+`SSH_APPLY_KEY` stay for every host that has no entry.
 
 #### Pushed hosts
 
@@ -521,7 +574,13 @@ runbook in `ghost-platform-docs`, not here.
    set to the owner, self-review not allowed, and deployment branches limited to
    the default branch.
 2. The apply key as a secret of that environment, and the check key, the host
-   list and the known-hosts lines as repository secrets.
+   list and the known-hosts lines as repository secrets. For a host that has a key
+   pair of its own (see "Per-host keys"), its apply key goes in
+   `ssh_host_apply_keys` in the same environment and its check key in
+   `ssh_host_check_keys` as a repository secret, built from the key files with the
+   `jq` command given there. The first apply after they are set shows that the
+   environment secret reaches the apply job; if the apply job reads it empty, have
+   the caller pass it as it passes the others.
 3. On each host, the `authorized_keys` lines for the two keys, one with
    `--mode check` and one with `--mode apply` in the forced command, restricted
    to the runners' source and with no shell, forwarding or terminal. The line and
@@ -631,6 +690,12 @@ README changes, so does this list.
   request gate runs any other sequence passes that entry point, because two
   entry points let a role pass one and fail the other. A test fails if a second
   Molecule step returns to the job.
+- **A duplicate JSON key in the per-host key secrets silently takes the last
+  value.** That is how `jq` reads an object, and the steps cannot tell the two
+  apart. Build the secret with `jq -n --rawfile`, as "Per-host keys" shows, and it
+  has no duplicate. A key's host must be a line of `ssh_hosts`, but whether the
+  host trusts that key is known only to the host: a wrong key is seen as an
+  unreachable host in the plan, not before.
 - **No change detection.** Every call runs every check; a caller cannot narrow
   it by path without making the gate job unreliable as a required check.
 - **A schedule is not part of this workflow.** The nightly drift run of ANS-17 is
@@ -735,8 +800,12 @@ through two hops" under `ssh-check-hosts` below). A further optional secret, `ss
 subset of the hosts on the push route, which sends the commit as a bundle with the
 command `check <commit> <playbook>` (see "Pushed hosts" under
 `ansible-gated-apply.yml`); it needs `push-playbook` and checks the repository out
-with its whole history, only when it is set. There is no input for a host or a key,
-and no dry run.
+with its whole history, only when it is set. One more optional secret,
+`ssh_host_check_keys`, gives a host a check key of its own (see "Per-host keys"
+under `ansible-gated-apply.yml`); pass the same value the delivery workflow gets,
+because a host that trusts only its own key refuses the shared key and the nightly
+check would fail for it. There is no apply-key secret (so no `ssh_host_apply_keys`
+either) and no dry run.
 
 #### What the scan reads
 
@@ -1126,7 +1195,8 @@ job loads the host check"), and it takes the secrets as inputs.
 | --- | --- | --- |
 | `hosts` | required | One `user@host` per line, from a secret. Each line is checked against a pattern; a duplicate or more than 50 hosts is refused. |
 | `known-hosts` | empty | The known_hosts lines, from a secret. Empty only in a dry run. |
-| `check-key` | empty | The private key of the check route, from a secret. Empty only in a dry run. |
+| `check-key` | empty | The private key of the check route, from a secret. Empty only in a dry run, or when `host-check-keys` holds an entry for every host. |
+| `host-check-keys` | empty | One JSON object `{"user@host": "<private key text>"}`, from a secret, whose keys are exact lines of `hosts`. A host with an entry is called with that key and no other; every other host keeps `check-key`. See "Per-host keys" under `ansible-gated-apply.yml`. |
 | `jump-host` | empty | A `user@host`, in the form `hosts` takes, from a secret. Set, every host is reached through this one host (see "Reaching a private host through a jump host"). Needs `jump-key`: one without the other fails the validate step, naming the one that is missing. Its host-key line goes in `known-hosts`. |
 | `jump-key` | empty | The private key for the jump host and nothing else, from a secret. Never the check key or the apply key. |
 | `jump2-host` | empty | A `user@host`, from a secret: the second hop, reached through `jump-host`. Needs `jump2-key`, `jump2-hosts`, `jump-host` and `jump-key` (see "Reaching a host through two hops"). Its host-key line goes in `known-hosts`. |

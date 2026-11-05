@@ -305,26 +305,26 @@ CASES: list[Case] = [
     # The fifth round of review (ws#2342): the key copies of the check and the apply go on every way out.
     Case(
         "check key copies not removed",
-        [Edit(ACTION, "        trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\"' EXIT\n", "")],
+        [Edit(ACTION, "        trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir\"/id.*' EXIT\n", "")],
         [f"{P}.test_the_check_key_and_known_hosts_are_removed_on_every_way_out_a_failure_included"],
     ),
     Case(
         "check key copies removed only on the way out that succeeds",
         [
-            Edit(ACTION, "        trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\"' EXIT\n", ""),
+            Edit(ACTION, "        trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir\"/id.*' EXIT\n", ""),
             Edit(ACTION, '        echo "Asked $i host(s); the answers are judged in the next step."\n', '        rm -f "$plan_dir/id" "$plan_dir/known_hosts"\n        echo "Asked $i host(s); the answers are judged in the next step."\n'),
         ],
         [f"{P}.test_the_check_key_and_known_hosts_are_removed_on_every_way_out_a_failure_included"],
     ),
     Case(
         "apply key copies not removed",
-        [Edit(GATED, "          trap 'rm -f \"$work/id\" \"$work/known_hosts\"' EXIT\n", "")],
+        [Edit(GATED, "          trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work\"/id.*' EXIT\n", "")],
         [f"{A}.test_the_apply_key_and_known_hosts_are_removed_on_every_way_out_a_refusal_included"],
     ),
     Case(
         "apply key copies removed only on the way out that succeeds",
         [
-            Edit(GATED, "          trap 'rm -f \"$work/id\" \"$work/known_hosts\"' EXIT\n", ""),
+            Edit(GATED, "          trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work\"/id.*' EXIT\n", ""),
             Edit(GATED, '          echo "Applied commit $SHA on $i host(s)."\n', '          rm -f "$work/id" "$work/known_hosts"\n          echo "Applied commit $SHA on $i host(s)."\n'),
         ],
         [f"{A}.test_the_apply_key_and_known_hosts_are_removed_on_every_way_out_a_refusal_included"],
@@ -396,7 +396,7 @@ CASES: list[Case] = [
     ),
     Case(
         "apply gate: empty apply key no longer refused",
-        [Edit(GATED, '[ -n "$SSH_KEY" ] || fail "The ssh_apply_key secret is empty. It is a secret of the deployment environment."', ":")],
+        [Edit(GATED, '[ -n "$SSH_KEY" ] || [ -n "$HOST_KEYS" ] || fail "The ssh_apply_key secret is empty. It is a secret of the deployment environment."', ":")],
         [f"{A}.test_the_apply_key_secret_must_be_present"],
     ),
     Case(
@@ -617,7 +617,7 @@ CASES: list[Case] = [
     ),
     Case(
         "trap leaves the jump key and config behind",
-        [Edit(ACTION, "            trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir/jump_id\" \"$plan_dir/jump_config\"' EXIT\n", "")],
+        [Edit(ACTION, "            trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir\"/id.* \"$plan_dir/jump_id\" \"$plan_dir/jump_config\"' EXIT\n", "")],
         [f"{SJ}.test_the_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out"],
     ),
     Case(
@@ -722,7 +722,7 @@ CASES: list[Case] = [
     ),
     Case(
         "apply trap leaves the jump key and config behind",
-        [Edit(GATED, "            trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work/jump_id\" \"$work/jump_config\"' EXIT\n", "")],
+        [Edit(GATED, "            trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work\"/id.* \"$work/jump_id\" \"$work/jump_config\"' EXIT\n", "")],
         [f"{AJ}.test_the_keys_and_the_config_are_private_while_ssh_runs_and_removed_on_every_way_out"],
     ),
     Case(
@@ -1195,7 +1195,7 @@ CASES: list[Case] = [
     ),
     Case(
         "second hop: the trap leaves the second key behind",
-        [Edit(ACTION, '              trap \'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir/jump_id" "$plan_dir/jump_config" "$plan_dir/jump2_id"\' EXIT\n', "")],
+        [Edit(ACTION, '              trap \'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir"/id.* "$plan_dir/jump_id" "$plan_dir/jump_config" "$plan_dir/jump2_id"\' EXIT\n', "")],
         [f"{SJ2}.test_the_second_key_and_the_config_are_private_while_ssh_runs_and_removed_after_every_way_out"],
     ),
     Case(
@@ -1245,7 +1245,7 @@ CASES: list[Case] = [
     ),
     Case(
         "second hop: the action's one-call function drifts from the apply step's",
-        [Edit(ACTION, '            timeout "$limit" ssh "${ssh_args_two[@]}" "$@"\n', '            timeout "$limit" ssh "${ssh_args[@]}" "$@"\n')],
+        [Edit(ACTION, '            args=("${ssh_args_two[@]}")\n', '            args=("${ssh_args[@]}")\n')],
         [f"{JPar}.test_the_one_call_function_is_the_same_text_in_the_action_and_in_the_apply_step"],
     ),
     Case(
@@ -1281,7 +1281,7 @@ CASES: list[Case] = [
     ),
     Case(
         "second hop: the apply trap leaves the second key behind",
-        [Edit(GATED, '              trap \'rm -f "$work/id" "$work/known_hosts" "$work/jump_id" "$work/jump_config" "$work/jump2_id"\' EXIT\n', "")],
+        [Edit(GATED, '              trap \'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/jump_id" "$work/jump_config" "$work/jump2_id"\' EXIT\n', "")],
         [f"{AJ2}.test_the_keys_and_the_config_are_private_while_ssh_runs_and_removed_on_every_way_out"],
     ),
     Case(
@@ -1469,6 +1469,197 @@ CASES: list[Case] = [
         [f"{S}.test_the_plan_job_runs_only_for_delivery_and_only_after_every_need_succeeded_or_was_skipped"],
     ),
 ]
+
+PHK = "PerHostKeyTests"
+HKV = "HostKeyValidateTests"
+AHK = "ApplyHostKeyTests"
+HKP = "HostKeysParityTests"
+HKS = "HostKeySecretScopeTests"
+
+
+def host_key_cases() -> list[Case]:
+    """Per-host keys: the same break is made in the action (the plan side) and in the apply step, each with its own red test.
+
+    A table of near-identical cases is built here rather than written out twice. Each edit
+    is a fragment found exactly once in its file, so a change to the text makes the case fail
+    to apply, not pass.
+    """
+    cases: list[Case] = []
+
+    def both(name: str, action: Edit | None, apply: Edit | None, plan_red: list[str], apply_red: list[str]) -> None:
+        if action is not None:
+            cases.append(Case(f"host keys, plan side: {name}", [action], plan_red))
+        if apply is not None:
+            cases.append(Case(f"host keys, apply side: {name}", [apply], apply_red))
+
+    ONE = f"{PHK}.test_a_host_with_an_entry_gets_exactly_its_own_key_and_the_other_host_the_shared_key"
+    HEAD = f"{PHK}.test_a_wrong_key_for_demo1_fails_the_plan_for_demo1_alone"
+    A_ONE = f"{AHK}.test_a_host_with_an_entry_gets_its_own_key_on_both_runs_and_the_other_host_the_shared_key"
+
+    # The selection of a host's key.
+    both(
+        "the selection ignores the map, so every host gets the shared key",
+        Edit(ACTION, 'if [ -e "$plan_dir/id.$n" ]; then', "if false; then"),
+        Edit(GATED, 'if [ -e "$work/id.$(printf \'%02d\' "$num")" ]; then', "if false; then"),
+        [ONE, HEAD],
+        [A_ONE],
+    )
+    both(
+        "the file of a host is numbered one too high (an off-by-one on the host index)",
+        Edit(ACTION, 'host_key_file="$plan_dir/id.$(printf \'%02d\' "$host_key_index")"', 'host_key_file="$plan_dir/id.$(printf \'%02d\' "$((host_key_index + 1))")"'),
+        Edit(GATED, 'host_key_file="$work/id.$(printf \'%02d\' "$host_key_index")"', 'host_key_file="$work/id.$(printf \'%02d\' "$((host_key_index + 1))")"'),
+        [ONE, HEAD],
+        [A_ONE],
+    )
+    both(
+        "a host with no entry no longer falls back to the shared key",
+        Edit(ACTION, "'($ENV.HOST_KEYS | fromjson) | has($dest)'", "'($ENV.HOST_KEYS | fromjson) | true'"),
+        Edit(GATED, "'($ENV.HOST_KEYS | fromjson) | has($dest)'", "'($ENV.HOST_KEYS | fromjson) | true'"),
+        [ONE, HEAD],
+        [A_ONE],
+    )
+    both(
+        "the call adds a second -i beside the shared one instead of replacing its value",
+        Edit(ACTION, 'args[$((index + 1))]="$identity"', 'args+=(-i "$identity")'),
+        Edit(GATED, 'args[$((index + 1))]="$identity"', 'args+=(-i "$identity")'),
+        [f"{PHK}.test_every_call_has_one_identity_option_and_otherwise_the_unchanged_argv"],
+        [A_ONE],
+    )
+    both(
+        "a host with no entry and no shared key is accepted",
+        Edit(ACTION, '[ -n "$SSH_KEY" ] || fail "Host $host_key_index has no key:', ': || fail "Host $host_key_index has no key:'),
+        Edit(GATED, '[ -n "$SSH_KEY" ] || fail "Host $host_key_index has no key:', ': || fail "Host $host_key_index has no key:'),
+        [f"{PHK}.test_a_host_with_no_entry_and_no_shared_key_fails_before_any_host_is_asked"],
+        [f"{AHK}.test_a_host_with_no_entry_and_no_shared_key_fails_before_any_host_is_asked"],
+    )
+
+    # What is refused before any file is written or host asked.
+    refusals = (
+        ("the check that a key's host is in the hosts list is removed", 'elif any($map | keys[]; . as $k | all($hosts[]; . != $k)) then "unknown-host"\n'),
+        ("the check that no two hosts share a key is removed", 'elif ([$map[] | trim] | length) != ([$map[] | trim] | unique | length) then "duplicate"\n'),
+        ("the check that no host key is the shared key is removed", 'elif any($map[]; . as $v | any($shared[]; . == ($v | trim))) then "shared"\n'),
+        ("the check that no host key is a jump key is removed", 'elif any($map[]; . as $v | any($jump[]; . == ($v | trim))) then "jump"\n'),
+        ("the check that a key is a non-empty string is removed", 'elif any($map[]; (type != "string") or (trim == "")) then "bad-value"\n'),
+    )
+    for name, line in refusals:
+        both(
+            name,
+            Edit(ACTION, line, ""),
+            Edit(GATED, line, ""),
+            [f"{HKV}.test_each_refusal_fails_the_step_with_its_own_message_and_echoes_no_value"],
+            [f"{AHK}.test_each_refusal_comes_before_any_file_or_host_and_echoes_no_value"],
+        )
+    both(
+        "keys are compared without trimming the newline a key file ends with",
+        Edit(ACTION, "[$map[] | trim] | length) != ([$map[] | trim] | unique", "[$map[]] | length) != ([$map[]] | unique"),
+        Edit(GATED, "[$map[] | trim] | length) != ([$map[] | trim] | unique", "[$map[]] | length) != ([$map[]] | unique"),
+        [f"{HKV}.test_each_refusal_fails_the_step_with_its_own_message_and_echoes_no_value"],
+        [f"{AHK}.test_each_refusal_comes_before_any_file_or_host_and_echoes_no_value"],
+    )
+
+    # Removal, privacy, masking and silence.
+    mask = 'echo "::add-mask::$host_key_line"'
+    both(
+        "the lines of a key are not masked",
+        Edit(ACTION, mask, ":"),
+        Edit(GATED, mask, ":"),
+        [f"{PHK}.test_a_key_is_never_printed_but_each_of_its_lines_is_masked"],
+        [f"{AHK}.test_a_key_is_never_printed_but_each_of_its_lines_is_masked"],
+    )
+    echo_key = "printf '\\n' >> \"$host_key_file\"\n"
+    both(
+        "the step prints the key it has written",
+        Edit(ACTION, echo_key, echo_key + '                    cat "$host_key_file"\n'),
+        Edit(GATED, echo_key, echo_key + '                    cat "$host_key_file"\n'),
+        [f"{PHK}.test_a_key_is_never_printed_but_each_of_its_lines_is_masked"],
+        [f"{AHK}.test_a_key_is_never_printed_but_each_of_its_lines_is_masked"],
+    )
+    umask = "umask 077\n                    jq -n -j"
+    both(
+        "a host key file is written with the runner umask",
+        Edit(ACTION, umask, "jq -n -j"),
+        Edit(GATED, umask, "jq -n -j"),
+        [f"{PHK}.test_the_key_files_are_private_while_ssh_runs_and_removed_on_every_way_out"],
+        [f"{AHK}.test_the_key_files_are_private_while_ssh_runs_and_removed_on_every_way_out"],
+    )
+    both(
+        "the newline a key file ends with is written through",
+        Edit(ACTION, '| sub("\\\\s+\\\\z"; "")\' > "$host_key_file"', '\' > "$host_key_file"'),
+        Edit(GATED, '| sub("\\\\s+\\\\z"; "")\' > "$host_key_file"', '\' > "$host_key_file"'),
+        [f"{PHK}.test_a_key_pasted_with_trailing_newlines_is_written_with_exactly_one"],
+        [f"{AHK}.test_a_key_pasted_with_trailing_newlines_is_written_with_exactly_one"],
+    )
+    traps = (
+        ("the first trap leaves the host key files behind", "        trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir\"/id.*' EXIT\n", "        trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\"' EXIT\n", ACTION, PHK, "test_the_key_files_are_private_while_ssh_runs_and_removed_on_every_way_out"),
+        ("the jump trap leaves the host key files behind", "trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir\"/id.* \"$plan_dir/jump_id\" \"$plan_dir/jump_config\"' EXIT\n", "trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir/jump_id\" \"$plan_dir/jump_config\"' EXIT\n", ACTION, PHK, "test_the_key_files_are_removed_after_a_jump_and_after_a_second_hop"),
+        ("the second hop trap leaves the host key files behind", "trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir\"/id.* \"$plan_dir/jump_id\" \"$plan_dir/jump_config\" \"$plan_dir/jump2_id\"' EXIT\n", "trap 'rm -f \"$plan_dir/id\" \"$plan_dir/known_hosts\" \"$plan_dir/jump_id\" \"$plan_dir/jump_config\" \"$plan_dir/jump2_id\"' EXIT\n", ACTION, PHK, "test_the_key_files_are_removed_after_a_jump_and_after_a_second_hop"),
+        ("the first trap leaves the host key files behind", "          trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work\"/id.*' EXIT\n", "          trap 'rm -f \"$work/id\" \"$work/known_hosts\"' EXIT\n", GATED, AHK, "test_the_key_files_are_private_while_ssh_runs_and_removed_on_every_way_out"),
+        ("the jump trap leaves the host key files behind", "trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work\"/id.* \"$work/jump_id\" \"$work/jump_config\"' EXIT\n", "trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work/jump_id\" \"$work/jump_config\"' EXIT\n", GATED, AHK, "test_the_key_files_are_removed_after_a_jump_and_after_a_second_hop"),
+        ("the second hop trap leaves the host key files behind", "trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work\"/id.* \"$work/jump_id\" \"$work/jump_config\" \"$work/jump2_id\"' EXIT\n", "trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work/jump_id\" \"$work/jump_config\" \"$work/jump2_id\"' EXIT\n", GATED, AHK, "test_the_key_files_are_removed_after_a_jump_and_after_a_second_hop"),
+    )
+    for name, old, new, path, cls, test in traps:
+        side = "plan side" if path == ACTION else "apply side"
+        cases.append(Case(f"host keys, {side}: {name}", [Edit(path, old, new)], [f"{cls}.{test}", f"{HKP}.test_every_trap_that_removes_the_shared_key_removes_the_per_host_key_files_too"]))
+
+    # The scan of a diff, the secrets each job reads, and the places the map is passed.
+    scan = (
+        "        # The key of each host that has one of its own is scanned for the same way.\n"
+        "        if [ -n \"$HOST_KEYS\" ]; then\n"
+        "          jq -n -r '($ENV.HOST_KEYS | fromjson) | .[] | split(\"\\n\")[]' | awk 'length($0) >= 16 && $0 !~ /^-----/' >> \"$keylines\"\n"
+        "        fi\n"
+    )
+    cases.append(Case("host keys, plan side: the report step leaves the host keys out of the scan of the diff", [Edit(ACTION, scan, "")], [f"{PHK}.test_a_diff_that_quotes_a_host_key_is_withheld_and_never_shown"]))
+    cases.append(Case(
+        "host keys, plan side: the plan job also reads ssh_host_apply_keys",
+        [Edit(GATED, "host-check-keys: ${{ secrets.ssh_host_check_keys }}", "host-check-keys: ${{ secrets.ssh_host_check_keys || secrets.ssh_host_apply_keys }}")],
+        [f"{HKS}.test_the_host_apply_keys_are_read_by_the_apply_step_only_and_never_by_the_plan_or_the_drift_check", f"{S}.test_the_plan_job_calls_the_action_from_the_checkout_and_passes_the_plan_inputs"],
+    ))
+    cases.append(Case(
+        "host keys, drift check: the drift check also reads ssh_host_apply_keys",
+        [Edit(DRIFT, "host-check-keys: ${{ secrets.ssh_host_check_keys }}", "host-check-keys: ${{ secrets.ssh_host_check_keys || secrets.ssh_host_apply_keys }}")],
+        [f"{HKS}.test_the_host_apply_keys_are_read_by_the_apply_step_only_and_never_by_the_plan_or_the_drift_check"],
+    ))
+    cases.append(Case(
+        "host keys, apply side: the apply step reads the check keys",
+        [Edit(GATED, "HOST_KEYS: ${{ secrets.ssh_host_apply_keys }}", "HOST_KEYS: ${{ secrets.ssh_host_check_keys }}")],
+        [f"{HKS}.test_the_host_check_keys_are_read_by_the_action_step_of_the_plan_and_of_the_drift_check_only", f"{S}.test_each_expression_that_feeds_a_gate_or_apply_step_comes_from_its_expected_source"],
+    ))
+    cases.append(Case(
+        "host keys, plan side: the plan job does not pass the host check keys",
+        [Edit(GATED, "          host-check-keys: ${{ secrets.ssh_host_check_keys }}\n", "")],
+        [f"{HKS}.test_the_host_check_keys_are_read_by_the_action_step_of_the_plan_and_of_the_drift_check_only", f"{S}.test_the_plan_job_calls_the_action_from_the_checkout_and_passes_the_plan_inputs"],
+    ))
+    cases.append(Case(
+        "host keys, drift check: the drift check does not pass the host check keys, so a host with its own key fails the nightly check",
+        [Edit(DRIFT, "          host-check-keys: ${{ secrets.ssh_host_check_keys }}\n", "")],
+        [f"{HKS}.test_the_host_check_keys_are_read_by_the_action_step_of_the_plan_and_of_the_drift_check_only", f"{S}.test_the_drift_workflow_is_two_jobs_and_the_key_job_never_applies"],
+    ))
+
+    # The two copies of the text drift apart, and a key is handed to a command.
+    cases.append(Case(
+        "host keys: the validation block of the action drifts from the apply step's",
+        [Edit(ACTION, 'duplicate) fail "Two hosts have the same key: each host has a key of its own."', 'duplicate) fail "Two hosts have the same key."')],
+        [f"{HKP}.test_the_validation_block_is_the_same_text_in_the_action_and_in_the_apply_step"],
+    ))
+    cases.append(Case(
+        "host keys: the write block of the apply step drifts from the action's",
+        [Edit(GATED, "awk 'length($0) >= 16 && $0 !~ /^-----/' \"$host_key_file\"", "awk 'length($0) >= 20 && $0 !~ /^-----/' \"$host_key_file\"")],
+        [f"{HKP}.test_the_write_block_is_the_same_text_in_the_action_and_in_the_apply_step_the_directory_aside"],
+    ))
+    cases.append(Case(
+        "host keys: a key is handed to jq on its argument list",
+        [Edit(ACTION, "jq -n -e --arg dest \"$host_key_dest\" '($ENV.HOST_KEYS", "jq -n -e --arg dest \"$host_key_dest\" --arg keys \"$HOST_KEYS\" '($ENV.HOST_KEYS")],
+        [f"{HKP}.test_a_key_is_read_from_the_environment_inside_jq_and_never_given_to_a_command"],
+    ))
+    cases.append(Case(
+        "host keys: a call of the one-call function leaves out the identity file",
+        [Edit(ACTION, 'ssh_via "$chain" "${limit}s" "$identity" -- "$dest" "$SHA" < /dev/null', 'ssh_via "$chain" "${limit}s" "$workaround" -- "$dest" "$SHA" < /dev/null')],
+        [f"{JPar}.test_every_call_of_that_function_names_the_identity_file_of_its_host"],
+    ))
+    return cases
+
+
+CASES.extend(host_key_cases())
 
 
 def apply_edits(root: Path, edits: list[Edit]) -> str | None:

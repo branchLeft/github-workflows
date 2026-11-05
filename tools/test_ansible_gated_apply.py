@@ -350,6 +350,7 @@ def composite_validate_env(**changes: str) -> dict[str, str]:
         "HOSTS": f"{HOST_ONE}\n{HOST_TWO}\n",
         "SHA": SHA,
         "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
+        "HOST_KEYS": "",
         "DRY_RUN": "false",
         "DRY_RUN_STUB": "",
         "FAIL_ON_CHANGES": "false",
@@ -535,6 +536,7 @@ class StructureTests(unittest.TestCase):
                 "hosts": "${{ secrets.ssh_hosts }}",
                 "known-hosts": "${{ secrets.ssh_known_hosts }}",
                 "check-key": "${{ secrets.ssh_check_key }}",
+                "host-check-keys": "${{ secrets.ssh_host_check_keys }}",
                 "jump-host": "${{ secrets.ssh_jump_host }}",
                 "jump-key": "${{ secrets.ssh_jump_key }}",
                 "jump2-host": "${{ secrets.ssh_jump2_host }}",
@@ -816,6 +818,7 @@ class StructureTests(unittest.TestCase):
                 "SHA": "${{ needs.plan.outputs.sha }}",
                 "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
                 "SSH_KEY": "${{ secrets.ssh_apply_key }}",
+                "HOST_KEYS": "${{ secrets.ssh_host_apply_keys }}",
                 "KNOWN_HOSTS": "${{ secrets.ssh_known_hosts }}",
                 "JUMP_HOST": "${{ secrets.ssh_jump_host }}",
                 "JUMP_KEY": "${{ secrets.ssh_jump_key }}",
@@ -863,6 +866,7 @@ class StructureTests(unittest.TestCase):
                 "HOSTS": "${{ inputs.hosts }}",
                 "SHA": "${{ inputs.sha }}",
                 "SSH_KEY": "${{ inputs.check-key }}",
+                "HOST_KEYS": "${{ inputs.host-check-keys }}",
                 "DRY_RUN": "${{ inputs.dry-run }}",
                 "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
                 "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
@@ -887,6 +891,7 @@ class StructureTests(unittest.TestCase):
                 "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
                 "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
                 "SSH_KEY": "${{ inputs.check-key }}",
+                "HOST_KEYS": "${{ inputs.host-check-keys }}",
                 "KNOWN_HOSTS": "${{ inputs.known-hosts }}",
                 "JUMP_HOST": "${{ inputs.jump-host }}",
                 "JUMP_KEY": "${{ inputs.jump-key }}",
@@ -903,6 +908,7 @@ class StructureTests(unittest.TestCase):
                 "DRY_RUN": "${{ inputs.dry-run }}",
                 "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
                 "SSH_KEY": "${{ inputs.check-key }}",
+                "HOST_KEYS": "${{ inputs.host-check-keys }}",
                 "JUMP_HOST": "${{ inputs.jump-host }}",
                 "JUMP2_HOST": "${{ inputs.jump2-host }}",
             },
@@ -994,13 +1000,13 @@ class StructureTests(unittest.TestCase):
         inputs = ACTION_DOC["inputs"]
         self.assertEqual(
             set(inputs),
-            {"hosts", "known-hosts", "check-key", "jump-host", "jump-key", "jump2-host", "jump2-key", "jump2-hosts", "push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes"},
+            {"hosts", "known-hosts", "check-key", "host-check-keys", "jump-host", "jump-key", "jump2-host", "jump2-key", "jump2-hosts", "push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes"},
         )
         self.assertEqual(inputs["fail-on-changes"]["default"], "false")
         self.assertEqual(inputs["total-timeout"]["default"], "")
         self.assertEqual(inputs["dry-run"]["default"], "false")
         self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "push-hosts-digest", "jump2-hosts-digest", "outcome", "detail"})
-        for name in ("push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "jump2-host", "jump2-key", "jump2-hosts"):
+        for name in ("push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "jump2-host", "jump2-key", "jump2-hosts", "host-check-keys"):
             self.assertEqual(inputs[name]["default"], "", name)
             self.assertIs(inputs[name]["required"], False, name)
 
@@ -1008,9 +1014,9 @@ class StructureTests(unittest.TestCase):
         call = DRIFT_DOC[True]["workflow_call"]
         self.assertEqual(set(call["inputs"]), {"host-label", "host-timeout-minutes", "check-timeout-minutes", "push-playbook"})
         self.assertTrue(call["inputs"]["host-label"]["required"])
-        self.assertEqual(set(call["secrets"]), {"ssh_hosts", "ssh_check_key", "ssh_known_hosts", "ssh_jump_host", "ssh_jump_key", "ssh_jump2_host", "ssh_jump2_key", "ssh_jump2_hosts", "ssh_push_hosts"})
+        self.assertEqual(set(call["secrets"]), {"ssh_hosts", "ssh_check_key", "ssh_host_check_keys", "ssh_known_hosts", "ssh_jump_host", "ssh_jump_key", "ssh_jump2_host", "ssh_jump2_key", "ssh_jump2_hosts", "ssh_push_hosts"})
         for name, secret in call["secrets"].items():
-            self.assertEqual(secret["required"], name not in ("ssh_jump_host", "ssh_jump_key", "ssh_jump2_host", "ssh_jump2_key", "ssh_jump2_hosts", "ssh_push_hosts"), name)
+            self.assertEqual(secret["required"], name not in ("ssh_host_check_keys", "ssh_jump_host", "ssh_jump_key", "ssh_jump2_host", "ssh_jump2_key", "ssh_jump2_hosts", "ssh_push_hosts"), name)
         self.assertNotIn("ssh_apply_key", DRIFT_WORKFLOW.read_text())
 
     def test_the_drift_workflow_is_two_jobs_and_the_key_job_never_applies(self) -> None:
@@ -1024,6 +1030,7 @@ class StructureTests(unittest.TestCase):
                 "hosts": "${{ secrets.ssh_hosts }}",
                 "known-hosts": "${{ secrets.ssh_known_hosts }}",
                 "check-key": "${{ secrets.ssh_check_key }}",
+                "host-check-keys": "${{ secrets.ssh_host_check_keys }}",
                 "jump-host": "${{ secrets.ssh_jump_host }}",
                 "jump-key": "${{ secrets.ssh_jump_key }}",
                 "jump2-host": "${{ secrets.ssh_jump2_host }}",
@@ -1406,6 +1413,7 @@ def check_env(**changes: str) -> dict[str, str]:
         "HOST_TIMEOUT_MINUTES": "65",
         "TOTAL_TIMEOUT_MINUTES": "",
         "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
+        "HOST_KEYS": "",
         "KNOWN_HOSTS": "host-one ssh-ed25519 PUBLIC",
         "JUMP_HOST": "",
         "JUMP_KEY": "",
@@ -1427,6 +1435,7 @@ def report_env(**changes: str) -> dict[str, str]:
         "DRY_RUN": "false",
         "FAIL_ON_CHANGES": "false",
         "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
+        "HOST_KEYS": "",
         "JUMP_HOST": "",
         "JUMP2_HOST": "",
     }
@@ -1925,6 +1934,7 @@ def apply_env(**changes: str) -> dict[str, str]:
         "SHA": SHA,
         "HOST_TIMEOUT_MINUTES": "65",
         "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
+        "HOST_KEYS": "",
         "KNOWN_HOSTS": "host-one ssh-ed25519 PUBLIC",
         "JUMP_HOST": "",
         "JUMP_KEY": "",
@@ -3426,13 +3436,683 @@ class Jump2ParityTests(unittest.TestCase):
 
     def test_every_ssh_call_of_the_action_and_the_apply_step_goes_through_that_function(self) -> None:
         for text in (action_step("check")["run"], find_step_named("apply", "Apply on each host")["run"]):
-            calls = [line for line in text.splitlines() if re.search(r"\bssh \"\$\{ssh_args", line)]
-            self.assertEqual(len(calls), 2, calls)
+            calls = [line for line in text.splitlines() if re.search(r"\bssh \"\$\{args\[@\]\}\"", line)]
+            self.assertEqual(len(calls), 1, calls)
+            self.assertFalse([line for line in text.splitlines() if re.search(r"\bssh \"\$\{ssh_args", line)])
             for line in calls:
                 self.assertIn("timeout \"$limit\" ssh", line)
 
+    def test_every_call_of_that_function_names_the_identity_file_of_its_host(self) -> None:
+        for text in (action_step("check")["run"], find_step_named("apply", "Apply on each host")["run"]):
+            sites = [line.strip() for line in text.splitlines() if re.search(r"\bssh_via \"\$chain\"", line)]
+            self.assertEqual(len(sites), 2, sites)
+            for line in sites:
+                self.assertIn('"$identity" -- "$dest"', line)
 
-PROOF_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPROOFKEYPROOFKEYPROOFKEYPROOFKEYPROOFKEYPROOF"
+
+# Per-host keys. The map is one JSON object, {"user@host": "<private key text>"}: a
+# host with an entry is called with that key and no other, and every other host
+# keeps the shared key (README, "Per-host keys").
+HOST_ONE_KEY = "-----BEGIN FAKE KEY-----\nFAKE_HOST_ONE_KEY_BODY_LINE_ONE_1111111111\nFAKE_HOST_ONE_KEY_BODY_LINE_TWO_1111111111\n-----END FAKE KEY-----"
+HOST_TWO_KEY = "-----BEGIN FAKE KEY-----\nFAKE_HOST_TWO_KEY_BODY_LINE_ONE_2222222222\nFAKE_HOST_TWO_KEY_BODY_LINE_TWO_2222222222\n-----END FAKE KEY-----"
+WRONG_KEY = "-----BEGIN FAKE KEY-----\nFAKE_WRONG_KEY_BODY_LINE_ONE_9999999999\n-----END FAKE KEY-----"
+
+# The stand-in for ssh that knows which key each host trusts: a call whose identity
+# file holds another key than the host's `<dest>.authorised` exits 255, as ssh does
+# when a host refuses the key. For every call it records the content of the identity
+# file it was given (`<dest>.key.<n>`), the file's name (`<dest>.identity.<n>`), how
+# many -i options the call had, and the mode of every key file the step has made.
+HOSTKEY_SSH_STUB = """#!/usr/bin/env bash
+set -eu
+cat > /dev/null
+dest="${@: -2:1}"
+sha="${@: -1}"
+echo "$*" >> "$STUB_DIR/ssh.log"
+arguments=("$@")
+identity=""
+identities=0
+for index in "${!arguments[@]}"; do
+  case "${arguments[$index]}" in
+    -i) identity="${arguments[$((index + 1))]}"; identities=$((identities + 1)) ;;
+    -F) cp "${arguments[$((index + 1))]}" "$STUB_DIR/config.copy" ;;
+  esac
+done
+plan=$(dirname "$identity")
+echo "$identities" >> "$STUB_DIR/identities.log"
+for file in "$plan"/id "$plan"/id.* "$plan"/known_hosts "$plan"/jump_id "$plan"/jump_config; do
+  if [ -e "$file" ]; then
+    echo "$(ls -ld "$file" | cut -c1-10) ${file##*/}" >> "$STUB_DIR/files.log"
+  fi
+done
+offered=$(cat "$identity")
+count_file="$STUB_DIR/$dest.count"
+n=$(( $(cat "$count_file" 2> /dev/null || echo 0) + 1 ))
+echo "$n" > "$count_file"
+printf '%s\\n' "$offered" > "$STUB_DIR/$dest.key.$n"
+cp "$identity" "$STUB_DIR/$dest.raw.$n"
+printf '%s\\n' "${identity##*/}" > "$STUB_DIR/$dest.identity.$n"
+if [ -f "$STUB_DIR/$dest.authorised" ] && [ "$offered" != "$(cat "$STUB_DIR/$dest.authorised")" ]; then
+  echo "ssh: Permission denied (publickey)." >&2
+  exit 255
+fi
+base="$STUB_DIR/$dest"
+if [ -f "$base.$n.rc" ]; then
+  base="$base.$n"
+fi
+sed "s/@SHA@/$sha/g" "$base.out"
+sed "s/@SHA@/$sha/g" "$base.err" >&2
+exit "$(cat "$base.rc")"
+"""
+
+
+def keymap(entries: dict[str, str]) -> str:
+    return json.dumps(entries)
+
+
+def key_lines(*keys: str) -> list[str]:
+    """The lines of these keys that the steps mask and scan for: 16 characters or more and not a -----BEGIN/END line."""
+    return [line for key in keys for line in key.splitlines() if len(line) >= 16 and not line.startswith("-----")]
+
+
+def unmasked(text: str) -> str:
+    """A log without the `::add-mask::` commands, which the runner consumes and never prints."""
+    return "\n".join(line for line in text.splitlines() if not line.startswith("::add-mask::"))
+
+
+def masked(text: str) -> list[str]:
+    return [line.removeprefix("::add-mask::") for line in text.splitlines() if line.startswith("::add-mask::")]
+
+
+class HostKeySandbox:
+    """The common set-up of the tests of per-host keys: a sandbox whose ssh trusts one key per host."""
+
+    @staticmethod
+    def make(test: unittest.TestCase, mode: str, hosts: tuple[str, ...] = (HOST_ONE, HOST_TWO), authorised: dict[str, str] | None = None) -> Sandbox:
+        sandbox = Sandbox(test)
+        sandbox.stub("ssh", HOSTKEY_SSH_STUB)
+        for dest in hosts:
+            if mode == "check":
+                sandbox.host(dest, 0, CLEAN)
+            else:
+                sandbox.host(dest, 10, APPLIED, second=(0, UNCHANGED, ""))
+        for dest, key in (authorised or {}).items():
+            sandbox.stubs.joinpath(f"{dest}.authorised").write_text(key)
+        return sandbox
+
+
+def offered(sandbox: Sandbox, dest: str, n: int = 1) -> str:
+    return (sandbox.stubs / f"{dest}.key.{n}").read_text()
+
+
+def raw_key_file(sandbox: Sandbox, dest: str, n: int = 1) -> str:
+    """The identity file exactly as the call saw it, trailing newlines included."""
+    return (sandbox.stubs / f"{dest}.raw.{n}").read_text()
+
+
+def identity_name(sandbox: Sandbox, dest: str, n: int = 1) -> str:
+    return (sandbox.stubs / f"{dest}.identity.{n}").read_text().strip()
+
+
+def logged(sandbox: Sandbox, name: str) -> list[str]:
+    path = sandbox.stubs / name
+    return path.read_text().splitlines() if path.exists() else []
+
+
+class PerHostKeyTests(unittest.TestCase):
+    """The check step: a host with an entry in the host check keys is called with that key and no other."""
+
+    TRUSTED = {HOST_ONE: CHECK_KEY, HOST_TWO: HOST_TWO_KEY}
+
+    def sandbox(self, authorised: dict[str, str] | None = None) -> Sandbox:
+        return HostKeySandbox.make(self, "check", authorised=self.TRUSTED if authorised is None else authorised)
+
+    def plan(self, sandbox: Sandbox, host_keys: str, **changes: str) -> tuple[Result, Result]:
+        checked = sandbox.run(action_step("check"), check_env(HOST_KEYS=host_keys, **changes))
+        return checked, sandbox.run(action_step("report"), report_env(HOST_KEYS=host_keys))
+
+    def test_a_host_with_an_entry_gets_exactly_its_own_key_and_the_other_host_the_shared_key(self) -> None:
+        cases = {
+            "the second host has an entry": ({HOST_TWO: HOST_TWO_KEY}, {HOST_ONE: ("id", CHECK_KEY), HOST_TWO: ("id.02", HOST_TWO_KEY)}),
+            "the first host has an entry": ({HOST_ONE: HOST_ONE_KEY}, {HOST_ONE: ("id.01", HOST_ONE_KEY), HOST_TWO: ("id", CHECK_KEY)}),
+            "both hosts have an entry": ({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY}, {HOST_ONE: ("id.01", HOST_ONE_KEY), HOST_TWO: ("id.02", HOST_TWO_KEY)}),
+        }
+        for name, (entries, expected) in cases.items():
+            with self.subTest(case=name):
+                sandbox = self.sandbox({dest: expected[dest][1] for dest in expected})
+                checked, reported = self.plan(sandbox, keymap(entries))
+                self.assertEqual(checked.code, 0, checked.log)
+                self.assertEqual(reported.code, 0, reported.log)
+                self.assertTrue(reported.summary.splitlines()[0].startswith("No changes:"), reported.summary)
+                for dest, (file, key) in expected.items():
+                    self.assertEqual(offered(sandbox, dest), key + "\n", dest)
+                    self.assertEqual(identity_name(sandbox, dest), file, dest)
+                self.assertEqual(sandbox.calls(HOST_ONE), 1)
+                self.assertEqual(sandbox.calls(HOST_TWO), 1)
+
+    def test_every_call_has_one_identity_option_and_otherwise_the_unchanged_argv(self) -> None:
+        sandbox = self.sandbox()
+        checked, _ = self.plan(sandbox, keymap({HOST_TWO: HOST_TWO_KEY}))
+        self.assertEqual(checked.code, 0, checked.log)
+        calls = sandbox.ssh_log()
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(logged(sandbox, "identities.log"), ["1", "1"])
+        plan = sandbox.temp / "ansible-plan"
+        for call, dest, file in zip(calls, (HOST_ONE, HOST_TWO), ("id", "id.02")):
+            tokens = call.split(" ")
+            self.assertEqual(tokens[tokens.index("-i") + 1], f"{plan}/{file}", call)
+            self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA), call)
+
+    def test_a_wrong_key_for_demo1_fails_the_plan_for_demo1_alone(self) -> None:
+        # The headline proof. Host two trusts only its own key. With the wrong key in
+        # its entry it is the one host that cannot be reached; the host that keeps the
+        # shared key is clean, the plan is red, and nothing printed holds a key.
+        sandbox = self.sandbox()
+        checked, reported = self.plan(sandbox, keymap({HOST_TWO: WRONG_KEY}))
+        self.assertEqual(checked.code, 0, checked.log)
+        self.assertNotEqual(reported.code, 0, reported.log)
+        self.assertEqual(reported.outputs["has_changes"], "true")
+        self.assertEqual(reported.outputs["outcome"], "unreachable")
+        self.assertTrue(reported.summary.splitlines()[0].startswith("Plan failed: 1 of 2 hosts not clean"), reported.summary)
+        self.assertIn("| host 1 | clean | - |", reported.summary)
+        self.assertIn("| host 2 | failed | the SSH connection failed (exit 255) |", reported.summary)
+        self.assertIn("::error::host 2: kind=unreachable", reported.log)
+        self.assertNotIn("host 1: kind", reported.log)
+        everything = unmasked(checked.log + reported.log) + reported.summary + sandbox.output.read_text()
+        for line in key_lines(WRONG_KEY, HOST_TWO_KEY, CHECK_KEY):
+            self.assertNotIn(line, everything, line)
+        for name in ("host-one", "host-two"):
+            self.assertNotIn(name, everything, name)
+        # The same plan with the right key in the entry is green.
+        sandbox = self.sandbox()
+        checked, reported = self.plan(sandbox, keymap({HOST_TWO: HOST_TWO_KEY}))
+        self.assertEqual(reported.code, 0, reported.log)
+        self.assertEqual(reported.outputs["has_changes"], "false")
+        self.assertIn("| host 2 | clean | - |", reported.summary)
+
+    def test_with_no_host_keys_the_argv_the_files_and_the_removals_are_exactly_what_they_were(self) -> None:
+        sandbox = self.sandbox({HOST_ONE: CHECK_KEY, HOST_TWO: CHECK_KEY})
+        sandbox.stub("rm", RM_STUB)
+        result = sandbox.run(action_step("check"), check_env())
+        self.assertEqual(result.code, 0, result.log)
+        for call, dest in zip(sandbox.ssh_log(), (HOST_ONE, HOST_TWO)):
+            self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA))
+            self.assertEqual(call.split(" ")[call.split(" ").index("-i") + 1], f"{sandbox.temp}/ansible-plan/id")
+        self.assertEqual(set(logged(sandbox, "files.log")), {"-rw------- id", "-rw------- known_hosts"})
+        self.assertEqual(logged(sandbox, "identities.log"), ["1", "1"])
+        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["id", "known_hosts"])
+        self.assertEqual(masked(result.log), [])
+        for dest in (HOST_ONE, HOST_TWO):
+            self.assertEqual(offered(sandbox, dest), CHECK_KEY + "\n")
+        self.assertEqual(sorted(path.name for path in (sandbox.temp / "ansible-plan").iterdir() if path.name.startswith("id")), [])
+
+    def test_the_key_files_are_private_while_ssh_runs_and_removed_on_every_way_out(self) -> None:
+        def broken_date(sandbox: Sandbox) -> None:
+            sandbox.stub("date", "#!/usr/bin/env bash\nexit 1\n")
+
+        def dropped(sandbox: Sandbox) -> None:
+            sandbox.host(HOST_ONE, 255, "", "ssh: connect to host host-one port 22: refused\n")
+
+        cases = {
+            "every host answered": (None, 0, True),
+            "a host dropped the connection": (dropped, 0, True),
+            "the step stopped on a failing command after the files were written": (broken_date, 1, False),
+        }
+        for name, (prepare, code, asked) in cases.items():
+            with self.subTest(case=name):
+                sandbox = self.sandbox()
+                sandbox.stub("rm", RM_STUB)
+                if prepare:
+                    prepare(sandbox)
+                result = sandbox.run(action_step("check"), check_env(HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY})))
+                self.assertEqual(result.code, code, result.log)
+                if asked:
+                    self.assertEqual(set(logged(sandbox, "files.log")), {"-rw------- id", "-rw------- id.02", "-rw------- known_hosts"})
+                removed = sandbox.removals()
+                self.assertEqual(sorted(line.split("/")[-1] for line in removed), ["id", "id.02", "known_hosts"], removed)
+                self.assertTrue(all(line.startswith("-rw-------") for line in removed), removed)
+                self.assertEqual([path.name for path in (sandbox.temp / "ansible-plan").iterdir() if path.name.startswith("id")], [])
+
+    def test_the_key_files_are_removed_after_a_jump_and_after_a_second_hop(self) -> None:
+        one_hop = {"JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}
+        two_hops = {**one_hop, "JUMP2_HOST": JUMP2_HOST, "JUMP2_KEY": JUMP2_KEY, "JUMP2_HOSTS": f"{HOST_TWO}\n"}
+        cases = {
+            "one hop": (one_hop, ["id", "id.02", "jump_config", "jump_id", "known_hosts"]),
+            "two hops": (two_hops, ["id", "id.02", "jump2_id", "jump_config", "jump_id", "known_hosts"]),
+        }
+        for name, (changes, removed) in cases.items():
+            with self.subTest(case=name):
+                sandbox = self.sandbox()
+                sandbox.stub("rm", RM_STUB)
+                result = sandbox.run(action_step("check"), check_env(HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}), **changes))
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), removed)
+                self.assertEqual([path.name for path in (sandbox.temp / "ansible-plan").iterdir() if path.name.startswith("id")], [])
+
+    def test_a_key_is_never_printed_but_each_of_its_lines_is_masked(self) -> None:
+        for name, entries in (("the right key", {HOST_TWO: HOST_TWO_KEY}), ("the wrong key", {HOST_TWO: WRONG_KEY})):
+            with self.subTest(case=name):
+                sandbox = self.sandbox()
+                checked, reported = self.plan(sandbox, keymap(entries))
+                self.assertEqual(masked(checked.log), key_lines(*entries.values()))
+                everything = unmasked(checked.log + reported.log) + reported.summary + sandbox.output.read_text()
+                for line in key_lines(HOST_ONE_KEY, HOST_TWO_KEY, WRONG_KEY, CHECK_KEY):
+                    self.assertNotIn(line, everything, line)
+                self.assertNotIn("BEGIN FAKE KEY", everything)
+
+    def test_a_diff_that_quotes_a_host_key_is_withheld_and_never_shown(self) -> None:
+        quoted = key_lines(HOST_TWO_KEY)[0]
+        sandbox = self.sandbox()
+        sandbox.host(HOST_TWO, 11, WOULD_CHANGE, f"--- before\n+++ after\n+{quoted}\n")
+        keys = keymap({HOST_TWO: HOST_TWO_KEY})
+        checked, reported = self.plan(sandbox, keys)
+        self.assertEqual(checked.code, 0, checked.log)
+        self.assertNotEqual(reported.code, 0, reported.log)
+        self.assertIn("scan-hits=ci-key-material", reported.log)
+        self.assertEqual(reported.outputs["outcome"], "withheld")
+        self.assertNotIn(quoted, unmasked(reported.log) + reported.summary)
+        # Without the host keys the report step cannot know the line is a key: the scan
+        # reads the shared key only, so this is what the host-key scan adds.
+        other = sandbox.run(action_step("report"), report_env())
+        self.assertNotIn("ci-key-material", other.log)
+
+    def test_a_host_with_no_entry_and_no_shared_key_fails_before_any_host_is_asked(self) -> None:
+        sandbox = self.sandbox()
+        result = sandbox.run(action_step("check"), check_env(SSH_KEY="", HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY})))
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("::error::Host 1 has no key", result.log)
+        self.assertEqual(sandbox.ssh_log(), [])
+        self.assertNotIn(HOST_ONE, result.log)
+        self.assertEqual([path.name for path in (sandbox.temp / "ansible-plan").iterdir() if path.name.startswith("id")], [])
+        # The old case is worded as it was: no host keys and no shared key.
+        old = self.sandbox().run(action_step("check"), check_env(SSH_KEY=""))
+        self.assertNotEqual(old.code, 0)
+        self.assertIn("::error::The ssh_check_key secret is empty.", old.log)
+
+    def test_an_entry_for_every_host_needs_no_shared_key(self) -> None:
+        sandbox = self.sandbox({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY})
+        checked, reported = self.plan(sandbox, keymap({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY}), SSH_KEY="")
+        self.assertEqual(checked.code, 0, checked.log)
+        self.assertEqual(reported.code, 0, reported.log)
+        self.assertEqual(identity_name(sandbox, HOST_ONE), "id.01")
+        self.assertEqual(identity_name(sandbox, HOST_TWO), "id.02")
+
+    def test_a_jump_host_and_a_per_host_key_give_the_unchanged_hop_argv_and_config(self) -> None:
+        sandbox = self.sandbox()
+        keys = keymap({HOST_TWO: HOST_TWO_KEY})
+        result = sandbox.run(action_step("check"), check_env(HOST_KEYS=keys, JUMP_HOST=JUMP_HOST, JUMP_KEY=JUMP_KEY))
+        self.assertEqual(result.code, 0, result.log)
+        plan = sandbox.temp / "ansible-plan"
+        for call, dest in zip(sandbox.ssh_log(), (HOST_ONE, HOST_TWO)):
+            tokens = call.split(" ")
+            self.assertEqual(tokens[tokens.index("-F") + 1], f"{plan}/jump_config", call)
+            tokens[tokens.index("-F") + 1] = "CONFIG"
+            self.assertEqual(ssh_call_with_paths_named(" ".join(tokens)), through_the_jump(expected_ssh_call(dest, SHA)), call)
+        self.assertEqual((sandbox.stubs / "config.copy").read_text(), jump_config(plan))
+        self.assertEqual(offered(sandbox, HOST_TWO), HOST_TWO_KEY + "\n")
+        self.assertEqual(offered(sandbox, HOST_ONE), CHECK_KEY + "\n")
+        self.assertEqual(logged(sandbox, "identities.log"), ["1", "1"])
+
+    def test_a_key_pasted_with_trailing_newlines_is_written_with_exactly_one(self) -> None:
+        # `jq --rawfile` keeps the newline a key file ends with.
+        sandbox = self.sandbox()
+        checked, reported = self.plan(sandbox, keymap({HOST_TWO: HOST_TWO_KEY + "\n\n"}))
+        self.assertEqual(reported.code, 0, checked.log + reported.log)
+        self.assertEqual(raw_key_file(sandbox, HOST_TWO), HOST_TWO_KEY + "\n")
+        self.assertEqual(raw_key_file(sandbox, HOST_ONE), CHECK_KEY + "\n")
+
+    def test_a_duplicate_json_key_silently_takes_the_last_value_which_the_readme_names(self) -> None:
+        text = '{"%s": %s, "%s": %s}' % (HOST_TWO, json.dumps(WRONG_KEY), HOST_TWO, json.dumps(HOST_TWO_KEY))
+        sandbox = self.sandbox()
+        checked, reported = self.plan(sandbox, text)
+        self.assertEqual(reported.code, 0, checked.log + reported.log)
+        self.assertEqual(offered(sandbox, HOST_TWO), HOST_TWO_KEY + "\n")
+
+    def test_a_dry_run_with_host_keys_writes_no_key_and_never_calls_ssh(self) -> None:
+        sandbox = self.sandbox()
+        sandbox.stub("rm", RM_STUB)
+        values = check_env(
+            DRY_RUN="true",
+            DRY_RUN_STUB="stub/host.sh",
+            WORKING_DIRECTORY=".github/fixtures/ansible-gated-apply",
+            HOSTS="ci@first-stub-host\n",
+            SSH_KEY="",
+            KNOWN_HOSTS="",
+            HOST_KEYS=keymap({"ci@first-stub-host": HOST_TWO_KEY}),
+        )
+        result = sandbox.run(action_step("check"), values)
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(sandbox.ssh_log(), [])
+        self.assertEqual(masked(result.log), [])
+        self.assertEqual([path.name for path in (sandbox.temp / "ansible-plan").iterdir() if path.name.startswith("id")], [])
+
+
+# What each refusal of the host keys is, as both the action and the apply step word it.
+# Each is a change to the values of the validate step (HOST_KEYS and the keys beside it).
+HOST_KEY_REFUSALS: dict[str, tuple[dict[str, str], str]] = {
+    "text that is not JSON": ({"HOST_KEYS": "not json at all"}, "not one JSON object"),
+    "a JSON array": ({"HOST_KEYS": json.dumps([HOST_TWO_KEY])}, "not one JSON object"),
+    "a JSON string": ({"HOST_KEYS": json.dumps(HOST_TWO_KEY)}, "not one JSON object"),
+    "a JSON number": ({"HOST_KEYS": "5"}, "not one JSON object"),
+    "an empty object": ({"HOST_KEYS": "{}"}, "empty object"),
+    "a number for a key": ({"HOST_KEYS": json.dumps({HOST_TWO: 5})}, "not a non-empty string"),
+    "a null for a key": ({"HOST_KEYS": json.dumps({HOST_TWO: None})}, "not a non-empty string"),
+    "an object for a key": ({"HOST_KEYS": json.dumps({HOST_TWO: {"key": HOST_TWO_KEY}})}, "not a non-empty string"),
+    "an empty key": ({"HOST_KEYS": json.dumps({HOST_TWO: ""})}, "not a non-empty string"),
+    "a key of blanks": ({"HOST_KEYS": json.dumps({HOST_TWO: " \n\t\n"})}, "not a non-empty string"),
+    "a host that is not in the list (a typo)": ({"HOST_KEYS": json.dumps({"deploy@host-twoo": HOST_TWO_KEY})}, "not in the hosts list"),
+    "a host with a space after it": ({"HOST_KEYS": json.dumps({HOST_TWO + " ": HOST_TWO_KEY})}, "not in the hosts list"),
+    "a host in another case": ({"HOST_KEYS": json.dumps({"Deploy@host-two": HOST_TWO_KEY})}, "not in the hosts list"),
+    "an empty host name": ({"HOST_KEYS": json.dumps({"": HOST_TWO_KEY})}, "not in the hosts list"),
+    "the same key for two hosts": ({"HOST_KEYS": json.dumps({HOST_ONE: HOST_TWO_KEY, HOST_TWO: HOST_TWO_KEY})}, "same key"),
+    "the same key for two hosts, one with a trailing newline": ({"HOST_KEYS": json.dumps({HOST_ONE: HOST_TWO_KEY, HOST_TWO: HOST_TWO_KEY + "\n"})}, "same key"),
+    "the shared key": ({"HOST_KEYS": json.dumps({HOST_TWO: CHECK_KEY})}, "same as the shared key"),
+    "the shared key with a trailing newline": ({"HOST_KEYS": json.dumps({HOST_TWO: CHECK_KEY + "\n"})}, "same as the shared key"),
+    "the key of the first hop": ({"HOST_KEYS": json.dumps({HOST_TWO: JUMP_KEY}), "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}, "same as a jump key"),
+    "the key of the second hop": (
+        {"HOST_KEYS": json.dumps({HOST_TWO: JUMP2_KEY}), "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY, "JUMP2_HOST": JUMP2_HOST, "JUMP2_KEY": JUMP2_KEY, "JUMP2_HOSTS": f"{HOST_TWO}\n"},
+        "same as a jump key",
+    ),
+}
+
+
+class HostKeyValidateTests(unittest.TestCase):
+    """The host keys the validate step refuses, before any file is written or host asked, with no value in any message."""
+
+    def validate(self, **changes: str) -> Result:
+        return Sandbox(self).run(action_step("validate"), composite_validate_env(**changes))
+
+    def test_each_refusal_fails_the_step_with_its_own_message_and_echoes_no_value(self) -> None:
+        for name, (changes, message) in HOST_KEY_REFUSALS.items():
+            with self.subTest(case=name):
+                result = self.validate(**changes)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertRegex(result.log, rf"::error::.*{re.escape(message)}")
+                self.assertNotIn("jump2_hosts_digest", result.outputs, "the refusal comes before the step publishes its last output")
+                for value in (changes["HOST_KEYS"], JUMP_KEY, JUMP2_KEY, CHECK_KEY, HOST_TWO_KEY):
+                    for line in value.splitlines() + [value]:
+                        if len(line.strip()) >= 8:
+                            self.assertNotIn(line.strip(), result.log, line)
+
+    def test_a_good_map_passes_with_or_without_a_shared_key_and_the_digest_is_the_hosts_alone(self) -> None:
+        for name, changes in {
+            "one host": {"HOST_KEYS": keymap({HOST_TWO: HOST_TWO_KEY})},
+            "both hosts": {"HOST_KEYS": keymap({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY})},
+            "no shared key, a key for every host": {"HOST_KEYS": keymap({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY}), "SSH_KEY": ""},
+            "a key with a trailing newline": {"HOST_KEYS": keymap({HOST_TWO: HOST_TWO_KEY + "\n"})},
+            "with both jump hops": {"HOST_KEYS": keymap({HOST_TWO: HOST_TWO_KEY}), "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY, "JUMP2_HOST": JUMP2_HOST, "JUMP2_KEY": JUMP2_KEY, "JUMP2_HOSTS": f"{HOST_TWO}\n"},
+            "no host keys": {"HOST_KEYS": ""},
+        }.items():
+            with self.subTest(case=name):
+                result = self.validate(**changes)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs["hosts_digest"], digest([HOST_ONE, HOST_TWO]))
+
+    def test_a_dry_run_still_refuses_a_bad_map(self) -> None:
+        stub = {"DRY_RUN": "true", "DRY_RUN_STUB": "stub/host.sh"}
+        self.assertNotEqual(self.validate(HOST_KEYS="{}", **stub).code, 0)
+        self.assertEqual(self.validate(HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}), **stub).code, 0)
+
+    def test_a_blank_line_in_the_hosts_list_is_not_a_host_an_empty_name_can_match(self) -> None:
+        result = self.validate(HOSTS=f"{HOST_ONE}\n\n{HOST_TWO}\n", HOST_KEYS=json.dumps({"": HOST_TWO_KEY}))
+        self.assertNotEqual(result.code, 0, result.log)
+
+    def test_the_map_is_not_an_output_and_is_not_part_of_any_digest(self) -> None:
+        plain = self.validate()
+        keyed = self.validate(HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}))
+        self.assertEqual(plain.outputs, keyed.outputs)
+        self.assertNotIn("host-check-keys", json.dumps(ACTION_DOC["outputs"]))
+        self.assertNotIn("host-check-keys", json.dumps(JOBS["plan"]["outputs"]))
+
+
+class ApplyHostKeyTests(unittest.TestCase):
+    """The apply step: a host with an entry in the host apply keys is called, both runs, with that key and no other."""
+
+    TRUSTED = {HOST_ONE: APPLY_KEY, HOST_TWO: HOST_TWO_KEY}
+
+    def sandbox(self, authorised: dict[str, str] | None = None) -> Sandbox:
+        return HostKeySandbox.make(self, "apply", authorised=self.TRUSTED if authorised is None else authorised)
+
+    def apply(self, sandbox: Sandbox, **changes: str) -> Result:
+        values = {"SSH_KEY": APPLY_KEY, **changes}
+        return sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(**values))
+
+    def test_a_host_with_an_entry_gets_its_own_key_on_both_runs_and_the_other_host_the_shared_key(self) -> None:
+        cases = {
+            "the second host has an entry": ({HOST_TWO: HOST_TWO_KEY}, {HOST_ONE: ("id", APPLY_KEY), HOST_TWO: ("id.02", HOST_TWO_KEY)}),
+            "the first host has an entry": ({HOST_ONE: HOST_ONE_KEY}, {HOST_ONE: ("id.01", HOST_ONE_KEY), HOST_TWO: ("id", APPLY_KEY)}),
+            "both hosts have an entry": ({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY}, {HOST_ONE: ("id.01", HOST_ONE_KEY), HOST_TWO: ("id.02", HOST_TWO_KEY)}),
+        }
+        for name, (entries, expected) in cases.items():
+            with self.subTest(case=name):
+                sandbox = self.sandbox({dest: expected[dest][1] for dest in expected})
+                result = self.apply(sandbox, HOST_KEYS=keymap(entries))
+                self.assertEqual(result.code, 0, result.log)
+                for dest, (file, key) in expected.items():
+                    self.assertEqual(sandbox.calls(dest), 2, dest)
+                    for n in (1, 2):
+                        self.assertEqual(offered(sandbox, dest, n), key + "\n", f"{dest} run {n}")
+                        self.assertEqual(identity_name(sandbox, dest, n), file, f"{dest} run {n}")
+                self.assertEqual(logged(sandbox, "identities.log"), ["1"] * 4)
+                for call, dest in zip(sandbox.ssh_log(), (HOST_ONE, HOST_ONE, HOST_TWO, HOST_TWO)):
+                    self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA), call)
+
+    def test_a_wrong_key_for_a_host_fails_the_apply_at_that_host_alone_and_prints_no_key(self) -> None:
+        sandbox = self.sandbox()
+        result = self.apply(sandbox, HOST_KEYS=keymap({HOST_TWO: WRONG_KEY}))
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("::error::Host 2, apply: the SSH connection failed (exit 255).", result.log)
+        self.assertEqual(sandbox.calls(HOST_ONE), 2)
+        self.assertEqual(sandbox.calls(HOST_TWO), 1)
+        everything = unmasked(result.log) + result.summary
+        for line in key_lines(WRONG_KEY, HOST_TWO_KEY, APPLY_KEY):
+            self.assertNotIn(line, everything, line)
+        self.assertEqual(masked(result.log), key_lines(WRONG_KEY))
+        right = self.sandbox()
+        self.assertEqual(self.apply(right, HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY})).code, 0)
+
+    def test_with_no_host_keys_the_argv_the_files_and_the_removals_are_exactly_what_they_were(self) -> None:
+        sandbox = self.sandbox({HOST_ONE: APPLY_KEY, HOST_TWO: APPLY_KEY})
+        sandbox.stub("rm", RM_STUB)
+        result = self.apply(sandbox)
+        self.assertEqual(result.code, 0, result.log)
+        for call, dest in zip(sandbox.ssh_log(), (HOST_ONE, HOST_ONE, HOST_TWO, HOST_TWO)):
+            self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA))
+            self.assertEqual(call.split(" ")[call.split(" ").index("-i") + 1], f"{sandbox.temp}/ansible-apply/id")
+        self.assertEqual(set(logged(sandbox, "files.log")), {"-rw------- id", "-rw------- known_hosts"})
+        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["id", "known_hosts"])
+        self.assertEqual(masked(result.log), [])
+
+    def test_the_key_files_are_private_while_ssh_runs_and_removed_on_every_way_out(self) -> None:
+        cases = {
+            "every host applied and clean": (0, None),
+            "the first host refused": (1, (HOST_ONE, 20, summary_line("refused", 20, "apply", "@SHA@", 0, "rollback"))),
+            "the second host dropped the connection": (1, (HOST_TWO, 255, "")),
+        }
+        for name, (code, change) in cases.items():
+            with self.subTest(case=name):
+                sandbox = self.sandbox()
+                sandbox.stub("rm", RM_STUB)
+                if change:
+                    sandbox.host(change[0], change[1], change[2])
+                result = self.apply(sandbox, HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}))
+                self.assertEqual(result.code, code, result.log)
+                self.assertEqual(set(logged(sandbox, "files.log")), {"-rw------- id", "-rw------- id.02", "-rw------- known_hosts"})
+                removed = sandbox.removals()
+                self.assertEqual(sorted(line.split("/")[-1] for line in removed), ["id", "id.02", "known_hosts"], removed)
+                self.assertTrue(all(line.startswith("-rw-------") for line in removed), removed)
+                self.assertEqual([path.name for path in (sandbox.temp / "ansible-apply").iterdir() if path.name.startswith("id")], [])
+
+    def test_the_key_files_are_removed_after_a_jump_and_after_a_second_hop(self) -> None:
+        one_hop = {"JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}
+        two_hops = {**one_hop, "JUMP2_HOST": JUMP2_HOST, "JUMP2_KEY": JUMP2_KEY, "JUMP2_HOSTS": f"{HOST_TWO}\n"}
+        cases = {
+            "one hop": (one_hop, ["id", "id.02", "jump_config", "jump_id", "known_hosts"]),
+            "two hops": (two_hops, ["id", "id.02", "jump2_id", "jump_config", "jump_id", "known_hosts"]),
+        }
+        for name, (changes, removed) in cases.items():
+            with self.subTest(case=name):
+                sandbox = self.sandbox()
+                sandbox.stub("rm", RM_STUB)
+                result = self.apply(sandbox, HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}), **changes)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), removed)
+                self.assertEqual([path.name for path in (sandbox.temp / "ansible-apply").iterdir() if path.name.startswith("id")], [])
+
+    def test_a_key_pasted_with_trailing_newlines_is_written_with_exactly_one(self) -> None:
+        sandbox = self.sandbox()
+        result = self.apply(sandbox, HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY + "\n\n"}))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(raw_key_file(sandbox, HOST_TWO), HOST_TWO_KEY + "\n")
+        self.assertEqual(raw_key_file(sandbox, HOST_ONE), APPLY_KEY + "\n")
+
+    def test_a_key_is_never_printed_but_each_of_its_lines_is_masked(self) -> None:
+        sandbox = self.sandbox()
+        result = self.apply(sandbox, HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(masked(result.log), key_lines(HOST_TWO_KEY))
+        everything = unmasked(result.log) + result.summary
+        for line in key_lines(HOST_ONE_KEY, HOST_TWO_KEY, WRONG_KEY, APPLY_KEY):
+            self.assertNotIn(line, everything, line)
+
+    def test_a_host_with_no_entry_and_no_shared_key_fails_before_any_host_is_asked(self) -> None:
+        sandbox = self.sandbox()
+        result = self.apply(sandbox, SSH_KEY="", HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}))
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("::error::Host 1 has no key", result.log)
+        self.assertEqual(sandbox.ssh_log(), [])
+        self.assertEqual([path.name for path in (sandbox.temp / "ansible-apply").iterdir() if path.name.startswith("id")], [])
+        old = self.apply(self.sandbox(), SSH_KEY="")
+        self.assertNotEqual(old.code, 0)
+        self.assertIn("::error::The ssh_apply_key secret is empty.", old.log)
+
+    def test_an_entry_for_every_host_needs_no_shared_key(self) -> None:
+        sandbox = self.sandbox({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY})
+        result = self.apply(sandbox, SSH_KEY="", HOST_KEYS=keymap({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY}))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(identity_name(sandbox, HOST_ONE), "id.01")
+        self.assertEqual(identity_name(sandbox, HOST_TWO, 2), "id.02")
+
+    def test_each_refusal_comes_before_any_file_or_host_and_echoes_no_value(self) -> None:
+        for name, (changes, message) in HOST_KEY_REFUSALS.items():
+            with self.subTest(case=name):
+                sandbox = self.sandbox()
+                values = {"SSH_KEY": CHECK_KEY, **changes}
+                result = sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(**values))
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertRegex(result.log, rf"::error::.*{re.escape(message)}")
+                self.assertEqual(sandbox.ssh_log(), [])
+                self.assertFalse((sandbox.temp / "ansible-apply").exists(), "no file or directory before the refusal")
+                for value in (changes["HOST_KEYS"], JUMP_KEY, JUMP2_KEY, CHECK_KEY, HOST_TWO_KEY):
+                    for line in value.splitlines() + [value]:
+                        if len(line.strip()) >= 8:
+                            self.assertNotIn(line.strip(), result.log, line)
+
+    def test_a_jump_host_and_a_per_host_key_give_the_unchanged_hop_argv_and_config(self) -> None:
+        sandbox = self.sandbox()
+        result = self.apply(sandbox, HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}), JUMP_HOST=JUMP_HOST, JUMP_KEY=JUMP_KEY)
+        self.assertEqual(result.code, 0, result.log)
+        work = sandbox.temp / "ansible-apply"
+        for call, dest in zip(sandbox.ssh_log(), (HOST_ONE, HOST_ONE, HOST_TWO, HOST_TWO)):
+            tokens = call.split(" ")
+            self.assertEqual(tokens[tokens.index("-F") + 1], f"{work}/jump_config", call)
+            tokens[tokens.index("-F") + 1] = "CONFIG"
+            self.assertEqual(ssh_call_with_paths_named(" ".join(tokens)), through_the_jump(expected_ssh_call(dest, SHA)), call)
+        self.assertEqual((sandbox.stubs / "config.copy").read_text(), jump_config(work))
+        self.assertEqual(offered(sandbox, HOST_TWO, 2), HOST_TWO_KEY + "\n")
+        self.assertEqual(offered(sandbox, HOST_ONE, 2), APPLY_KEY + "\n")
+
+
+class HostKeysParityTests(unittest.TestCase):
+    """The apply job cannot call the action, so it holds copies of the per-host key text; each pair is held equal."""
+
+    def texts(self) -> tuple[str, str]:
+        return action_step("check")["run"], find_step_named("apply", "Apply on each host")["run"]
+
+    def test_the_validation_block_is_the_same_text_in_the_action_and_in_the_apply_step(self) -> None:
+        action = snippet(action_step("validate")["run"], "# --- hostkeys-validate begin", "# --- hostkeys-validate end")
+        applied = snippet(find_step_named("apply", "Apply on each host")["run"], "# --- hostkeys-validate begin", "# --- hostkeys-validate end")
+        self.assertIn("unknown-host", action)
+        self.assertEqual(action, applied)
+
+    def test_the_write_block_is_the_same_text_in_the_action_and_in_the_apply_step_the_directory_aside(self) -> None:
+        in_action, in_apply = (snippet(text, "# --- hostkeys-write begin", "# --- hostkeys-write end") for text in self.texts())
+        self.assertIn("::add-mask::", in_action)
+        self.assertEqual(in_action.replace("$plan_dir", "$DIR"), in_apply.replace("$work", "$DIR"))
+
+    def test_the_two_blocks_are_each_in_one_step_only(self) -> None:
+        self.assertEqual(action_step("check")["run"].count("hostkeys-validate"), 0)
+        self.assertEqual(action_step("validate")["run"].count("hostkeys-write"), 0)
+        for step in (action_step("validate"), action_step("check"), action_step("report"), find_step_named("apply", "Apply on each host")):
+            self.assertIn("HOST_KEYS", step["env"], step.get("name"))
+
+    def test_every_trap_that_removes_the_shared_key_removes_the_per_host_key_files_too(self) -> None:
+        action, apply = self.texts()
+        for text, directory in ((action, "plan_dir"), (apply, "work")):
+            traps = [line.strip() for line in text.splitlines() if line.strip().startswith(f"trap 'rm -f \"${directory}/id\"")]
+            self.assertEqual(len(traps), 3, traps)
+            for line in traps:
+                self.assertIn(f'"${directory}"/id.*', line)
+
+    def test_a_key_is_read_from_the_environment_inside_jq_and_never_given_to_a_command(self) -> None:
+        for text in (action_step("validate")["run"], action_step("check")["run"], action_step("report")["run"], find_step_named("apply", "Apply on each host")["run"]):
+            self.assertNotRegex(text, r'--arg\w* \w+ "\$(HOST_KEYS|SSH_KEY|JUMP_KEY|JUMP2_KEY)"')
+            self.assertNotRegex(text, r'jq [^\n]*"\$HOST_KEYS"')
+            self.assertNotRegex(text, r'echo "?\$HOST_KEYS')
+
+
+def readers_of(secret: str) -> list[tuple[str, str, str]]:
+    return [
+        (label, name, step.get("name", ""))
+        for label, _, doc in WORKFLOW_FILES
+        for name, job in doc["jobs"].items()
+        for step in job["steps"]
+        if secret in json.dumps(step)
+    ]
+
+
+class HostKeySecretScopeTests(unittest.TestCase):
+    """The plan job and the drift check read only check keys, and the apply job only apply keys."""
+
+    def test_the_host_check_keys_are_read_by_the_action_step_of_the_plan_and_of_the_drift_check_only(self) -> None:
+        self.assertEqual(
+            readers_of("secrets.ssh_host_check_keys"),
+            [
+                ("gated", "plan", "Check every host in check mode and write the plan"),
+                ("drift", "drift", "Check every host in check mode, red on any drift"),
+            ],
+        )
+
+    def test_the_host_apply_keys_are_read_by_the_apply_step_only_and_never_by_the_plan_or_the_drift_check(self) -> None:
+        self.assertEqual(
+            readers_of("secrets.ssh_host_apply_keys"),
+            [("gated", "apply", "Apply on each host, then run it again to prove nothing is left to change")],
+        )
+        for text in (json.dumps(JOBS["plan"]), json.dumps(DRIFT_JOBS), DRIFT_WORKFLOW.read_text(), ACTION.read_text()):
+            self.assertNotIn("ssh_host_apply_keys", text)
+        self.assertNotIn("ssh_host_check_keys", json.dumps(JOBS["apply"]))
+        self.assertNotIn("ssh_apply_key", DRIFT_WORKFLOW.read_text())
+
+    def test_both_workflows_declare_the_host_check_keys_as_optional_and_the_gated_one_declares_the_apply_keys_as_not_passed(self) -> None:
+        for label, _, doc in WORKFLOW_FILES:
+            secrets = doc[True]["workflow_call"]["secrets"]
+            with self.subTest(workflow=label):
+                self.assertIs(secrets["ssh_host_check_keys"]["required"], False)
+                self.assertIn("pass from a repository secret", " ".join(secrets["ssh_host_check_keys"]["description"].split()).lower())
+        applied = DOC[True]["workflow_call"]["secrets"]["ssh_host_apply_keys"]
+        self.assertIs(applied["required"], False)
+        self.assertIn("Do not pass it", applied["description"])
+        self.assertIn("secret of the deployment environment", " ".join(applied["description"].split()))
+        self.assertNotIn("ssh_host_apply_keys", DRIFT_DOC[True]["workflow_call"]["secrets"])
+
+    def test_the_action_input_is_optional_empty_by_default_and_says_to_pass_it_from_a_secret(self) -> None:
+        declared = ACTION_DOC["inputs"]["host-check-keys"]
+        self.assertEqual(declared["default"], "")
+        self.assertIs(declared["required"], False)
+        self.assertIn("pass it from a secret", " ".join(declared["description"].split()).lower())
+        self.assertEqual(action_step("validate")["env"]["HOST_KEYS"], "${{ inputs.host-check-keys }}")
+
+
+PROOF_PUBLIC_KEY ="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIPROOFKEYPROOFKEYPROOFKEYPROOFKEYPROOFKEYPROOF"
 
 
 class SshJumpProofLineTests(unittest.TestCase):
