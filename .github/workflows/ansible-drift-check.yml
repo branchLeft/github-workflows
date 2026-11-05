@@ -55,6 +55,15 @@ on:
           The private key of the check route. On the host it is restricted to the
           forced command in check mode. Pass it from a repository secret.
         required: true
+      ssh_host_check_keys:
+        description: >-
+          Optional: pass from a repository secret. One JSON object,
+          {"user@host": "<private key text>"}, whose keys are exact lines of
+          ssh_hosts. A host with an entry is checked with that key and no other.
+          Every host with no entry keeps ssh_check_key. Pass the same value the
+          delivery workflow gets, or a host that trusts only its own key fails
+          the nightly check.
+        required: false
       ssh_known_hosts:
         description: The known_hosts lines of the hosts. Pass it from a repository secret.
         required: true
@@ -290,6 +299,7 @@ jobs:
           hosts: ${{ secrets.ssh_hosts }}
           known-hosts: ${{ secrets.ssh_known_hosts }}
           check-key: ${{ secrets.ssh_check_key }}
+          host-check-keys: ${{ secrets.ssh_host_check_keys }}
           jump-host: ${{ secrets.ssh_jump_host }}
           jump-key: ${{ secrets.ssh_jump_key }}
           jump2-host: ${{ secrets.ssh_jump2_host }}

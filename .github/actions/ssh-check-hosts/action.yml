@@ -27,7 +27,17 @@ inputs:
   check-key:
     description: >-
       The private key of the check route, which the host restricts to the forced
-      command in check mode. Pass it from a secret. Empty only in a dry run.
+      command in check mode. Pass it from a secret. Empty only in a dry run, or
+      when host-check-keys holds an entry for every host.
+    required: false
+    default: ''
+  host-check-keys:
+    description: >-
+      Empty (the default) calls every host with check-key. Otherwise one JSON
+      object, {"user@host": "<private key text>"}, whose keys are exact lines of
+      hosts: a host with an entry is called with that key and no other, and every
+      host with no entry keeps check-key. A key must differ from every other
+      key here, from check-key, jump-key and jump2-key. Pass it from a secret.
     required: false
     default: ''
   jump-host:
@@ -194,6 +204,7 @@ runs:
         HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout }}
         TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
         SSH_KEY: ${{ inputs.check-key }}
+        HOST_KEYS: ${{ inputs.host-check-keys }}
         JUMP_HOST: ${{ inputs.jump-host }}
         JUMP_KEY: ${{ inputs.jump-key }}
         JUMP2_HOST: ${{ inputs.jump2-host }}
@@ -322,6 +333,45 @@ runs:
           [ "$jump2_count" -ge 1 ] || fail "jump2-hosts lists no host."
         fi
         # --- jump2 end
+        # Per-host keys. The map is one JSON object, {"user@host": "<private key text>"}.
+        # A host with an entry is called with that key and no other, and every host
+        # with none keeps the shared key. Every refusal is before any file is written
+        # or host asked and names no value. The keys are read through $ENV inside jq,
+        # so none reaches an argument list. The apply job holds a copy of this block;
+        # a test holds the two equal.
+        # --- hostkeys-validate begin (this text is the same in ssh-check-hosts and in ansible-gated-apply.yml; a test holds the two equal)
+        if [ -n "$HOST_KEYS" ]; then
+          host_keys_verdict=$(jq -n -r '
+            def trim: gsub("\r"; "") | sub("\\A\\s+"; "") | sub("\\s+\\z"; "");
+            (try ($ENV.HOST_KEYS | fromjson) catch null) as $map
+            | ($ENV.HOSTS | split("\n") | map(select(length > 0))) as $hosts
+            | ([$ENV.SSH_KEY] | map((. // "") | trim) | map(select(. != ""))) as $shared
+            | ([$ENV.JUMP_KEY, $ENV.JUMP2_KEY] | map((. // "") | trim) | map(select(. != ""))) as $jump
+            | if ($map | type) != "object" then "not-object"
+              elif ($map | length) == 0 then "empty"
+              elif any($map[]; (type != "string") or (trim == "")) then "bad-value"
+              elif any($map | keys[]; . as $k | all($hosts[]; . != $k)) then "unknown-host"
+              elif ([$map[] | trim] | length) != ([$map[] | trim] | unique | length) then "duplicate"
+              elif any($map[]; . as $v | any($shared[]; . == ($v | trim))) then "shared"
+              elif any($map[]; . as $v | any($jump[]; . == ($v | trim))) then "jump"
+              elif ($ENV.DRY_RUN != "true") and ($shared | length) == 0 and any($hosts[]; . as $h | ($map | has($h)) | not) then "no-key"
+              else "ok"
+              end
+          ' 2> /dev/null) || fail "The host keys could not be read."
+          case "$host_keys_verdict" in
+            ok) ;;
+            not-object) fail "The host keys are not one JSON object of user@host to private key text." ;;
+            empty) fail "The host keys are an empty object: leave them empty to use the shared key for every host." ;;
+            bad-value) fail "A host key is not a non-empty string." ;;
+            unknown-host) fail "A line of the host keys is not in the hosts list." ;;
+            duplicate) fail "Two hosts have the same key: each host has a key of its own." ;;
+            shared) fail "A host key is the same as the shared key: a host with its own key has a key of its own." ;;
+            jump) fail "A host key is the same as a jump key: each route has its own key." ;;
+            no-key) fail "A host has no key: it has no entry in the host keys and there is no shared key." ;;
+            *) fail "The host keys could not be judged." ;;
+          esac
+        fi
+        # --- hostkeys-validate end
         jump2_digest=""
         if [ "$jump2_count" -ge 1 ]; then
           jump2_digest=$(printf '%s' "$jump2_list" | shasum -a 256 | cut -d ' ' -f 1)
@@ -343,6 +393,7 @@ runs:
         HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout }}
         TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
         SSH_KEY: ${{ inputs.check-key }}
+        HOST_KEYS: ${{ inputs.host-check-keys }}
         KNOWN_HOSTS: ${{ inputs.known-hosts }}
         JUMP_HOST: ${{ inputs.jump-host }}
         JUMP_KEY: ${{ inputs.jump-key }}
@@ -361,16 +412,50 @@ runs:
         plan_dir="$RUNNER_TEMP/ansible-plan"
         mkdir "$plan_dir"
         # The key copies go on every way out of the step, a failure included.
-        trap 'rm -f "$plan_dir/id" "$plan_dir/known_hosts"' EXIT
+        trap 'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir"/id.*' EXIT
         ssh_args=()
         ssh_args_two=()
         if [ "$DRY_RUN" = true ]; then
           stub="$GITHUB_WORKSPACE/$WORKING_DIRECTORY/$DRY_RUN_STUB"
           [ -x "$stub" ] || fail "dry-run-stub is not an executable file."
         else
-          [ -n "$SSH_KEY" ] || fail "The ssh_check_key secret is empty."
+          [ -n "$SSH_KEY" ] || [ -n "$HOST_KEYS" ] || fail "The ssh_check_key secret is empty."
           [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
           (umask 077 && printf '%s\n' "$SSH_KEY" > "$plan_dir/id" && printf '%s\n' "$KNOWN_HOSTS" > "$plan_dir/known_hosts")
+          # A host with an entry in the host keys reads its key from id.NN, NN being
+          # its place in the hosts list; every other host reads id. The files are
+          # private, the trap above removes them, and each line of a key is masked.
+          # The apply job holds a copy of this block; a test holds the two equal.
+          # --- hostkeys-write begin (this text is the same in ssh-check-hosts and in ansible-gated-apply.yml, the directory variable aside; a test holds the two equal)
+          host_key_index=0
+          if [ -n "$HOST_KEYS" ]; then
+            while IFS= read -r host_key_dest; do
+              [ -n "$host_key_dest" ] || continue
+              host_key_index=$((host_key_index + 1))
+              host_key_file="$plan_dir/id.$(printf '%02d' "$host_key_index")"
+              host_key_has=0
+              jq -n -e --arg dest "$host_key_dest" '($ENV.HOST_KEYS | fromjson) | has($dest)' > /dev/null 2>&1 || host_key_has=$?
+              case "$host_key_has" in
+                0)
+                  (
+                    umask 077
+                    jq -n -j --arg dest "$host_key_dest" '($ENV.HOST_KEYS | fromjson)[$dest] | gsub("\r"; "") | sub("\\A\\s+"; "") | sub("\\s+\\z"; "")' > "$host_key_file"
+                    printf '\n' >> "$host_key_file"
+                  )
+                  while IFS= read -r host_key_line; do
+                    echo "::add-mask::$host_key_line"
+                  done < <(awk 'length($0) >= 16 && $0 !~ /^-----/' "$host_key_file")
+                  ;;
+                1)
+                  : # no entry: this host keeps the shared key, which the validate block has shown is set
+                  ;;
+                *)
+                  fail "The host keys could not be read."
+                  ;;
+              esac
+            done <<< "$HOSTS"
+          fi
+          # --- hostkeys-write end
           # The remote command is the commit and nothing else. The key's forced
           # command on the host fixes the mode, so this caller cannot ask for an
           # apply.
@@ -385,7 +470,7 @@ runs:
             # target can select the stanza. User and host were validated as one
             # line of the hosts form before they are written here. The trap is set
             # again, with the jump files, before either file exists.
-            trap 'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir/jump_id" "$plan_dir/jump_config"' EXIT
+            trap 'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir"/id.* "$plan_dir/jump_id" "$plan_dir/jump_config"' EXIT
             (
               umask 077
               printf '%s\n' "$JUMP_KEY" > "$plan_dir/jump_id"
@@ -415,7 +500,7 @@ runs:
             # JUMP2_HOST to one line of the hosts form. The trap is set again, with
             # the second key, before that file exists.
             if [ -n "$JUMP2_HOST" ]; then
-              trap 'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir/jump_id" "$plan_dir/jump_config" "$plan_dir/jump2_id"' EXIT
+              trap 'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir"/id.* "$plan_dir/jump_id" "$plan_dir/jump_config" "$plan_dir/jump2_id"' EXIT
               (
                 umask 077
                 printf '%s\n' "$JUMP2_KEY" > "$plan_dir/jump2_id"
@@ -440,16 +525,24 @@ runs:
             fi
           fi
         fi
-        # One ssh call: the chain of the host (one or two) picks the argument list.
-        # Arguments: chain, the time limit, then what follows the options.
+        # One ssh call: the chain of the host (one or two) picks the argument list,
+        # and the identity file replaces the value of its one -i, in a copy of the
+        # list: a second -i would offer the shared key to a host that has its own.
+        # Arguments: chain, the time limit, the identity file, then what follows the options.
         ssh_via() {
-          local chain="$1" limit="$2"
-          shift 2
+          local chain="$1" limit="$2" identity="$3" index
+          shift 3
+          local args=("${ssh_args[@]}")
           if [ "$chain" = two ]; then
-            timeout "$limit" ssh "${ssh_args_two[@]}" "$@"
-          else
-            timeout "$limit" ssh "${ssh_args[@]}" "$@"
+            args=("${ssh_args_two[@]}")
           fi
+          for index in "${!args[@]}"; do
+            if [ "${args[$index]}" = -i ]; then
+              args[$((index + 1))]="$identity"
+              break
+            fi
+          done
+          timeout "$limit" ssh "${args[@]}" "$@"
         }
         # The push route. A host on the push list never opens a connection, so the
         # runner connects to it and sends what a pull would have fetched: a git
@@ -501,6 +594,12 @@ runs:
             route=push
           fi
           printf '%s\n' "$route" > "$plan_dir/$n.route"
+          # The key this host is called with: its own file when the host keys have an
+          # entry for it, else the shared one.
+          identity="$plan_dir/id"
+          if [ -e "$plan_dir/id.$n" ]; then
+            identity="$plan_dir/id.$n"
+          fi
           # Only a host the list names takes the second hop. The list was held to
           # lines of the hosts list and to the second hop being set, so a listed host
           # never falls back to the first hop alone.
@@ -527,11 +626,11 @@ runs:
           elif [ "$route" = push ] && [ "$DRY_RUN" = true ]; then
             "$push_stub" "$dest" check "$SHA" "$PUSH_PLAYBOOK" < "$push_bundle" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
           elif [ "$route" = push ]; then
-            ssh_via "$chain" "${limit}s" -- "$dest" "check $SHA $PUSH_PLAYBOOK" < "$push_bundle" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+            ssh_via "$chain" "${limit}s" "$identity" -- "$dest" "check $SHA $PUSH_PLAYBOOK" < "$push_bundle" > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
           elif [ "$DRY_RUN" = true ]; then
             "$stub" "$dest" "$SHA" < /dev/null > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
           else
-            ssh_via "$chain" "${limit}s" -- "$dest" "$SHA" < /dev/null > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
+            ssh_via "$chain" "${limit}s" "$identity" -- "$dest" "$SHA" < /dev/null > "$plan_dir/$n.out" 2> "$plan_dir/$n.err" || rc=$?
           fi
           printf '%s\n' "$rc" > "$plan_dir/$n.rc"
         done <<< "$HOSTS"
@@ -552,6 +651,7 @@ runs:
         DRY_RUN: ${{ inputs.dry-run }}
         FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
         SSH_KEY: ${{ inputs.check-key }}
+        HOST_KEYS: ${{ inputs.host-check-keys }}
         JUMP_HOST: ${{ inputs.jump-host }}
         JUMP2_HOST: ${{ inputs.jump2-host }}
       run: |
@@ -603,6 +703,10 @@ runs:
         (umask 077 && : > "$keylines")
         if [ -n "$SSH_KEY" ]; then
           printf '%s\n' "$SSH_KEY" | awk 'length($0) >= 16 && $0 !~ /^-----/' > "$keylines"
+        fi
+        # The key of each host that has one of its own is scanned for the same way.
+        if [ -n "$HOST_KEYS" ]; then
+          jq -n -r '($ENV.HOST_KEYS | fromjson) | .[] | gsub("\r"; "") | split("\n")[]' | awk 'length($0) >= 16 && $0 !~ /^-----/' >> "$keylines"
         fi
 
         summary="$plan_dir/summary.md"
