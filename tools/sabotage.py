@@ -1525,12 +1525,33 @@ def host_key_cases() -> list[Case]:
         [f"{PHK}.test_every_call_has_one_identity_option_and_otherwise_the_unchanged_argv"],
         [A_ONE],
     )
+    # A host with no key is refused in the validate block, before any file is written.
+    no_key = 'elif ($ENV.DRY_RUN != "true") and ($shared | length) == 0 and any($hosts[]; . as $h | ($map | has($h)) | not) then "no-key"\n'
     both(
-        "a host with no entry and no shared key is accepted",
-        Edit(ACTION, '[ -n "$SSH_KEY" ] || fail "Host $host_key_index has no key:', ': || fail "Host $host_key_index has no key:'),
-        Edit(GATED, '[ -n "$SSH_KEY" ] || fail "Host $host_key_index has no key:', ': || fail "Host $host_key_index has no key:'),
-        [f"{PHK}.test_a_host_with_no_entry_and_no_shared_key_fails_before_any_host_is_asked"],
-        [f"{AHK}.test_a_host_with_no_entry_and_no_shared_key_fails_before_any_host_is_asked"],
+        "a host with no entry and no shared key is accepted (the validate block no longer refuses it)",
+        Edit(ACTION, no_key, ""),
+        Edit(GATED, no_key, ""),
+        [f"{PHK}.test_a_host_with_no_entry_and_no_shared_key_fails_in_the_validate_step_before_any_file_or_host", f"{HKV}.test_each_refusal_fails_the_step_with_its_own_message_and_echoes_no_value"],
+        [f"{AHK}.test_a_host_with_no_entry_and_no_shared_key_fails_before_any_host_is_asked", f"{AHK}.test_each_refusal_comes_before_any_file_or_host_and_echoes_no_value"],
+    )
+    # The compare drops CR and the whitespace round a key, so CRLF or a leading blank cannot dodge it.
+    full_trim = r'def trim: gsub("\r"; "") | sub("\\A\\s+"; "") | sub("\\s+\\z"; "");'
+    old_trim = r'def trim: sub("\\s+\\z"; "");'
+    both(
+        "keys are compared without dropping CR or leading whitespace",
+        Edit(ACTION, full_trim, old_trim),
+        Edit(GATED, full_trim, old_trim),
+        [f"{HKV}.test_each_refusal_fails_the_step_with_its_own_message_and_echoes_no_value"],
+        [f"{AHK}.test_each_refusal_comes_before_any_file_or_host_and_echoes_no_value"],
+    )
+    full_write = r'[$dest] | gsub("\r"; "") | sub("\\A\\s+"; "") | sub("\\s+\\z"; "")'
+    old_write = r'[$dest] | sub("\\s+\\z"; "")'
+    both(
+        "a key is written with its CR and leading whitespace",
+        Edit(ACTION, full_write, old_write),
+        Edit(GATED, full_write, old_write),
+        [f"{PHK}.test_a_key_with_crlf_line_ends_and_leading_whitespace_is_written_as_plain_lines"],
+        [f"{AHK}.test_a_key_with_crlf_line_ends_and_leading_whitespace_is_written_as_plain_lines"],
     )
 
     # What is refused before any file is written or host asked.
@@ -1605,7 +1626,7 @@ def host_key_cases() -> list[Case]:
     scan = (
         "        # The key of each host that has one of its own is scanned for the same way.\n"
         "        if [ -n \"$HOST_KEYS\" ]; then\n"
-        "          jq -n -r '($ENV.HOST_KEYS | fromjson) | .[] | split(\"\\n\")[]' | awk 'length($0) >= 16 && $0 !~ /^-----/' >> \"$keylines\"\n"
+        "          jq -n -r '($ENV.HOST_KEYS | fromjson) | .[] | gsub(\"\\r\"; \"\") | split(\"\\n\")[]' | awk 'length($0) >= 16 && $0 !~ /^-----/' >> \"$keylines\"\n"
         "        fi\n"
     )
     cases.append(Case("host keys, plan side: the report step leaves the host keys out of the scan of the diff", [Edit(ACTION, scan, "")], [f"{PHK}.test_a_diff_that_quotes_a_host_key_is_withheld_and_never_shown"]))

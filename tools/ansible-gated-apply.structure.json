@@ -158,7 +158,7 @@
           },
           "id": "validate",
           "name": "Validate the host list and the inputs",
-          "run-sha256": "0af42e2e57f3684dd108816bde3a74c3292b1f26f2e903210bef860a3a7fb2ab",
+          "run-sha256": "a81b29e43b86a2678594bf7250d231b1ecf178f88355fe5fd8e80b2f09b7158d",
           "shell": "bash"
         },
         {
@@ -184,7 +184,7 @@
           },
           "id": "check",
           "name": "Check every host in check mode",
-          "run-sha256": "a67f3d6a25ac9bd70edf2d737f72084a5b8e7a998ea9f422888b85025b5ce837",
+          "run-sha256": "3d9a698a131b5213127663594f309676458b67af0c6fe710738995344ddd8c29",
           "shell": "bash"
         },
         {
@@ -200,7 +200,7 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "d5b21e808fad6b01bf9fe6bca287282150f1a8d0754901aa2c271cbfc4a77b47",
+          "run-sha256": "b4d182a822bb515b11040d1c87eca948e45f4871ceac5542ca171f179eceb178",
           "shell": "bash"
         }
       ],
@@ -632,7 +632,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "b7496c2921628d2f340a14946dd291a97e384d37aaa055904175a33d9a16c149"
+            "run-sha256": "b5de0466699b1624d8116a0d6577dc2e8eb1198ce00b1935c5c4dbbf62f90771"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -1094,7 +1094,7 @@
             "required": false
           },
           "ssh_host_apply_keys": {
-            "description": "The apply keys of the hosts that have one of their own, in the form of ssh_host_check_keys. Do not pass it. Store it as a secret of the deployment environment, as ssh_apply_key is. A host with no entry keeps ssh_apply_key.",
+            "description": "Optional: the apply keys of the hosts that have one of their own, in the form of ssh_host_check_keys. Store it as a secret of the deployment environment, which the apply job reads because it runs in that environment, and pass the same secret from the caller too, so that the value arrives either way. A host with no entry keeps ssh_apply_key.",
             "required": false
           },
           "ssh_host_check_keys": {

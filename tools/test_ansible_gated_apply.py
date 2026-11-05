@@ -3715,14 +3715,16 @@ class PerHostKeyTests(unittest.TestCase):
         other = sandbox.run(action_step("report"), report_env())
         self.assertNotIn("ci-key-material", other.log)
 
-    def test_a_host_with_no_entry_and_no_shared_key_fails_before_any_host_is_asked(self) -> None:
+    def test_a_host_with_no_entry_and_no_shared_key_fails_in_the_validate_step_before_any_file_or_host(self) -> None:
         sandbox = self.sandbox()
-        result = sandbox.run(action_step("check"), check_env(SSH_KEY="", HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY})))
+        result = sandbox.run(action_step("validate"), composite_validate_env(SSH_KEY="", HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY})))
         self.assertNotEqual(result.code, 0, result.log)
-        self.assertIn("::error::Host 1 has no key", result.log)
+        self.assertIn("::error::A host has no key", result.log)
         self.assertEqual(sandbox.ssh_log(), [])
-        self.assertNotIn(HOST_ONE, result.log)
-        self.assertEqual([path.name for path in (sandbox.temp / "ansible-plan").iterdir() if path.name.startswith("id")], [])
+        self.assertFalse((sandbox.temp / "ansible-plan").exists())
+        # A dry run reads no key, so it is not held to this.
+        dry = Sandbox(self).run(action_step("validate"), composite_validate_env(SSH_KEY="", HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}), DRY_RUN="true", DRY_RUN_STUB="stub/host.sh"))
+        self.assertEqual(dry.code, 0, dry.log)
         # The old case is worded as it was: no host keys and no shared key.
         old = self.sandbox().run(action_step("check"), check_env(SSH_KEY=""))
         self.assertNotEqual(old.code, 0)
@@ -3759,6 +3761,13 @@ class PerHostKeyTests(unittest.TestCase):
         self.assertEqual(reported.code, 0, checked.log + reported.log)
         self.assertEqual(raw_key_file(sandbox, HOST_TWO), HOST_TWO_KEY + "\n")
         self.assertEqual(raw_key_file(sandbox, HOST_ONE), CHECK_KEY + "\n")
+
+    def test_a_key_with_crlf_line_ends_and_leading_whitespace_is_written_as_plain_lines(self) -> None:
+        sandbox = self.sandbox()
+        crlf = "  \r\n" + HOST_TWO_KEY.replace("\n", "\r\n") + "\r\n"
+        checked, reported = self.plan(sandbox, keymap({HOST_TWO: crlf}))
+        self.assertEqual(reported.code, 0, checked.log + reported.log)
+        self.assertEqual(raw_key_file(sandbox, HOST_TWO), HOST_TWO_KEY + "\n")
 
     def test_a_duplicate_json_key_silently_takes_the_last_value_which_the_readme_names(self) -> None:
         text = '{"%s": %s, "%s": %s}' % (HOST_TWO, json.dumps(WRONG_KEY), HOST_TWO, json.dumps(HOST_TWO_KEY))
@@ -3805,6 +3814,12 @@ HOST_KEY_REFUSALS: dict[str, tuple[dict[str, str], str]] = {
     "an empty host name": ({"HOST_KEYS": json.dumps({"": HOST_TWO_KEY})}, "not in the hosts list"),
     "the same key for two hosts": ({"HOST_KEYS": json.dumps({HOST_ONE: HOST_TWO_KEY, HOST_TWO: HOST_TWO_KEY})}, "same key"),
     "the same key for two hosts, one with a trailing newline": ({"HOST_KEYS": json.dumps({HOST_ONE: HOST_TWO_KEY, HOST_TWO: HOST_TWO_KEY + "\n"})}, "same key"),
+    "the same key for two hosts, one with CRLF line ends": ({"HOST_KEYS": json.dumps({HOST_ONE: HOST_TWO_KEY, HOST_TWO: HOST_TWO_KEY.replace("\n", "\r\n") + "\r\n"})}, "same key"),
+    "the same key for two hosts, one with leading whitespace": ({"HOST_KEYS": json.dumps({HOST_ONE: HOST_TWO_KEY, HOST_TWO: "  \n\t" + HOST_TWO_KEY})}, "same key"),
+    "the shared key with CRLF": ({"HOST_KEYS": json.dumps({HOST_TWO: CHECK_KEY + "\r\n"})}, "same as the shared key"),
+    "the shared key with leading whitespace": ({"HOST_KEYS": json.dumps({HOST_TWO: "  " + CHECK_KEY})}, "same as the shared key"),
+    "the key of the first hop with CRLF": ({"HOST_KEYS": json.dumps({HOST_TWO: JUMP_KEY + "\r\n"}), "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}, "same as a jump key"),
+    "a host with no entry and no shared key": ({"HOST_KEYS": json.dumps({HOST_TWO: HOST_TWO_KEY}), "SSH_KEY": ""}, "A host has no key"),
     "the shared key": ({"HOST_KEYS": json.dumps({HOST_TWO: CHECK_KEY})}, "same as the shared key"),
     "the shared key with a trailing newline": ({"HOST_KEYS": json.dumps({HOST_TWO: CHECK_KEY + "\n"})}, "same as the shared key"),
     "the key of the first hop": ({"HOST_KEYS": json.dumps({HOST_TWO: JUMP_KEY}), "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}, "same as a jump key"),
@@ -3965,6 +3980,13 @@ class ApplyHostKeyTests(unittest.TestCase):
         self.assertEqual(raw_key_file(sandbox, HOST_TWO), HOST_TWO_KEY + "\n")
         self.assertEqual(raw_key_file(sandbox, HOST_ONE), APPLY_KEY + "\n")
 
+    def test_a_key_with_crlf_line_ends_and_leading_whitespace_is_written_as_plain_lines(self) -> None:
+        sandbox = self.sandbox()
+        crlf = "  \r\n" + HOST_TWO_KEY.replace("\n", "\r\n") + "\r\n"
+        result = self.apply(sandbox, HOST_KEYS=keymap({HOST_TWO: crlf}))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(raw_key_file(sandbox, HOST_TWO), HOST_TWO_KEY + "\n")
+
     def test_a_key_is_never_printed_but_each_of_its_lines_is_masked(self) -> None:
         sandbox = self.sandbox()
         result = self.apply(sandbox, HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}))
@@ -3978,9 +4000,15 @@ class ApplyHostKeyTests(unittest.TestCase):
         sandbox = self.sandbox()
         result = self.apply(sandbox, SSH_KEY="", HOST_KEYS=keymap({HOST_TWO: HOST_TWO_KEY}))
         self.assertNotEqual(result.code, 0, result.log)
-        self.assertIn("::error::Host 1 has no key", result.log)
+        self.assertIn("::error::A host has no key", result.log)
         self.assertEqual(sandbox.ssh_log(), [])
-        self.assertEqual([path.name for path in (sandbox.temp / "ansible-apply").iterdir() if path.name.startswith("id")], [])
+        self.assertFalse((sandbox.temp / "ansible-apply").exists(), "no directory and no key file is made before the refusal")
+        # The host without a key is the last one: the first, which has a good key, is not applied either.
+        last = self.sandbox()
+        refused = self.apply(last, SSH_KEY="", HOST_KEYS=keymap({HOST_ONE: HOST_ONE_KEY}))
+        self.assertNotEqual(refused.code, 0, refused.log)
+        self.assertIn("::error::A host has no key", refused.log)
+        self.assertEqual(last.ssh_log(), [])
         old = self.apply(self.sandbox(), SSH_KEY="")
         self.assertNotEqual(old.code, 0)
         self.assertIn("::error::The ssh_apply_key secret is empty.", old.log)
@@ -4100,7 +4128,8 @@ class HostKeySecretScopeTests(unittest.TestCase):
                 self.assertIn("pass from a repository secret", " ".join(secrets["ssh_host_check_keys"]["description"].split()).lower())
         applied = DOC[True]["workflow_call"]["secrets"]["ssh_host_apply_keys"]
         self.assertIs(applied["required"], False)
-        self.assertIn("Do not pass it", applied["description"])
+        self.assertNotIn("Do not pass it", applied["description"])
+        self.assertIn("pass the same secret from the caller too", " ".join(applied["description"].split()))
         self.assertIn("secret of the deployment environment", " ".join(applied["description"].split()))
         self.assertNotIn("ssh_host_apply_keys", DRIFT_DOC[True]["workflow_call"]["secrets"])
 

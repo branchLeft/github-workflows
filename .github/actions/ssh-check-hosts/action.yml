@@ -342,7 +342,7 @@ runs:
         # --- hostkeys-validate begin (this text is the same in ssh-check-hosts and in ansible-gated-apply.yml; a test holds the two equal)
         if [ -n "$HOST_KEYS" ]; then
           host_keys_verdict=$(jq -n -r '
-            def trim: sub("\\s+\\z"; "");
+            def trim: gsub("\r"; "") | sub("\\A\\s+"; "") | sub("\\s+\\z"; "");
             (try ($ENV.HOST_KEYS | fromjson) catch null) as $map
             | ($ENV.HOSTS | split("\n") | map(select(length > 0))) as $hosts
             | ([$ENV.SSH_KEY] | map((. // "") | trim) | map(select(. != ""))) as $shared
@@ -354,6 +354,7 @@ runs:
               elif ([$map[] | trim] | length) != ([$map[] | trim] | unique | length) then "duplicate"
               elif any($map[]; . as $v | any($shared[]; . == ($v | trim))) then "shared"
               elif any($map[]; . as $v | any($jump[]; . == ($v | trim))) then "jump"
+              elif ($ENV.DRY_RUN != "true") and ($shared | length) == 0 and any($hosts[]; . as $h | ($map | has($h)) | not) then "no-key"
               else "ok"
               end
           ' 2> /dev/null) || fail "The host keys could not be read."
@@ -366,6 +367,7 @@ runs:
             duplicate) fail "Two hosts have the same key: each host has a key of its own." ;;
             shared) fail "A host key is the same as the shared key: a host with its own key has a key of its own." ;;
             jump) fail "A host key is the same as a jump key: each route has its own key." ;;
+            no-key) fail "A host has no key: it has no entry in the host keys and there is no shared key." ;;
             *) fail "The host keys could not be judged." ;;
           esac
         fi
@@ -437,7 +439,7 @@ runs:
                 0)
                   (
                     umask 077
-                    jq -n -j --arg dest "$host_key_dest" '($ENV.HOST_KEYS | fromjson)[$dest] | sub("\\s+\\z"; "")' > "$host_key_file"
+                    jq -n -j --arg dest "$host_key_dest" '($ENV.HOST_KEYS | fromjson)[$dest] | gsub("\r"; "") | sub("\\A\\s+"; "") | sub("\\s+\\z"; "")' > "$host_key_file"
                     printf '\n' >> "$host_key_file"
                   )
                   while IFS= read -r host_key_line; do
@@ -445,7 +447,7 @@ runs:
                   done < <(awk 'length($0) >= 16 && $0 !~ /^-----/' "$host_key_file")
                   ;;
                 1)
-                  [ -n "$SSH_KEY" ] || fail "Host $host_key_index has no key: it has no entry in the host keys and there is no shared key."
+                  : # no entry: this host keeps the shared key, which the validate block has shown is set
                   ;;
                 *)
                   fail "The host keys could not be read."
@@ -704,7 +706,7 @@ runs:
         fi
         # The key of each host that has one of its own is scanned for the same way.
         if [ -n "$HOST_KEYS" ]; then
-          jq -n -r '($ENV.HOST_KEYS | fromjson) | .[] | split("\n")[]' | awk 'length($0) >= 16 && $0 !~ /^-----/' >> "$keylines"
+          jq -n -r '($ENV.HOST_KEYS | fromjson) | .[] | gsub("\r"; "") | split("\n")[]' | awk 'length($0) >= 16 && $0 !~ /^-----/' >> "$keylines"
         fi
 
         summary="$plan_dir/summary.md"
