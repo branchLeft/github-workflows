@@ -202,6 +202,21 @@ CASES: list[Case] = [
         [f"{PIN}.test_every_answer_that_is_not_a_verified_tag_of_a_commit_or_a_plain_commit_is_refused_and_publishes_nothing"],
     ),
     Case(
+        "pin accepts a lightweight tag",
+        [Edit(GATED, '[ -z "$tag_ref" ] || fail', ': || fail'), Edit(DRIFT, '[ -z "$tag_ref" ] || fail', ': || fail')],
+        [f"{PIN}.test_a_lightweight_tag_is_refused_and_the_commit_read_is_never_made"],
+    ),
+    Case(
+        "pin accepts a lightweight tag (gated apply only)",
+        [Edit(GATED, '[ -z "$tag_ref" ] || fail', ': || fail')],
+        [f"{PIN}.test_a_lightweight_tag_is_refused_and_the_commit_read_is_never_made"],
+    ),
+    Case(
+        "pin accepts a lightweight tag (drift check only)",
+        [Edit(DRIFT, '[ -z "$tag_ref" ] || fail', ': || fail')],
+        [f"{PIN}.test_a_lightweight_tag_is_refused_and_the_commit_read_is_never_made"],
+    ),
+    Case(
         "pin accepts two or more commits",
         [Edit(GATED, '[ "$count" -eq 1 ] ||', '[ "$count" -ge 1 ] ||'), Edit(DRIFT, '[ "$count" -eq 1 ] ||', '[ "$count" -ge 1 ] ||')],
         [f"{PIN}.test_no_commit_two_commits_or_a_commit_of_another_repository_is_refused_and_never_falls_back"],
