@@ -1251,11 +1251,11 @@ jobs:
             done
             timeout "$limit" ssh "${args[@]}" "$@"
           }
-          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-)$'
+          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=apply commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-)( floor=[0-9a-f]{40})?$'
           # The line of a pushed host. A copy of the one in the ssh-check-hosts
           # action; a test holds the two equal. Each host is judged by its route
           # and by the one line its route speaks.
-          push_re='^push-receiver verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply) commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$'
+          push_re='^push-receiver verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply) commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)( floor=[0-9a-f]{40})?$'
 
           # The bundle of a pushed host, made once before any host is asked and
           # read from its start by each call. The same text as in the action.
@@ -1286,7 +1286,7 @@ jobs:
           ask() {
             local num="$1" dest="$2" label="$3" route=pull
             shift 3
-            local rc=0 out line accepted ok=1 matched=no f_verdict="" f_exit="" f_reason="" f_commit="" f_changed=""
+            local rc=0 out line accepted ok=1 matched=no f_verdict="" f_exit="" f_reason="" f_commit="" f_changed="" f_floor="" why=""
             if [ -n "$PUSH_HOSTS" ] && grep -qxF -- "$dest" <<< "$PUSH_HOSTS"; then
               route=push
             fi
@@ -1319,6 +1319,7 @@ jobs:
                   f_reason="${BASH_REMATCH[3]}"
                   f_commit="${BASH_REMATCH[5]}"
                   f_changed="${BASH_REMATCH[6]}"
+                  f_floor="${BASH_REMATCH[7]# floor=}"
                 fi
               elif [[ "$line" =~ $re ]]; then
                 matched=yes
@@ -1327,6 +1328,7 @@ jobs:
                 f_reason="${BASH_REMATCH[3]}"
                 f_commit="${BASH_REMATCH[4]}"
                 f_changed="${BASH_REMATCH[5]}"
+                f_floor="${BASH_REMATCH[6]# floor=}"
               fi
             fi
             if [ "$matched" != yes ]; then
@@ -1341,7 +1343,19 @@ jobs:
               fi
             done
             if [ "$ok" -ne 0 ] || [ "$f_changed" = - ] || { [ "$f_verdict" = unchanged ] && [ "$f_changed" != 0 ]; }; then
-              fail "Host $num, $label: verdict $f_verdict, reason $f_reason, exit $rc."
+              why="verdict $f_verdict, reason $f_reason, exit $rc."
+              # A refusal of an older commit names both commits, so the log says what was
+              # refused and what the host holds. Only a floor that matched 40 lowercase hex
+              # digits is ever printed; the host's journal holds it when the line has none.
+              if [ "$f_reason" = rollback ] && [ "$f_verdict" = refused ] && [ "$f_exit" = 20 ]; then
+                why="$why The planned commit is $SHA."
+                if [ -n "$f_floor" ]; then
+                  why="$why The host's last applied commit is $f_floor."
+                else
+                  why="$why The host's last applied commit is in the host's journal."
+                fi
+              fi
+              fail "Host $num, $label: $why"
             fi
             REPLY_VERDICT="$f_verdict"
           }
