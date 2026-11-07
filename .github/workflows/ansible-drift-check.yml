@@ -233,7 +233,9 @@ jobs:
           [[ "$RUN_ID" =~ $run_re ]] || fail "The run id is not a number."
           record=$(gh api "repos/$REPO/actions/runs/$RUN_ID") \
             || fail "The run record could not be read, so the commit this workflow was called at is unknown. The caller must grant actions: read. Refusing to fall back to the default branch."
-          called=$(printf '%s' "$record" | jq -r --arg prefix "$CALLED_WORKFLOW@" '(.referenced_workflows // [])[] | select(.path | startswith($prefix)) | "\(.sha) \(.path)"' | sort -u)
+          called_select='(.referenced_workflows // [])[] | select(.path | startswith($prefix))'
+          called=$(printf '%s' "$record" | jq -r --arg prefix "$CALLED_WORKFLOW@" "$called_select"' | "\(.sha) \(.path)"' | sort -u)
+          tag_ref=$(printf '%s' "$record" | jq -r --arg prefix "$CALLED_WORKFLOW@" "$called_select"' | (.ref // empty | strings) | select(test("(^|\n)refs/tags/"))' | tr -cd 'A-Za-z0-9._/\n-' | sort -u)
           count=$(printf '%s' "$called" | grep -c . || true)
           [ "$count" -eq 1 ] || fail "The run record names $count commits for $CALLED_WORKFLOW, not exactly one. Refusing to fall back to the default branch."
           pinned="${called%% *}"
@@ -257,6 +259,8 @@ jobs:
             [ "$verified" = true ] || fail "The tag object $pinned is not a verified tag (verified: $verified). Refusing to fall back to the default branch."
             commit="$peeled"
           elif grep -qxF 'gh: Not Found (HTTP 404)' "$err_file"; then
+            tag_name=$(printf '%s\n' "$tag_ref" | head -n 1 | cut -c1-80)
+            [ -z "$tag_ref" ] || fail "The run record names $pinned for the tag $tag_name, and that id is no tag object, so the tag is lightweight and carries no signature. Refusing to fall back to the default branch."
             plain=$(gh api "repos/$shared/git/commits/$pinned" --jq .sha 2> "$err_file") \
               || fail "The id $pinned is neither a tag object nor a commit of $shared (the commit read answered: $(first_line)). Refusing to fall back to the default branch."
             [ "$plain" = "$pinned" ] || fail "The commit read for $pinned answered a different id. Refusing to fall back to the default branch."
