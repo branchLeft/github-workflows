@@ -315,6 +315,55 @@ every other. The API read needs no grant beyond `contents: read` on a public
 repository; a private one cannot use this input, because the token cannot read
 the check runs and the discover job refuses.
 
+#### When one host fails its plan (`skip-failed-hosts`)
+
+By default the plan is all-or-nothing: one host that fails its check fails the plan
+job, no approval is requested, and no host is applied. The input `skip-failed-hosts`
+(boolean, default `false`) lets a caller choose the other behaviour, so that one
+broken host does not hold back the hosts that are healthy. A caller that does not set
+it runs exactly what it ran before.
+
+With `skip-failed-hosts: true`:
+
+- Every host is judged exactly as before. Failed, refused, busy, unreachable, no
+  answer, a diff withheld for a secret pattern and a diff too large to show all stay
+  failures; none of them is ever applied.
+- The plan job no longer fails because a host failed, as long as at least one host
+  passed (its answer was clean, or it would change). The first line of the job
+  summary reads `Partial plan: M of N hosts failed their plan and are skipped (kinds
+  and counts); ...`, never a host name. A plan in which no host passed still fails.
+- `has_changes` is about the hosts that passed: `true` when one of them would change
+  (the apply then waits for the environment's approval and covers only those hosts),
+  `false` when none would (no approval is requested).
+- The plan job outputs `apply_hosts` (the places in the host list of the hosts to
+  apply, as numbers, because a host name is a secret and a job output that holds one
+  is dropped) and `failed_hosts` (a count).
+- The apply guard checks the list of numbers: not empty, digits only, strictly
+  ascending, none above the number of hosts. The host-list digest check is
+  unchanged, so a number means the same host as at plan time. When
+  `skip-failed-hosts` is `false`, the list must be every host, so a plan that was not
+  opted in can never produce a partial apply.
+- The apply step still counts every host of the list, so a host's key file (`id.NN`),
+  its route and its number in the summary keep their meaning. A host that is not in
+  the list is not asked at all (no SSH call), and the summary says `Host N: skipped,
+  its plan failed.` The hosts that are listed get the unchanged apply and the second
+  run that must change nothing.
+- **The run still ends red.** The `Ansible checks passed` job fails while
+  `failed_hosts` is above 0 in a delivery run, so a host that got nothing is never
+  silent. The hosts that passed are delivered; the failed host gets the commit only
+  when a later plan finds it healthy. The host refuses a commit older than its last
+  applied one, so skipping a host never makes it move backwards.
+- The drift check (`fail-on-changes`) ignores the input and judges every host as before.
+
+**The risk, and why it is off by default.** Skipping a failed host while applying the
+others breaks any order across hosts that a commit assumes: a role on one host that
+another host depends on. A caller whose commits can have such a dependency should leave
+the input off. The approver reads the plan table, which shows which hosts are skipped,
+before approving.
+
+Named limits: an apply that fails on one host still stops the hosts after it (the first
+failure ends the run, as before); the hosts before it were applied.
+
 #### How the plan job loads the host check
 
 The host check is the composite action `ssh-check-hosts`, shared with
@@ -351,6 +400,7 @@ Any failure stops the job before the key is read.
 | `dry-run-stub` | empty | With `dry-run`, the executable, relative to `working-directory`, that stands in for a host. |
 | `push-playbook` | empty | With `ssh_push_hosts`, the playbook a pushed host's receiver is asked to run: a relative path of letters, digits, dot, underscore, dash and slash, with no `..`. See "Pushed hosts". |
 | `push-dry-run-stub` | empty | With `dry-run` and `ssh_push_hosts`, the executable, relative to `working-directory`, that stands in for the receiver of a pushed host. It receives the destination, the mode, the commit and the playbook, and the bundle on standard input. |
+| `skip-failed-hosts` | `false` | `false`: one host that fails its plan fails the plan and nothing is applied. `true`: the hosts that failed are left out, the apply (after approval) covers the hosts that passed, and the run ends red while any host was skipped. Leave it `false` when a commit can depend on an order across hosts. See "When one host fails its plan (`skip-failed-hosts`)". |
 | `host-timeout-minutes` | 65 | One host call is stopped after this long (the host's own limit is one hour by default). |
 | `plan-timeout-minutes` | 90 | Bound of the plan job. |
 | `apply-timeout-minutes` | 180 | Bound of the apply job, not counting the wait for approval. |
@@ -1235,10 +1285,13 @@ job loads the host check"), and it takes the secrets as inputs.
 | `total-timeout` | empty | Empty puts no bound on the hosts together. A whole number of minutes is the time all the calls share: each is stopped at the smaller of `host-timeout` and what is left, and a host reached after the time is spent is not asked and is judged `no-answer`. The caller's job bound must sit above it. The drift workflow passes its job bound less five minutes; the plan job passes nothing. |
 | `environment` | empty | The deployment environment named in the plan wording. Not read when `fail-on-changes` is `true`. |
 | `fail-on-changes` | `false` | `false` is the plan: a host that would change is a result, and the step fails only for a host that is not clean for another reason (it did not answer, refused, failed or had its diff withheld). `true` is the drift check: any answer that is not clean also fails the step, and the summary names the kind. |
+| `skip-failed-hosts` | `false` | `false` keeps the plan all-or-nothing. `true` lets the plan go on without the hosts that failed: every host is judged the same way, the step fails only when no host passed, and `apply-hosts` names the hosts that did. Ignored when `fail-on-changes` is `true`. See "When one host fails its plan" under `ansible-gated-apply.yml`. |
 
 | Output | Meaning |
 | --- | --- |
-| `has-changes` | `false` only when every host answered clean for this commit; `true` otherwise. |
+| `has-changes` | `false` only when every host answered clean for this commit (with `skip-failed-hosts`, every host that passed); `true` otherwise. |
+| `apply-hosts` | The places in the host list, from 1 and separated by a space, of the hosts whose answer was clean or would change. Numbers and not names, because a host name is a secret and a job output that holds one is dropped. |
+| `failed-hosts` | The number of hosts whose answer was a failure of any kind. Above 0 on a successful step only with `skip-failed-hosts`. |
 | `hosts-digest` | The SHA-256 of the validated host list. The apply job recomputes it from the same secret and refuses a list that differs. |
 | `push-hosts-digest` | The SHA-256 of the validated push list, which the apply job recomputes and compares. Empty when `push-hosts` is empty. |
 | `outcome` | `ok`, `drift`, `refused`, `unreachable`, `no-answer`, `failed`, `withheld`, or `mixed`. Empty if the step stopped before it could judge. |
@@ -1258,6 +1311,9 @@ exit status):
 | 255, the SSH call failed | `unreachable` | red | red |
 | not one summary line for this commit | `no-answer` | red | red |
 | any of the above with a diff that matched a secret pattern or is too large | `withheld` | red | red |
+
+With `skip-failed-hosts` true, every row marked red in the Plan column is a failed host that is left out of
+`apply-hosts` instead of failing the step, unless no host passed.
 
 #### Reaching a private host through a jump host
 
