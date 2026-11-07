@@ -4656,6 +4656,7 @@ class GhReply(NamedTuple):
 
 TAG_OBJECT_SHA = "c" * 40
 PEELED_SHA = "d" * 40
+TAG_REF = "refs/tags/v1.2.3"
 SHARED_REPOSITORY = "branchLeft/github-workflows"
 NOT_FOUND = GhReply('{"message":"Not Found","status":"404"}', "gh: Not Found (HTTP 404)", 1)
 
@@ -4719,7 +4720,8 @@ class PinTests(unittest.TestCase):
             extra["TMPDIR"] = str(temp_dir)
         return sandbox, sandbox.run(step, values, extra)
 
-    def entry(self, workflow: str, sha: str, repo: str = "branchLeft/github-workflows", ref: str = "refs/tags/v1.2.3") -> dict[str, str]:
+    def entry(self, workflow: str, sha: str, repo: str = "branchLeft/github-workflows", ref: str = "refs/heads/main") -> dict[str, str]:
+        """One referenced workflow. The default ref is a branch, as the self-test's own local call shows; a test that models a tag pin passes TAG_REF."""
         return {"path": f"{repo}/.github/workflows/{workflow}@v1.2.3", "ref": ref, "sha": sha}
 
     def test_the_commit_of_the_workflow_that_was_called_is_published_logged_and_read_from_the_run_record(self) -> None:
@@ -4806,7 +4808,7 @@ class PinTests(unittest.TestCase):
     def test_a_signed_tag_object_is_peeled_to_its_commit_which_is_published_and_both_are_logged(self) -> None:
         for label, pin, _ in PIN_SOURCES:
             with self.subTest(file=label):
-                sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), TAG_OBJECT_SHA)], tag=tag_object())
+                sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), TAG_OBJECT_SHA, ref=TAG_REF)], tag=tag_object())
                 self.assertEqual(result.code, 0, result.log)
                 self.assertEqual(result.outputs, {"sha": PEELED_SHA})
                 self.assertIn(f"commit {PEELED_SHA}, the commit tag object {TAG_OBJECT_SHA} points at", result.log)
@@ -4823,6 +4825,64 @@ class PinTests(unittest.TestCase):
                     self.reads(sandbox),
                     [f"api repos/{SHARED_REPOSITORY}/git/tags/{SHA}", f"api repos/{SHARED_REPOSITORY}/git/commits/{SHA} --jq .sha"],
                 )
+
+    def test_a_lightweight_tag_is_refused_and_the_commit_read_is_never_made(self) -> None:
+        # A lightweight tag names the commit itself, so the tag read answers 404 and the commit read
+        # would answer: the pin would be taken with no signature test. The run record's ref says it was
+        # a tag pin, so that fallback is closed.
+        hostile = "refs/tags/v1.0.1\n::error::injected\n::set-output name=sha::" + OTHER_SHA
+        for label, pin, _ in PIN_SOURCES:
+            for ref in ("refs/tags/v1.0.1", "refs/tags/a/b", hostile):
+                with self.subTest(file=label, ref=ref.split("\n")[0]):
+                    sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA, ref=ref)], tag=NOT_FOUND, commit=plain_commit(SHA))
+                    self.assertNotEqual(result.code, 0, f"a lightweight tag was accepted: {result.log}")
+                    self.assertEqual(result.outputs, {})
+                    self.assertIn("lightweight", result.log)
+                    self.assertIn("Refusing to fall back to the default branch.", result.log)
+                    self.assertEqual(result.log.count("::error::"), 1, result.log)
+                    self.assertNotIn("\n::", result.log)
+                    self.assertEqual(self.reads(sandbox), [f"api repos/{SHARED_REPOSITORY}/git/tags/{SHA}"])
+
+    def test_the_ref_of_any_selected_entry_that_is_a_tag_makes_it_a_tag_pin(self) -> None:
+        for label, pin, _ in PIN_SOURCES:
+            workflow = self.called_workflow(pin)
+            for order in ((TAG_REF, "refs/heads/main"), ("refs/heads/main", TAG_REF)):
+                with self.subTest(file=label, order=order):
+                    record = [self.entry(workflow, SHA, ref=ref) for ref in order]
+                    sandbox, result = self.resolve(pin, record, tag=NOT_FOUND, commit=plain_commit(SHA))
+                    self.assertNotEqual(result.code, 0, result.log)
+                    self.assertEqual(result.outputs, {})
+                    self.assertIn("lightweight", result.log)
+
+    def test_a_ref_on_another_workflow_does_not_make_this_pin_a_tag_pin(self) -> None:
+        for label, pin, _ in PIN_SOURCES:
+            with self.subTest(file=label):
+                record = [self.entry("docs-lint.yml", OTHER_SHA, ref=TAG_REF), self.entry(self.called_workflow(pin), SHA)]
+                _, result = self.resolve(pin, record)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs, {"sha": SHA})
+
+    def test_a_branch_a_commit_or_a_missing_ref_still_passes_through_the_commit_read(self) -> None:
+        # Only a tag pin is closed here. A branch or commit pin is refused by the caller's own
+        # CI (shared-infra CI-5 accepts only an exact release tag), not by this check.
+        for label, pin, _ in PIN_SOURCES:
+            workflow = self.called_workflow(pin)
+            cases: dict[str, dict[str, str]] = {
+                "a branch": self.entry(workflow, SHA, ref="refs/heads/main"),
+                "a pull request": self.entry(workflow, SHA, ref="refs/pull/7/merge"),
+                "a tag-like branch name": self.entry(workflow, SHA, ref="refs/heads/refs/tags/x"),
+                "an empty ref": self.entry(workflow, SHA, ref=""),
+                "no ref": {key: value for key, value in self.entry(workflow, SHA).items() if key != "ref"},
+            }
+            for name, entry in cases.items():
+                with self.subTest(file=label, case=name):
+                    sandbox, result = self.resolve(pin, [entry])
+                    self.assertEqual(result.code, 0, result.log)
+                    self.assertEqual(result.outputs, {"sha": SHA})
+                    self.assertEqual(
+                        self.reads(sandbox),
+                        [f"api repos/{SHARED_REPOSITORY}/git/tags/{SHA}", f"api repos/{SHARED_REPOSITORY}/git/commits/{SHA} --jq .sha"],
+                    )
 
     def test_every_answer_that_is_not_a_verified_tag_of_a_commit_or_a_plain_commit_is_refused_and_publishes_nothing(self) -> None:
         cases: dict[str, tuple[GhReply, GhReply | None, str]] = {
@@ -4860,7 +4920,8 @@ class PinTests(unittest.TestCase):
         for label, pin, _ in PIN_SOURCES:
             for name, (tag, commit, finding) in cases.items():
                 with self.subTest(file=label, case=name):
-                    sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA)], tag=tag, commit=commit)
+                    ref = "refs/heads/main" if tag is NOT_FOUND else TAG_REF
+                    sandbox, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA, ref=ref)], tag=tag, commit=commit)
                     self.assertNotEqual(result.code, 0, f"{name} was accepted: {result.log}")
                     self.assertEqual(result.outputs, {})
                     self.assertIn(finding, result.log)
@@ -4878,7 +4939,7 @@ class PinTests(unittest.TestCase):
     def test_a_tag_that_peels_to_a_commit_is_never_checked_as_a_plain_commit_and_the_shared_repository_is_read_not_the_callers(self) -> None:
         for label, pin, _ in PIN_SOURCES:
             with self.subTest(file=label):
-                sandbox, _ = self.resolve(pin, [self.entry(self.called_workflow(pin), TAG_OBJECT_SHA)], tag=tag_object(verified=False))
+                sandbox, _ = self.resolve(pin, [self.entry(self.called_workflow(pin), TAG_OBJECT_SHA, ref=TAG_REF)], tag=tag_object(verified=False))
                 for call in self.reads(sandbox):
                     self.assertTrue(call.startswith(f"api repos/{SHARED_REPOSITORY}/git/tags/"), call)
                 self.assertEqual(len(self.reads(sandbox)), 1)
@@ -4892,10 +4953,14 @@ class PinTests(unittest.TestCase):
             "a first line of tag read message": (GhReply("", hostile, 1), None),
             "a commit read message": (NOT_FOUND, GhReply("", hostile, 1)),
         }
+        # The ref the run record names is text too: a tag ref carrying a workflow command.
+        refs = {name: "refs/heads/main" if tag is NOT_FOUND else TAG_REF for name, (tag, _) in cases.items()}
+        refs["a ref"] = "refs/tags/v1\n::error::injected\n::set-output name=sha::" + OTHER_SHA
+        cases["a ref"] = (NOT_FOUND, None)
         for label, pin, _ in PIN_SOURCES:
             for name, (tag, commit) in cases.items():
                 with self.subTest(file=label, case=name):
-                    _, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA)], tag=tag, commit=commit)
+                    _, result = self.resolve(pin, [self.entry(self.called_workflow(pin), SHA, ref=refs[name])], tag=tag, commit=commit)
                     self.assertNotEqual(result.code, 0)
                     self.assertEqual(result.outputs, {})
                     self.assertEqual(result.log.count("::error::"), 1, result.log)
