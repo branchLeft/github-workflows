@@ -354,6 +354,7 @@ def composite_validate_env(**changes: str) -> dict[str, str]:
         "DRY_RUN": "false",
         "DRY_RUN_STUB": "",
         "FAIL_ON_CHANGES": "false",
+        "SKIP_FAILED_HOSTS": "false",
         "HOST_TIMEOUT_MINUTES": "65",
         "TOTAL_TIMEOUT_MINUTES": "",
         "JUMP_HOST": "",
@@ -552,6 +553,7 @@ class StructureTests(unittest.TestCase):
                 "working-directory": "${{ inputs.working-directory }}",
                 "host-timeout": "${{ inputs.host-timeout-minutes }}",
                 "environment": "${{ inputs.environment }}",
+                "skip-failed-hosts": "${{ inputs.skip-failed-hosts }}",
             },
         )
         self.assertNotIn("fail-on-changes", step["with"])
@@ -572,8 +574,12 @@ class StructureTests(unittest.TestCase):
                 "hosts_digest": "${{ steps.ssh.outputs.hosts-digest }}",
                 "push_hosts_digest": "${{ steps.ssh.outputs.push-hosts-digest }}",
                 "jump2_hosts_digest": "${{ steps.ssh.outputs.jump2-hosts-digest }}",
+                "apply_hosts": "${{ steps.ssh.outputs.apply-hosts }}",
+                "failed_hosts": "${{ steps.ssh.outputs.failed-hosts }}",
             },
         )
+        self.assertEqual(ACTION_DOC["outputs"]["apply-hosts"]["value"], "${{ steps.report.outputs.apply_hosts }}")
+        self.assertEqual(ACTION_DOC["outputs"]["failed-hosts"]["value"], "${{ steps.report.outputs.failed_hosts }}")
         self.assertEqual(
             ACTION_DOC["outputs"]["has-changes"]["value"], "${{ steps.report.outputs.has_changes }}"
         )
@@ -756,6 +762,7 @@ class StructureTests(unittest.TestCase):
                 "PLAN": "${{ needs.plan.result }}",
                 "APPLY": "${{ needs.apply.result }}",
                 "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
+                "FAILED_HOSTS": "${{ needs.plan.outputs.failed_hosts }}",
                 "DRY_RUN": "${{ inputs.dry-run }}",
                 "RERUN": "${{ needs.discover.outputs.recheck }}",
             }),
@@ -803,6 +810,8 @@ class StructureTests(unittest.TestCase):
                 "PLANNED_SHA": "${{ needs.plan.outputs.sha }}",
                 "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
                 "PLANNED_DIGEST": "${{ needs.plan.outputs.hosts_digest }}",
+                "PLANNED_APPLY_HOSTS": "${{ needs.plan.outputs.apply_hosts }}",
+                "SKIP_FAILED_HOSTS": "${{ inputs.skip-failed-hosts }}",
                 "HOSTS": "${{ secrets.ssh_hosts }}",
                 "PLANNED_PUSH_DIGEST": "${{ needs.plan.outputs.push_hosts_digest }}",
                 "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
@@ -815,6 +824,7 @@ class StructureTests(unittest.TestCase):
             }),
             ("apply", "Apply on each host", {
                 "HOSTS": "${{ secrets.ssh_hosts }}",
+                "APPLY_HOSTS": "${{ steps.guard.outputs.apply_hosts }}",
                 "SHA": "${{ needs.plan.outputs.sha }}",
                 "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
                 "SSH_KEY": "${{ secrets.ssh_apply_key }}",
@@ -870,6 +880,7 @@ class StructureTests(unittest.TestCase):
                 "DRY_RUN": "${{ inputs.dry-run }}",
                 "DRY_RUN_STUB": "${{ inputs.dry-run-stub }}",
                 "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
+                "SKIP_FAILED_HOSTS": "${{ inputs.skip-failed-hosts }}",
                 "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout }}",
                 "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}",
                 "JUMP_HOST": "${{ inputs.jump-host }}",
@@ -907,6 +918,7 @@ class StructureTests(unittest.TestCase):
                 "ENVIRONMENT": "${{ inputs.environment }}",
                 "DRY_RUN": "${{ inputs.dry-run }}",
                 "FAIL_ON_CHANGES": "${{ inputs.fail-on-changes }}",
+                "SKIP_FAILED_HOSTS": "${{ inputs.skip-failed-hosts }}",
                 "SSH_KEY": "${{ inputs.check-key }}",
                 "HOST_KEYS": "${{ inputs.host-check-keys }}",
                 "JUMP_HOST": "${{ inputs.jump-host }}",
@@ -1000,12 +1012,14 @@ class StructureTests(unittest.TestCase):
         inputs = ACTION_DOC["inputs"]
         self.assertEqual(
             set(inputs),
-            {"hosts", "known-hosts", "check-key", "host-check-keys", "jump-host", "jump-key", "jump2-host", "jump2-key", "jump2-hosts", "push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes"},
+            {"hosts", "known-hosts", "check-key", "host-check-keys", "jump-host", "jump-key", "jump2-host", "jump2-key", "jump2-hosts", "push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "sha", "dry-run", "dry-run-stub", "working-directory", "host-timeout", "total-timeout", "environment", "fail-on-changes", "skip-failed-hosts"},
         )
         self.assertEqual(inputs["fail-on-changes"]["default"], "false")
+        self.assertEqual(inputs["skip-failed-hosts"]["default"], "false")
+        self.assertIs(inputs["skip-failed-hosts"]["required"], False)
         self.assertEqual(inputs["total-timeout"]["default"], "")
         self.assertEqual(inputs["dry-run"]["default"], "false")
-        self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "push-hosts-digest", "jump2-hosts-digest", "outcome", "detail"})
+        self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "push-hosts-digest", "jump2-hosts-digest", "outcome", "detail", "apply-hosts", "failed-hosts"})
         for name in ("push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "jump2-host", "jump2-key", "jump2-hosts", "host-check-keys"):
             self.assertEqual(inputs[name]["default"], "", name)
             self.assertIs(inputs[name]["required"], False, name)
@@ -1382,6 +1396,12 @@ class ValidateHostsTests(unittest.TestCase):
         self.assertNotEqual(self.validate(FAIL_ON_CHANGES="1").code, 0)
         self.assertNotEqual(self.validate(FAIL_ON_CHANGES="").code, 0)
 
+    def test_skip_failed_hosts_must_be_true_or_false(self) -> None:
+        for value in ("true", "false"):
+            self.assertEqual(self.validate(SKIP_FAILED_HOSTS=value).code, 0, value)
+        for value in ("yes", "1", "", "True"):
+            self.assertNotEqual(self.validate(SKIP_FAILED_HOSTS=value).code, 0, repr(value))
+
     def test_the_timeouts_are_whole_numbers_of_minutes_and_the_total_may_be_empty(self) -> None:
         for name in ("HOST_TIMEOUT_MINUTES", "TOTAL_TIMEOUT_MINUTES"):
             for value in ("0", "-1", "1.5", "abc", "05", "10000", "1\n2", " 5"):
@@ -1434,6 +1454,7 @@ def report_env(**changes: str) -> dict[str, str]:
         "ENVIRONMENT": "production",
         "DRY_RUN": "false",
         "FAIL_ON_CHANGES": "false",
+        "SKIP_FAILED_HOSTS": "false",
         "SSH_KEY": "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789",
         "HOST_KEYS": "",
         "JUMP_HOST": "",
@@ -1495,6 +1516,109 @@ class PlanTests(unittest.TestCase):
         self.assertNotEqual(result.code, 0)
         self.assertEqual(result.outputs["has_changes"], "true")
         self.assertTrue(result.summary.splitlines()[0].startswith("Plan failed:"))
+        # Not opted in: the verdict is all-or-nothing, and the outputs say so.
+        self.assertEqual(result.outputs["failed_hosts"], "1")
+
+    FAILED = summary_line("failed", 30, "check", "@SHA@", 0, "playbook-failed")
+
+    def test_skip_failed_hosts_leaves_the_failed_host_out_and_a_partial_plan_with_nothing_to_change_asks_for_no_approval(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        sandbox.host(HOST_TWO, 30, self.FAILED, "fatal: a task failed\n")
+        _, result = self.plan(sandbox, SKIP_FAILED_HOSTS="true")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "false")
+        self.assertEqual(result.outputs["apply_hosts"], "1")
+        self.assertEqual(result.outputs["failed_hosts"], "1")
+        first = result.summary.splitlines()[0]
+        self.assertTrue(first.startswith("Partial plan: 1 of 2 hosts failed their plan and are skipped"), first)
+        self.assertIn("no approval is requested", first)
+        self.assertNotIn("host-two", result.summary + result.log)
+        self.assertNotIn(HOST_TWO, result.summary + result.log)
+        # The failed host is still named in the log, as a numbered label with its kind.
+        self.assertIn("::error::host 2: kind=failed", result.log)
+
+    def test_skip_failed_hosts_with_a_passing_host_that_would_change_asks_for_the_approval_of_the_hosts_that_passed(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n-greeting = OLD\n+greeting = NEW\n")
+        sandbox.host(HOST_TWO, 30, self.FAILED)
+        _, result = self.plan(sandbox, SKIP_FAILED_HOSTS="true")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["has_changes"], "true")
+        self.assertEqual(result.outputs["apply_hosts"], "1")
+        self.assertEqual(result.outputs["failed_hosts"], "1")
+        first = result.summary.splitlines()[0]
+        self.assertTrue(first.startswith("Partial plan: 1 of 2 hosts failed their plan and are skipped"), first)
+        self.assertIn("1 host(s) would change", first)
+        self.assertIn("waits for the approval of environment production and covers only the hosts that passed", first)
+        self.assertIn("+greeting = NEW", result.summary)
+
+    def test_skip_failed_hosts_numbers_the_passing_hosts_by_their_place_in_the_list(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "check", "rollback"))
+        sandbox.host(HOST_TWO, 11, WOULD_CHANGE, "--- before\n+++ after\n")
+        sandbox.host("deploy@host-three", 0, CLEAN)
+        checked = sandbox.run(action_step("check"), check_env(HOSTS="".join(f"{h}\n" for h in hosts)))
+        self.assertEqual(checked.code, 0, checked.log)
+        result = sandbox.run(action_step("report"), report_env(SKIP_FAILED_HOSTS="true"))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["apply_hosts"], "2 3")
+        self.assertEqual(result.outputs["failed_hosts"], "1")
+        self.assertIn("refused: rollback (1)", result.summary.splitlines()[0])
+
+    def test_skip_failed_hosts_never_passes_a_withheld_or_oversize_diff_or_any_other_failure_kind(self) -> None:
+        oversize = ("+" + "a" * 99 + "\n") * 3200
+        cases = {
+            "a diff withheld for a secret pattern": (11, WOULD_CHANGE, "--- before\n+api_token = 0123456789abcdef\n"),
+            "a diff too large to show": (11, WOULD_CHANGE, oversize),
+            "an unreachable host": (255, "", "ssh: connect to host: refused\n"),
+            "a busy host": (21, summary_line("busy", 21, "check", "@SHA@", "-", "locked"), ""),
+            "an answer for another commit": (0, summary_line("unchanged", 0, "check", OTHER_SHA, 0), ""),
+            "no answer": (0, "", ""),
+        }
+        for name, (code, out, err) in cases.items():
+            with self.subTest(name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 0, CLEAN)
+                sandbox.host(HOST_TWO, code, out, err)
+                _, result = self.plan(sandbox, SKIP_FAILED_HOSTS="true")
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs["apply_hosts"], "1", name)
+                self.assertEqual(result.outputs["failed_hosts"], "1", name)
+                self.assertNotIn("api_token = 0123456789abcdef", result.summary + result.log)
+
+    def test_skip_failed_hosts_still_fails_when_no_host_passed(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, self.FAILED)
+        sandbox.host(HOST_TWO, 20, real_refusal("refused", 20, "check", "rollback"))
+        _, result = self.plan(sandbox, SKIP_FAILED_HOSTS="true")
+        self.assertNotEqual(result.code, 0)
+        self.assertEqual(result.outputs["has_changes"], "true")
+        self.assertEqual(result.outputs["apply_hosts"], "")
+        self.assertEqual(result.outputs["failed_hosts"], "2")
+        self.assertTrue(result.summary.splitlines()[0].startswith("Plan failed:"), result.summary)
+
+    def test_skip_failed_hosts_with_every_host_passing_is_the_ordinary_plan(self) -> None:
+        for skip in ("true", "false"):
+            with self.subTest(skip=skip):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 0, CLEAN)
+                sandbox.host(HOST_TWO, 11, WOULD_CHANGE, "--- before\n+++ after\n")
+                _, result = self.plan(sandbox, SKIP_FAILED_HOSTS=skip)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs["has_changes"], "true")
+                self.assertEqual(result.outputs["apply_hosts"], "1 2")
+                self.assertEqual(result.outputs["failed_hosts"], "0")
+                self.assertTrue(result.summary.splitlines()[0].startswith("Changes: 1 of 2"), result.summary)
+
+    def test_the_drift_check_ignores_skip_failed_hosts(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        sandbox.host(HOST_TWO, 30, self.FAILED)
+        _, result = self.plan(sandbox, SKIP_FAILED_HOSTS="true", FAIL_ON_CHANGES="true")
+        self.assertNotEqual(result.code, 0)
+        self.assertTrue(result.summary.splitlines()[0].startswith("Not clean at commit"), result.summary)
 
     def test_a_refused_request_and_a_busy_host_are_failures(self) -> None:
         for code, verdict in ((20, "refused"), (21, "busy"), (40, "error")):
@@ -1858,6 +1982,8 @@ def apply_guard_env(**changes: str) -> dict[str, str]:
         "PLANNED_SHA": SHA,
         "HAS_CHANGES": "true",
         "PLANNED_DIGEST": digest([HOST_ONE, HOST_TWO]),
+        "PLANNED_APPLY_HOSTS": "1 2",
+        "SKIP_FAILED_HOSTS": "false",
         "HOSTS": f"{HOST_ONE}\n{HOST_TWO}\n",
         "ENVIRONMENT": "production",
         "DRY_RUN": "false",
@@ -1869,6 +1995,10 @@ def apply_guard_env(**changes: str) -> dict[str, str]:
         "JUMP2_HOSTS": "",
     }
     values.update(changes)
+    if "PLANNED_APPLY_HOSTS" not in changes:
+        # Unless a test names the planned hosts, the plan covered every host of the list.
+        count = len([line for line in values["HOSTS"].splitlines() if line])
+        values["PLANNED_APPLY_HOSTS"] = " ".join(str(number) for number in range(1, count + 1))
     return values
 
 
@@ -1927,6 +2057,83 @@ class ApplyGuardTests(unittest.TestCase):
         self.assertNotEqual(result.code, 0)
         self.assertIn("digest is missing", result.log)
 
+    def test_the_guard_publishes_the_validated_host_numbers_for_the_apply_step(self) -> None:
+        result = self.guard()
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(result.outputs["apply_hosts"], "1 2")
+
+    def test_a_partial_list_is_accepted_only_when_skip_failed_hosts_is_true(self) -> None:
+        accepted = self.guard(PLANNED_APPLY_HOSTS="2", SKIP_FAILED_HOSTS="true")
+        self.assertEqual(accepted.code, 0, accepted.log)
+        self.assertEqual(accepted.outputs["apply_hosts"], "2")
+        self.assertEqual(self.guard(PLANNED_APPLY_HOSTS="1", SKIP_FAILED_HOSTS="true").outputs["apply_hosts"], "1")
+
+    def test_partial_list_refused_when_skip_failed_hosts_is_false(self) -> None:
+        # The safety-class control: a plan that was not opted in can never produce a partial apply.
+        for listed in ("1", "2"):
+            with self.subTest(listed=listed):
+                result = self.guard(PLANNED_APPLY_HOSTS=listed, SKIP_FAILED_HOSTS="false")
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("skip-failed-hosts is not true", result.log)
+                self.assertNotIn("apply_hosts", result.outputs)
+
+    def test_the_full_list_passes_with_skip_failed_hosts_either_way(self) -> None:
+        for skip in ("true", "false"):
+            with self.subTest(skip=skip):
+                result = self.guard(PLANNED_APPLY_HOSTS="1 2", SKIP_FAILED_HOSTS=skip)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertEqual(result.outputs["apply_hosts"], "1 2")
+
+    def test_a_list_that_is_empty_not_numbers_not_ascending_repeated_or_out_of_range_is_refused(self) -> None:
+        bad = {
+            "empty": "",
+            "a name": "deploy@host-one",
+            "a word": "all",
+            "a glob": "*",
+            "descending": "2 1",
+            "a repeat": "1 1",
+            "a repeat after another": "1 2 2",
+            "beyond the end": "1 3",
+            "only beyond the end": "3",
+            "zero": "0 1",
+            "a leading zero": "01",
+            "two spaces": "1  2",
+            "a leading space": " 1",
+            "a trailing space": "1 ",
+            "a newline": "1\n2",
+            "a comma": "1,2",
+            "a sign": "+1",
+            "a huge number": "1 99999999999999999999",
+        }
+        for name, listed in bad.items():
+            with self.subTest(name):
+                result = self.guard(PLANNED_APPLY_HOSTS=listed, SKIP_FAILED_HOSTS="true")
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertNotIn("apply_hosts", result.outputs)
+
+    def test_skip_failed_hosts_must_be_true_or_false(self) -> None:
+        for value in ("", "yes", "True"):
+            with self.subTest(value=value):
+                self.assertNotEqual(self.guard(SKIP_FAILED_HOSTS=value).code, 0)
+
+    def test_the_host_digest_still_binds_the_host_list_when_a_partial_list_is_given(self) -> None:
+        # The numbers mean the hosts of the planned list. A list of other hosts, or the
+        # same hosts in another order, has another digest and is refused before any number is read.
+        for hosts in (f"{HOST_ONE}\ndeploy@host-three\n", f"{HOST_TWO}\n{HOST_ONE}\n", f"{HOST_ONE}\n"):
+            with self.subTest(hosts=hosts):
+                result = self.guard(HOSTS=hosts, PLANNED_APPLY_HOSTS="1", SKIP_FAILED_HOSTS="true")
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("not the hosts that were planned", result.log)
+
+    def test_a_number_beyond_the_end_is_judged_against_the_hosts_of_this_run(self) -> None:
+        three = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        listed = "".join(f"{h}\n" for h in three)
+        accepted = self.guard(HOSTS=listed, PLANNED_DIGEST=digest(three), PLANNED_APPLY_HOSTS="1 3", SKIP_FAILED_HOSTS="true")
+        self.assertEqual(accepted.code, 0, accepted.log)
+        self.assertEqual(accepted.outputs["apply_hosts"], "1 3")
+        refused = self.guard(HOSTS=listed, PLANNED_DIGEST=digest(three), PLANNED_APPLY_HOSTS="1 4", SKIP_FAILED_HOSTS="true")
+        self.assertNotEqual(refused.code, 0, refused.log)
+
 
 def apply_env(**changes: str) -> dict[str, str]:
     values = {
@@ -1945,6 +2152,10 @@ def apply_env(**changes: str) -> dict[str, str]:
         "PUSH_PLAYBOOK": "",
     }
     values.update(changes)
+    if "APPLY_HOSTS" not in changes:
+        # Unless a test names the hosts to apply, every host of the list is applied, as the guard publishes it.
+        count = len([line for line in values["HOSTS"].splitlines() if line])
+        values["APPLY_HOSTS"] = " ".join(str(number) for number in range(1, count + 1))
     return values
 
 
@@ -1979,6 +2190,53 @@ class ApplyTests(unittest.TestCase):
             self.assertEqual(sandbox.calls(dest), 2, dest)
         self.assertIn("Applied commit", result.log)
         self.assertIn("on 3 host(s)", result.log)
+
+    def test_a_host_the_guard_did_not_list_is_not_asked_at_all_and_the_summary_says_why(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
+        sandbox.host(HOST_TWO, 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"))
+        result = self.apply(sandbox, APPLY_HOSTS="1")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(sandbox.calls(HOST_ONE), 2)
+        self.assertEqual(sandbox.calls(HOST_TWO), 0)
+        calls = sandbox.ssh_log()
+        self.assertEqual(len(calls), 2, calls)
+        self.assertTrue(all(call.endswith(f"-- {HOST_ONE} {SHA}") for call in calls), calls)
+        self.assertIn("Host 2: skipped, its plan failed.", result.summary)
+        self.assertIn("Host 1: applied, then a second run that changed nothing.", result.summary)
+        self.assertIn("Applied commit", result.log)
+        self.assertIn("on 1 host(s)", result.log)
+        self.assertIn("1 host(s) were skipped because their plan failed", result.log)
+        self.assertNotIn(HOST_TWO, result.log + result.summary)
+
+    def test_the_first_host_may_be_the_one_skipped(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"))
+        sandbox.host(HOST_TWO, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, APPLY_HOSTS="2")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(sandbox.calls(HOST_ONE), 0)
+        self.assertEqual(sandbox.calls(HOST_TWO), 2)
+        self.assertIn("Host 1: skipped, its plan failed.", result.summary)
+
+    def test_the_middle_host_of_three_may_be_skipped_and_the_ones_around_it_are_applied_in_order(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        for dest in hosts:
+            sandbox.host(dest, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, HOSTS="".join(f"{h}\n" for h in hosts), APPLY_HOSTS="1 3")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual([sandbox.calls(h) for h in hosts], [2, 0, 2])
+        order = [call.split(" ")[-2] for call in sandbox.ssh_log()]
+        self.assertEqual(order, [HOST_ONE, HOST_ONE, "deploy@host-three", "deploy@host-three"])
+
+    def test_the_apply_refuses_when_the_guard_listed_no_host(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, APPLY_HOSTS="")
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("no host to apply", result.log)
+        self.assertEqual(sandbox.ssh_log(), [])
 
     def test_a_host_that_needs_a_second_change_fails_the_job(self) -> None:
         sandbox = Sandbox(self)
@@ -2107,6 +2365,7 @@ def gate_env(**changes: str) -> dict[str, str]:
         "PLAN": "skipped",
         "APPLY": "skipped",
         "HAS_CHANGES": "",
+        "FAILED_HOSTS": "",
         "DRY_RUN": "false",
         "RERUN": "true",
     }
@@ -2141,6 +2400,27 @@ class GateTests(unittest.TestCase):
         self.assertNotEqual(self.gate(DELIVERY="true", PLAN="failure", APPLY="skipped"), 0)
         self.assertEqual(self.gate(**delivery, DRY_RUN="true", HAS_CHANGES="true", APPLY="skipped"), 0)
         self.assertNotEqual(self.gate(**delivery, DRY_RUN="true", HAS_CHANGES="true", APPLY="success"), 0)
+
+    def test_a_delivery_run_whose_apply_was_skipped_or_cancelled_is_red_even_though_the_plan_found_changes(self) -> None:
+        # A newer pending apply replaces an older pending one, which ends
+        # cancelled, and an apply that never started ends skipped. Neither may leave the run green.
+        delivery = {"DELIVERY": "true", "PLAN": "success", "HAS_CHANGES": "true"}
+        for result in ("skipped", "cancelled", "failure", ""):
+            with self.subTest(apply=result):
+                self.assertNotEqual(self.gate(**delivery, APPLY=result), 0)
+        self.assertEqual(self.gate(**delivery, APPLY="success"), 0)
+
+    def test_a_delivery_run_that_skipped_hosts_is_red_while_the_apply_of_the_others_succeeded(self) -> None:
+        delivery = {"DELIVERY": "true", "PLAN": "success", "HAS_CHANGES": "true", "APPLY": "success"}
+        self.assertEqual(self.gate(**delivery, FAILED_HOSTS="0"), 0)
+        self.assertEqual(self.gate(**delivery, FAILED_HOSTS=""), 0)
+        self.assertNotEqual(self.gate(**delivery, FAILED_HOSTS="1"), 0)
+        self.assertNotEqual(self.gate(**delivery, FAILED_HOSTS="2"), 0)
+        self.assertNotEqual(self.gate(**delivery, FAILED_HOSTS="garbage"), 0)
+        # A partial plan with nothing to change on the hosts that passed skips the apply, and is red too.
+        nothing = {"DELIVERY": "true", "PLAN": "success", "HAS_CHANGES": "false", "APPLY": "skipped"}
+        self.assertEqual(self.gate(**nothing, FAILED_HOSTS="0"), 0)
+        self.assertNotEqual(self.gate(**nothing, FAILED_HOSTS="1"), 0)
 
     def test_an_unknown_delivery_answer_is_red(self) -> None:
         self.assertNotEqual(self.gate(DELIVERY=""), 0)
@@ -3910,6 +4190,18 @@ class ApplyHostKeyTests(unittest.TestCase):
                 self.assertEqual(logged(sandbox, "identities.log"), ["1"] * 4)
                 for call, dest in zip(sandbox.ssh_log(), (HOST_ONE, HOST_ONE, HOST_TWO, HOST_TWO)):
                     self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA), call)
+
+    def test_a_skipped_host_does_not_renumber_the_ones_after_it_so_each_keeps_its_own_key_file(self) -> None:
+        # Host 1 is skipped. Host 2 is still the second place of the list, so it is called
+        # with id.02 on both runs, and the key of the skipped host is never offered.
+        sandbox = self.sandbox({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY})
+        result = self.apply(sandbox, HOST_KEYS=keymap({HOST_ONE: HOST_ONE_KEY, HOST_TWO: HOST_TWO_KEY}), APPLY_HOSTS="2")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(sandbox.calls(HOST_ONE), 0)
+        self.assertEqual(sandbox.calls(HOST_TWO), 2)
+        for n in (1, 2):
+            self.assertEqual(identity_name(sandbox, HOST_TWO, n), "id.02")
+            self.assertEqual(offered(sandbox, HOST_TWO, n), HOST_TWO_KEY + "\n")
 
     def test_a_wrong_key_for_a_host_fails_the_apply_at_that_host_alone_and_prints_no_key(self) -> None:
         sandbox = self.sandbox()
