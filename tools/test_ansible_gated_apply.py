@@ -2028,7 +2028,7 @@ class ApplyTests(unittest.TestCase):
         self.assertEqual(sandbox.calls(HOST_ONE), 1)
 
     def test_a_rollback_refusal_names_the_planned_commit_and_the_hosts_last_applied_commit(self) -> None:
-        # The line carries the host's floor: the failure names both commits, so Rob need not
+        # The line carries the host's floor: the failure names both commits, so the owner need not
         # read the host's journal to learn which newer commit the host already ran.
         sandbox = Sandbox(self)
         sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "apply", "rollback", floor=f" floor={OTHER_SHA}"))
@@ -4846,6 +4846,16 @@ class DriftReportTests(unittest.TestCase):
                 self.assertNotEqual(result.code, 0)
                 self.assertEqual(result.outputs["outcome"], "failed")
                 self.assertEqual(result.outputs["detail"], "failed (1)")
+
+    def test_a_real_refusal_line_that_carries_the_hosts_floor_is_read_as_its_refusal(self) -> None:
+        # The host's floor rides the end of the line when the host refuses a rollback: the judge must still read it.
+        answer = (20, real_refusal("refused", 20, "check", "rollback", floor=f" floor={OTHER_SHA}"), "")
+        result = self.run_report(drift_answers(alpha=DRIFT_CLEAN, beta=answer))
+        self.assertNotEqual(result.code, 0)
+        self.assertEqual(result.outputs["outcome"], "refused")
+        self.assertEqual(result.outputs["detail"], "refused: rollback (1)")
+        self.assertIn("| refused: rollback |", result.summary)
+        self.assertNotIn("drift:", result.summary)
 
     def test_a_dash_count_never_makes_an_unchanged_host_clean_or_a_would_change_host_drift(self) -> None:
         cases = [(0, "unchanged"), (11, "would-change")]

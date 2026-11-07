@@ -132,13 +132,18 @@ CASES: list[Case] = [
     ),
     Case(
         "check judge regex drops the dash count of a refusal",
-        [Edit(ACTION, "changed=([0-9]+|-)$'", "changed=([0-9]+)$'")],
+        [Edit(ACTION, "changed=([0-9]+|-)( floor=[0-9a-f]{40})?$'", "changed=([0-9]+)( floor=[0-9a-f]{40})?$'")],
         [f"{DR}.test_a_real_refusal_line_with_no_count_is_read_as_its_refusal"],
     ),
     Case(
         "apply judge regex drops the dash count of a refusal",
-        [Edit(GATED, "changed=([0-9]+|-)$'", "changed=([0-9]+)$'")],
+        [Edit(GATED, "changed=([0-9]+|-)( floor=[0-9a-f]{40})?$'", "changed=([0-9]+)( floor=[0-9a-f]{40})?$'")],
         [f"{A}.test_a_real_refusal_line_with_no_count_fails_the_apply_with_its_reason_and_asks_no_second_run"],
+    ),
+    Case(
+        "check judge regex drops the floor of a rollback refusal",
+        [Edit(ACTION, "changed=([0-9]+|-)( floor=[0-9a-f]{40})?$'", "changed=([0-9]+|-)$'")],
+        [f"{DR}.test_a_real_refusal_line_that_carries_the_hosts_floor_is_read_as_its_refusal"],
     ),
     Case(
         "would-change with a dash count is read as drift",
