@@ -466,6 +466,15 @@ CASES: list[Case] = [
         [f"{A}.test_a_host_that_already_ran_a_newer_commit_refuses_and_the_apply_fails_with_the_reason"],
     ),
     Case(
+        "apply gate: a rollback refusal does not name the commits",
+        [Edit(GATED, '              if [ "$f_reason" = rollback ] && [ "$f_verdict" = refused ] && [ "$f_exit" = 20 ]; then', '              if false; then')],
+        [
+            f"{A}.test_a_rollback_refusal_names_the_planned_commit_and_the_hosts_last_applied_commit",
+            f"{A}.test_a_rollback_refusal_with_no_floor_names_the_planned_commit_and_says_where_the_floor_is",
+            f"{PA}.test_a_pushed_host_that_refuses_a_rollback_names_both_commits_when_its_line_carries_the_floor",
+        ],
+    ),
+    Case(
         "apply gate: environment term joined with or in the apply if",
         [Edit(GATED, "      && inputs.environment != ''\n", "      || inputs.environment != ''\n")],
         [f"{S}.test_the_apply_job_is_gated"],
