@@ -325,7 +325,7 @@ CASES: list[Case] = [
         "apply key copies removed only on the way out that succeeds",
         [
             Edit(GATED, "          trap 'rm -f \"$work/id\" \"$work/known_hosts\" \"$work\"/id.*' EXIT\n", ""),
-            Edit(GATED, '          echo "Applied commit $SHA on $i host(s)."\n', '          rm -f "$work/id" "$work/known_hosts"\n          echo "Applied commit $SHA on $i host(s)."\n'),
+            Edit(GATED, '          echo "Applied commit $SHA on $applied host(s)."\n', '          rm -f "$work/id" "$work/known_hosts"\n          echo "Applied commit $SHA on $applied host(s)."\n'),
         ],
         [f"{A}.test_the_apply_key_and_known_hosts_are_removed_on_every_way_out_a_refusal_included"],
     ),
@@ -406,12 +406,12 @@ CASES: list[Case] = [
     ),
     Case(
         "apply gate: no-change verdict when a host would change",
-        [Edit(ACTION, '        if [ "$changed" -eq 0 ] && [ "$clean" -eq "$total" ] && [ "$total" -ge 1 ]; then', '        if [ "$total" -ge 1 ]; then')],
+        [Edit(ACTION, '        if [ "$changed" -eq 0 ] && { [ "$clean" -eq "$total" ] || [ "$partial" = true ]; } && [ "$total" -ge 1 ]; then', '        if [ "$total" -ge 1 ]; then')],
         [f"{P}.test_one_host_with_changes_gives_has_changes_and_shows_its_diff"],
     ),
     Case(
         "apply gate: a failed host does not fail the plan",
-        [Edit(ACTION, '        if [ "$failed" -gt 0 ]; then\n          echo "::error::$first"', '        if false; then\n          echo "::error::$first"')],
+        [Edit(ACTION, '        if [ "$failed" -gt 0 ] && [ "$partial" != true ]; then\n          echo "::error::$first"', '        if false; then\n          echo "::error::$first"')],
         [f"{P}.test_a_host_that_fails_fails_the_job_and_asks_for_no_approval"],
     ),
     # The refusals of the apply guard, one case each.
@@ -1105,7 +1105,7 @@ CASES: list[Case] = [
     ),
     Case(
         "log line: the table is not printed to the log",
-        [Edit(ACTION, "        printf '| Host | Result | Note |\\n| --- | --- | --- |\\n'\n        cat \"$rows\"\n\n        if [ \"$failed\" -gt 0 ]; then", "        if [ \"$failed\" -gt 0 ]; then")],
+        [Edit(ACTION, "        printf '| Host | Result | Note |\\n| --- | --- | --- |\\n'\n        cat \"$rows\"\n\n        if [ \"$failed\" -gt 0 ] && [ \"$partial\" != true ]; then", "        if [ \"$failed\" -gt 0 ] && [ \"$partial\" != true ]; then")],
         [f"{RL}.test_the_table_is_on_the_log_and_the_diff_is_not"],
     ),
     Case(
@@ -1468,13 +1468,23 @@ CASES: list[Case] = [
         [Edit(GATED, "      ${{ !cancelled()\n      && needs.discover.result == 'success'\n      && (needs.lint.result == 'success' || needs.lint.result == 'skipped')\n      && (needs.shard.result == 'success' || needs.shard.result == 'skipped')\n      && needs.discover.outputs.delivery == 'true' }}", "      ${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}")],
         [f"{S}.test_the_plan_job_runs_only_for_delivery_and_only_after_every_need_succeeded_or_was_skipped"],
     ),
-    # workspace#2857: one host failing its plan no longer blocks the apply on the others
-    # (skip-failed-hosts, off by default). workspace#2695 is pinned by the gate case below and
+    # One host failing its plan no longer blocks the apply on the others
+    # (skip-failed-hosts, off by default). The rule that a skipped apply is not accepted is pinned by the gate case below and
     # by the concurrency cases above (the apply group never cancels, no workflow-level group).
     Case(
         "skip-failed-hosts: the report step still exits 1 on a failed host when opted in",
         [Edit(ACTION, 'if [ "$failed" -gt 0 ] && [ "$partial" != true ]; then', 'if [ "$failed" -gt 0 ]; then')],
         [f"{P}.test_skip_failed_hosts_leaves_the_failed_host_out_and_a_partial_plan_with_nothing_to_change_asks_for_no_approval"],
+    ),
+    Case(
+        "skip-failed-hosts: a plan in which no host passed is treated as partial and does not fail",
+        [Edit(ACTION, ' && [ "$failed" -gt 0 ] && [ "$failed" -lt "$total" ]; then', ' && [ "$failed" -gt 0 ]; then')],
+        [f"{P}.test_skip_failed_hosts_still_fails_when_no_host_passed"],
+    ),
+    Case(
+        "skip-failed-hosts: the drift check honours the opt-in and lets a failed host through",
+        [Edit(ACTION, ' && [ "$FAIL_ON_CHANGES" != true ] && [ "$failed" -gt 0 ]', ' && [ "$failed" -gt 0 ]')],
+        [f"{P}.test_the_drift_check_ignores_skip_failed_hosts"],
     ),
     Case(
         "skip-failed-hosts: the report step lists a failed host among the hosts to apply",
@@ -1522,7 +1532,7 @@ CASES: list[Case] = [
         ["GateTests.test_a_delivery_run_that_skipped_hosts_is_red_while_the_apply_of_the_others_succeeded"],
     ),
     Case(
-        "gate accepts a skipped or cancelled apply when the plan found changes (workspace#2695)",
+        "gate accepts a skipped or cancelled apply when the plan found changes",
         [Edit(GATED, '              else\n                expect apply "$APPLY" success\n              fi', "              else\n                :\n              fi")],
         ["GateTests.test_a_delivery_run_whose_apply_was_skipped_or_cancelled_is_red_even_though_the_plan_found_changes"],
     ),

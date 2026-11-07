@@ -2402,7 +2402,7 @@ class GateTests(unittest.TestCase):
         self.assertNotEqual(self.gate(**delivery, DRY_RUN="true", HAS_CHANGES="true", APPLY="success"), 0)
 
     def test_a_delivery_run_whose_apply_was_skipped_or_cancelled_is_red_even_though_the_plan_found_changes(self) -> None:
-        # workspace#2695: a newer pending apply replaces an older pending one, which ends
+        # A newer pending apply replaces an older pending one, which ends
         # cancelled, and an apply that never started ends skipped. Neither may leave the run green.
         delivery = {"DELIVERY": "true", "PLAN": "success", "HAS_CHANGES": "true"}
         for result in ("skipped", "cancelled", "failure", ""):
