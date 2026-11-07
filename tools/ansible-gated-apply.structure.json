@@ -444,7 +444,7 @@
             },
             "id": "pin",
             "name": "Resolve the commit this workflow was called at",
-            "run-sha256": "4ac3ac8b4665a8aa9be59666a1118fbf50bc60c20857c59a38da56b74a4bcada"
+            "run-sha256": "6863597683ebe953210c00c3887ac1cf9c702f3cc5c30d07db1e42bc23598838"
           },
           {
             "name": "Check out the shared actions at that commit",
@@ -877,7 +877,7 @@
             },
             "id": "pin",
             "name": "Resolve the commit this workflow was called at",
-            "run-sha256": "4ac3ac8b4665a8aa9be59666a1118fbf50bc60c20857c59a38da56b74a4bcada"
+            "run-sha256": "6863597683ebe953210c00c3887ac1cf9c702f3cc5c30d07db1e42bc23598838"
           },
           {
             "name": "Check out the shared actions at that commit",

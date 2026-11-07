@@ -334,6 +334,16 @@ and nothing falls back to the default branch:
    reason for the `actions: read` grant. `github.job_workflow_sha` is not used:
    it is empty in a reusable workflow here, and an empty `ref` makes the checkout
    take the default branch.
+
+   1a. A pin by tag must be a signed annotated tag. A caller pinned to a tag
+   has `ref: refs/tags/...` in that record, and the id it names must then be a
+   tag object with a verified signature, which is peeled to its commit. A
+   lightweight tag names the commit itself, so no tag object answers for the id
+   and there is no signature to test: the step refuses it and never reads the
+   id as a plain commit. A sha or branch pin, a `ref` that is empty or absent,
+   and this repository's own local call (`refs/heads/...`) are not affected
+   here; a caller's sha or branch pin is refused by `CI-5` in `branchLeft/standards`
+   (reusable workflows are pinned to an exact tag), not by this check.
 2. The path `.gw` must not exist, so no file of the caller can sit where the
    action is read from.
 3. After the checkout, `git rev-parse HEAD` in `.gw` must equal that commit and
