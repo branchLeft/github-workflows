@@ -215,16 +215,16 @@ except (OSError, yaml.YAMLError):
 """
 
 
-def summary_line(verdict: str, code: int, mode: str, commit: str, changed: int | str, reason: str = "ok") -> str:
+def summary_line(verdict: str, code: int, mode: str, commit: str, changed: int | str, reason: str = "ok", floor: str = "") -> str:
     return (
         f"pull-trigger verdict={verdict} exit={code} reason={reason} mode={mode} "
-        f"commit={commit} playbook=ansible/playbooks/host.yml changed={changed}\n"
+        f"commit={commit} playbook=ansible/playbooks/host.yml changed={changed}{floor}\n"
     )
 
 
-def real_refusal(verdict: str, code: int, mode: str, reason: str) -> str:
+def real_refusal(verdict: str, code: int, mode: str, reason: str, floor: str = "") -> str:
     """The line pull_trigger.py prints for a verdict that carries no count: changed=-, as every refusal, busy and failure does."""
-    return summary_line(verdict, code, mode, "@SHA@", "-", reason)
+    return summary_line(verdict, code, mode, "@SHA@", "-", reason, floor)
 
 
 class Result:
@@ -2026,6 +2026,56 @@ class ApplyTests(unittest.TestCase):
         self.assertIn("reason rollback", result.log)
         self.assertNotIn("Applied commit", result.log)
         self.assertEqual(sandbox.calls(HOST_ONE), 1)
+
+    def test_a_rollback_refusal_names_the_planned_commit_and_the_hosts_last_applied_commit(self) -> None:
+        # The line carries the host's floor: the failure names both commits, so the owner need not
+        # read the host's journal to learn which newer commit the host already ran.
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "apply", "rollback", floor=f" floor={OTHER_SHA}"))
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("reason rollback, exit 20.", result.log)
+        self.assertIn(f"The planned commit is {SHA}.", result.log)
+        self.assertIn(f"The host's last applied commit is {OTHER_SHA}.", result.log)
+        self.assertEqual(sandbox.calls(HOST_ONE), 1)
+
+    def test_a_rollback_refusal_with_no_floor_names_the_planned_commit_and_says_where_the_floor_is(self) -> None:
+        # A host that has not been updated to send the floor behaves as before, and the
+        # message still names the planned commit and where to read the other.
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "apply", "rollback"))
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn(f"The planned commit is {SHA}.", result.log)
+        self.assertIn("The host's last applied commit is in the host's journal.", result.log)
+
+    def test_a_malformed_floor_fails_closed_and_is_never_echoed(self) -> None:
+        cases = {
+            "too short": f" floor={OTHER_SHA[:39]}",
+            "too long": f" floor={OTHER_SHA}b",
+            "upper case": f" floor={OTHER_SHA.upper()}",
+            "doubled": f" floor={OTHER_SHA} floor={OTHER_SHA}",
+            "empty": " floor=",
+            "text": " floor=$(id)",
+        }
+        for name, floor in cases.items():
+            with self.subTest(case=name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "apply", "rollback", floor=floor))
+                result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("did not answer with one summary line", result.log)
+                self.assertNotIn("The host's last applied commit is", result.log)
+                self.assertEqual(sandbox.calls(HOST_ONE), 1)
+
+    def test_a_floor_on_a_refusal_of_another_reason_is_accepted_and_not_named(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "apply", "not-on-main", floor=f" floor={OTHER_SHA}"))
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("reason not-on-main, exit 20.", result.log)
+        self.assertNotIn("The planned commit is", result.log)
+        self.assertNotIn(OTHER_SHA, result.log)
 
     def test_a_real_refusal_line_with_no_count_fails_the_apply_with_its_reason_and_asks_no_second_run(self) -> None:
         sandbox = Sandbox(self)
@@ -4797,6 +4847,16 @@ class DriftReportTests(unittest.TestCase):
                 self.assertEqual(result.outputs["outcome"], "failed")
                 self.assertEqual(result.outputs["detail"], "failed (1)")
 
+    def test_a_real_refusal_line_that_carries_the_hosts_floor_is_read_as_its_refusal(self) -> None:
+        # The host's floor rides the end of the line when the host refuses a rollback: the judge must still read it.
+        answer = (20, real_refusal("refused", 20, "check", "rollback", floor=f" floor={OTHER_SHA}"), "")
+        result = self.run_report(drift_answers(alpha=DRIFT_CLEAN, beta=answer))
+        self.assertNotEqual(result.code, 0)
+        self.assertEqual(result.outputs["outcome"], "refused")
+        self.assertEqual(result.outputs["detail"], "refused: rollback (1)")
+        self.assertIn("| refused: rollback |", result.summary)
+        self.assertNotIn("drift:", result.summary)
+
     def test_a_dash_count_never_makes_an_unchanged_host_clean_or_a_would_change_host_drift(self) -> None:
         cases = [(0, "unchanged"), (11, "would-change")]
         for code, verdict in cases:
@@ -5958,7 +6018,7 @@ class RunWorkflowStepsTests(unittest.TestCase):
 PUSH_PLAYBOOK = "ansible/playbooks/pushed.yml"
 PUSH_RE = (
     "^push-receiver verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=(check|apply) "
-    "commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)$"
+    "commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+)( floor=[0-9a-f]{40})?$"
 )
 PLAYBOOK_RE = "^[A-Za-z0-9_][A-Za-z0-9_./-]*$"
 PUSH_STUB_DIR = REPO / ".github/fixtures/ansible-gated-apply/stub"
@@ -5991,10 +6051,10 @@ exit "$(cat "$base.rc")"
 """
 
 
-def push_line(verdict: str, code: int, mode: str, commit: str, changed: int, reason: str = "ok") -> str:
+def push_line(verdict: str, code: int, mode: str, commit: str, changed: int, reason: str = "ok", floor: str = "") -> str:
     return (
         f"push-receiver verdict={verdict} exit={code} reason={reason} mode={mode} "
-        f"commit={commit} playbook={PUSH_PLAYBOOK} changed={changed}\n"
+        f"commit={commit} playbook={PUSH_PLAYBOOK} changed={changed}{floor}\n"
     )
 
 
@@ -6474,6 +6534,24 @@ class PushApplyTests(unittest.TestCase):
         self.assertNotEqual(result.code, 0)
         self.assertIn("reason rollback", result.log)
         self.assertEqual(sandbox.calls(HOST_TWO), 1)
+
+    def test_a_pushed_host_that_refuses_a_rollback_names_both_commits_when_its_line_carries_the_floor(self) -> None:
+        sandbox = push_sandbox(self)
+        line = push_line("refused", 20, "apply", "@SHA@", 0, "rollback", floor=f" floor={OTHER_SHA}")
+        self.pushed_host(sandbox, (20, line, ""), None)
+        result = self.apply(sandbox)
+        self.assertNotEqual(result.code, 0)
+        self.assertIn(f"The planned commit is {self.ws.head}.", result.log)
+        self.assertIn(f"The host's last applied commit is {OTHER_SHA}.", result.log)
+        self.assertEqual(sandbox.calls(HOST_TWO), 1)
+
+    def test_a_pushed_host_that_refuses_a_rollback_with_no_floor_names_the_planned_commit(self) -> None:
+        sandbox = push_sandbox(self)
+        self.pushed_host(sandbox, (20, push_line("refused", 20, "apply", "@SHA@", 0, "rollback"), ""), None)
+        result = self.apply(sandbox)
+        self.assertNotEqual(result.code, 0)
+        self.assertIn(f"The planned commit is {self.ws.head}.", result.log)
+        self.assertIn("The host's last applied commit is in the host's journal.", result.log)
 
     def test_a_push_needs_the_jump_host_and_its_key_and_asks_no_host_without_them(self) -> None:
         sandbox = push_sandbox(self)
