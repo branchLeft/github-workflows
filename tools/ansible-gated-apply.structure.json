@@ -95,6 +95,11 @@
         "description": "The commit to ask about, 40 lowercase hex digits.",
         "required": true
       },
+      "skip-failed-hosts": {
+        "default": "false",
+        "description": "false (the default) keeps the plan all-or-nothing: one host that fails its check fails the step. true lets the plan go on without the hosts that failed: the step still judges every host the same way, but fails only when no host passed, and apply-hosts names the hosts that did. Ignored when fail-on-changes is true, which is the drift check and judges every host as before.",
+        "required": false
+      },
       "total-timeout": {
         "default": "",
         "description": "Empty (the default) puts no bound on the hosts together. A whole number of minutes is the time all the host calls share: each call is stopped at the smaller of host-timeout and what is left, and a host reached after the time is spent is not asked and is judged as no-answer. The caller's job bound must sit above it.",
@@ -108,12 +113,20 @@
     },
     "name": "Check every host in check mode",
     "outputs": {
+      "apply-hosts": {
+        "description": "The places in the hosts list, as numbers from 1 and separated by a space, of the hosts whose answer was clean or would change, in ascending order. Numbers and not names, because a host name is a secret and a job output that holds one is dropped. Without skip-failed-hosts it is every host whenever the step succeeds.",
+        "value": "${{ steps.report.outputs.apply_hosts }}"
+      },
       "detail": {
         "description": "The outcome in words with counts, and no host name. Empty if the step stopped before it could judge.",
         "value": "${{ steps.report.outputs.detail }}"
       },
+      "failed-hosts": {
+        "description": "The number of hosts whose answer was a failure of any kind. With skip-failed-hosts it can be above 0 on a step that succeeded.",
+        "value": "${{ steps.report.outputs.failed_hosts }}"
+      },
       "has-changes": {
-        "description": "false only when every host answered clean for this commit; true for every other outcome.",
+        "description": "false only when every host answered clean for this commit, or, with skip-failed-hosts, when every host that passed answered clean; true for every other outcome.",
         "value": "${{ steps.report.outputs.has_changes }}"
       },
       "hosts-digest": {
@@ -153,12 +166,13 @@
             "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
             "PUSH_REPO_PRIVATE": "${{ inputs.push-repo-private }}",
             "SHA": "${{ inputs.sha }}",
+            "SKIP_FAILED_HOSTS": "${{ inputs.skip-failed-hosts }}",
             "SSH_KEY": "${{ inputs.check-key }}",
             "TOTAL_TIMEOUT_MINUTES": "${{ inputs.total-timeout }}"
           },
           "id": "validate",
           "name": "Validate the host list and the inputs",
-          "run-sha256": "a81b29e43b86a2678594bf7250d231b1ecf178f88355fe5fd8e80b2f09b7158d",
+          "run-sha256": "045dfba08c20818bf5a16982e93592fc37b4f5cd5538c86cae08330b9d7d5434",
           "shell": "bash"
         },
         {
@@ -196,11 +210,12 @@
             "JUMP2_HOST": "${{ inputs.jump2-host }}",
             "JUMP_HOST": "${{ inputs.jump-host }}",
             "SHA": "${{ inputs.sha }}",
+            "SKIP_FAILED_HOSTS": "${{ inputs.skip-failed-hosts }}",
             "SSH_KEY": "${{ inputs.check-key }}"
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "0665a5ba6fe17c6bb5765e8d8af4c6b2a42b8bba1f89bcc973fdeb873cb6d505",
+          "run-sha256": "29247322cfb88996f63ce4414a8d97df1e32444e84a7330f179b15aa8e525519",
           "shell": "bash"
         }
       ],
@@ -592,6 +607,7 @@
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "IS_FORK": "${{ github.event.repository.fork }}",
               "JUMP2_HOSTS": "${{ secrets.ssh_jump2_hosts }}",
+              "PLANNED_APPLY_HOSTS": "${{ needs.plan.outputs.apply_hosts }}",
               "PLANNED_DIGEST": "${{ needs.plan.outputs.hosts_digest }}",
               "PLANNED_JUMP2_DIGEST": "${{ needs.plan.outputs.jump2_hosts_digest }}",
               "PLANNED_PUSH_DIGEST": "${{ needs.plan.outputs.push_hosts_digest }}",
@@ -600,11 +616,12 @@
               "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
               "PUSH_REPO_PRIVATE": "${{ github.event.repository.private }}",
               "REF": "${{ github.ref }}",
-              "SHA": "${{ github.sha }}"
+              "SHA": "${{ github.sha }}",
+              "SKIP_FAILED_HOSTS": "${{ inputs.skip-failed-hosts }}"
             },
             "id": "guard",
             "name": "Refuse unless this is the approved, planned push",
-            "run-sha256": "0f4012b035699ef3cc5b90a5bc3e06e67a67fcb4a95d78e086794e3258b4f902"
+            "run-sha256": "a54e649b9f85d3539bb0d834bc56acc94479d8739509fbddd597be262cb8b7d2"
           },
           {
             "if": "steps.guard.outputs.push == 'true'",
@@ -617,6 +634,7 @@
           },
           {
             "env": {
+              "APPLY_HOSTS": "${{ steps.guard.outputs.apply_hosts }}",
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "HOST_KEYS": "${{ secrets.ssh_host_apply_keys }}",
               "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
@@ -632,7 +650,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "96d32c3ef5c378ceb51479e0b964c7ecce38ea114fb48445e083472a9316ee87"
+            "run-sha256": "094afe0224cf401684c37191fd26322aaae95c3b2eb38a48247263bedfb6f9f7"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -655,6 +673,7 @@
               "DELIVERY": "${{ needs.discover.outputs.delivery }}",
               "DISCOVER": "${{ needs.discover.result }}",
               "DRY_RUN": "${{ inputs.dry-run }}",
+              "FAILED_HOSTS": "${{ needs.plan.outputs.failed_hosts }}",
               "HAS_CHANGES": "${{ needs.plan.outputs.has_changes }}",
               "LINT": "${{ needs.lint.result }}",
               "PLAN": "${{ needs.plan.result }}",
@@ -662,7 +681,7 @@
               "SHARD": "${{ needs.shard.result }}"
             },
             "name": "Require every job to have ended as expected",
-            "run-sha256": "c56d9e59022af7b036bfe32bb08cb960c85c157d7fb7afe23805dece08589d18"
+            "run-sha256": "e98a02d31a51a7ef8c80d6b33275941b0c781b8280fb31f91999606ad1949365"
           }
         ],
         "timeout-minutes": 5
@@ -816,6 +835,8 @@
           "shard"
         ],
         "outputs": {
+          "apply_hosts": "${{ steps.ssh.outputs.apply-hosts }}",
+          "failed_hosts": "${{ steps.ssh.outputs.failed-hosts }}",
           "has_changes": "${{ steps.ssh.outputs.has-changes }}",
           "hosts_digest": "${{ steps.ssh.outputs.hosts-digest }}",
           "jump2_hosts_digest": "${{ steps.ssh.outputs.jump2-hosts-digest }}",
@@ -919,6 +940,7 @@
               "push-playbook": "${{ inputs.push-playbook }}",
               "push-repo-private": "${{ github.event.repository.private }}",
               "sha": "${{ steps.guard.outputs.sha }}",
+              "skip-failed-hosts": "${{ inputs.skip-failed-hosts }}",
               "working-directory": "${{ inputs.working-directory }}"
             }
           }
@@ -1070,6 +1092,12 @@
             "description": "Each Molecule shard job, one per role, is stopped after this many minutes.",
             "required": false,
             "type": "number"
+          },
+          "skip-failed-hosts": {
+            "default": false,
+            "description": "false (the default) keeps the plan all-or-nothing: one host that fails its check fails the plan, and no host is applied. true lets a delivery go on without the hosts that failed their plan: the plan still judges every host the same way, the apply (after its approval) covers only the hosts that passed, the failed hosts get nothing until a later plan finds them clean, and the run still ends red while any host was skipped. Leave it false when a commit can depend on an order across hosts (a role on one host that another host needs), because a skipped host breaks that order. A plan in which no host passed still fails.",
+            "required": false,
+            "type": "boolean"
           },
           "skip-rerun-after-merge-group": {
             "default": false,

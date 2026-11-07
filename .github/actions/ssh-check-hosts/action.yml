@@ -157,13 +157,36 @@ inputs:
       that would change, or any answer that is not a clean one, fails the step.
     required: false
     default: 'false'
+  skip-failed-hosts:
+    description: >-
+      false (the default) keeps the plan all-or-nothing: one host that fails its
+      check fails the step. true lets the plan go on without the hosts that failed:
+      the step still judges every host the same way, but fails only when no host
+      passed, and apply-hosts names the hosts that did. Ignored when fail-on-changes
+      is true, which is the drift check and judges every host as before.
+    required: false
+    default: 'false'
 
 outputs:
   has-changes:
     description: >-
-      false only when every host answered clean for this commit; true for every
+      false only when every host answered clean for this commit, or, with
+      skip-failed-hosts, when every host that passed answered clean; true for every
       other outcome.
     value: ${{ steps.report.outputs.has_changes }}
+  apply-hosts:
+    description: >-
+      The places in the hosts list, as numbers from 1 and separated by a space,
+      of the hosts whose answer was clean or would change, in ascending order.
+      Numbers and not names, because a host name is a secret and a job output
+      that holds one is dropped. Without skip-failed-hosts it is every host
+      whenever the step succeeds.
+    value: ${{ steps.report.outputs.apply_hosts }}
+  failed-hosts:
+    description: >-
+      The number of hosts whose answer was a failure of any kind. With
+      skip-failed-hosts it can be above 0 on a step that succeeded.
+    value: ${{ steps.report.outputs.failed_hosts }}
   hosts-digest:
     description: The SHA-256 of the validated host list, so a later job can prove it uses the same hosts.
     value: ${{ steps.validate.outputs.hosts_digest }}
@@ -201,6 +224,7 @@ runs:
         DRY_RUN: ${{ inputs.dry-run }}
         DRY_RUN_STUB: ${{ inputs.dry-run-stub }}
         FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
+        SKIP_FAILED_HOSTS: ${{ inputs.skip-failed-hosts }}
         HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout }}
         TOTAL_TIMEOUT_MINUTES: ${{ inputs.total-timeout }}
         SSH_KEY: ${{ inputs.check-key }}
@@ -226,6 +250,7 @@ runs:
         [[ "$SHA" =~ $sha_re ]] || fail "The commit is not 40 lowercase hex digits."
         case "$DRY_RUN" in true | false) ;; *) fail "dry-run must be true or false." ;; esac
         case "$FAIL_ON_CHANGES" in true | false) ;; *) fail "fail-on-changes must be true or false." ;; esac
+        case "$SKIP_FAILED_HOSTS" in true | false) ;; *) fail "skip-failed-hosts must be true or false." ;; esac
         [[ "$HOST_TIMEOUT_MINUTES" =~ $minutes_re ]] || fail "host-timeout must be a whole number of minutes, at least 1."
         if [ -n "$TOTAL_TIMEOUT_MINUTES" ]; then
           [[ "$TOTAL_TIMEOUT_MINUTES" =~ $minutes_re ]] || fail "total-timeout must be empty or a whole number of minutes, at least 1."
@@ -650,6 +675,7 @@ runs:
         ENVIRONMENT: ${{ inputs.environment }}
         DRY_RUN: ${{ inputs.dry-run }}
         FAIL_ON_CHANGES: ${{ inputs.fail-on-changes }}
+        SKIP_FAILED_HOSTS: ${{ inputs.skip-failed-hosts }}
         SSH_KEY: ${{ inputs.check-key }}
         HOST_KEYS: ${{ inputs.host-check-keys }}
         JUMP_HOST: ${{ inputs.jump-host }}
@@ -721,6 +747,10 @@ runs:
         changed=0
         failed=0
         total_bytes=0
+        # The places, in the hosts list, of the hosts whose verdict is clean or
+        # changes. A name is a secret and a job output that holds one is dropped, so
+        # the apply job is told numbers, and checks them against the host count.
+        apply_hosts=""
 
         for destfile in "$plan_dir"/*.dest; do
           base="${destfile%.dest}"
@@ -887,8 +917,14 @@ runs:
           fi
 
           case "$verdict" in
-            clean) clean=$((clean + 1)) ;;
-            changes) changed=$((changed + 1)) ;;
+            clean)
+              clean=$((clean + 1))
+              apply_hosts="${apply_hosts:+$apply_hosts }$((10#$n))"
+              ;;
+            changes)
+              changed=$((changed + 1))
+              apply_hosts="${apply_hosts:+$apply_hosts }$((10#$n))"
+              ;;
             *) failed=$((failed + 1)) ;;
           esac
           printf '%s\n' "$kind" >> "$kinds"
@@ -931,6 +967,7 @@ runs:
         # The outcome names the kind of each answer that was not clean, with a
         # count and never a host name, for the summary and for an alert.
         detail=""
+        failed_detail=""
         while read -r count name; do
           case "$name" in
             ok) continue ;;
@@ -942,6 +979,10 @@ runs:
             *) part="$name ($count)" ;;
           esac
           detail="${detail:+$detail; }$part"
+          # A host that would change is not a failure: the kinds of the failed hosts alone.
+          if [ "$name" != drift ]; then
+            failed_detail="${failed_detail:+$failed_detail; }$part"
+          fi
         done < <(sort "$kinds" | uniq -c)
         others=$(grep -v '^ok$' "$kinds" | sed 's/^refused: .*/refused/' | sort -u || true)
         other_count=$(printf '%s' "$others" | grep -c . || true)
@@ -952,11 +993,25 @@ runs:
         esac
 
         not_clean=$((total - clean))
+        # A partial plan: skip-failed-hosts is on, this is not the drift check, some
+        # host failed and some host passed. Every host was judged as it always is;
+        # the failed hosts are left out of the apply and the rest go on. A plan in
+        # which no host passed is still a failure.
+        partial=false
+        if [ "$SKIP_FAILED_HOSTS" = true ] && [ "$FAIL_ON_CHANGES" != true ] && [ "$failed" -gt 0 ] && [ "$failed" -lt "$total" ]; then
+          partial=true
+        fi
         if [ "$FAIL_ON_CHANGES" = true ]; then
           if [ "$outcome" = ok ]; then
             first="No drift: every host reports no change for commit $SHA."
           else
             first="Not clean at commit $SHA: $not_clean of $total hosts not clean ($detail)."
+          fi
+        elif [ "$partial" = true ]; then
+          if [ "$changed" -eq 0 ]; then
+            first="Partial plan: $failed of $total hosts failed their plan and are skipped ($failed_detail); no host that passed would change for commit $SHA, so the apply is skipped and no approval is requested."
+          else
+            first="Partial plan: $failed of $total hosts failed their plan and are skipped ($failed_detail); $changed host(s) would change for commit $SHA, so the apply waits for the approval of environment $ENVIRONMENT and covers only the hosts that passed."
           fi
         elif [ "$failed" -gt 0 ]; then
           first="Plan failed: $not_clean of $total hosts not clean ($detail), so no approval is requested for commit $SHA."
@@ -977,13 +1032,15 @@ runs:
         cat "$summary" >> "$GITHUB_STEP_SUMMARY"
         echo "outcome=$outcome" >> "$GITHUB_OUTPUT"
         echo "detail=${detail:-none}" >> "$GITHUB_OUTPUT"
+        echo "apply_hosts=$apply_hosts" >> "$GITHUB_OUTPUT"
+        echo "failed_hosts=$failed" >> "$GITHUB_OUTPUT"
 
         # The table goes to the log too. The rows hold a label, a result and a
         # fixed note; the diffs stay in the job summary only.
         printf '| Host | Result | Note |\n| --- | --- | --- |\n'
         cat "$rows"
 
-        if [ "$failed" -gt 0 ]; then
+        if [ "$failed" -gt 0 ] && [ "$partial" != true ]; then
           echo "::error::$first"
           exit 1
         fi
@@ -991,7 +1048,13 @@ runs:
           echo "::error::$first"
           exit 1
         fi
-        if [ "$changed" -eq 0 ] && [ "$clean" -eq "$total" ] && [ "$total" -ge 1 ]; then
+        # Nothing to change on any host that passed: every host clean, or, in a
+        # partial plan, every host that passed clean.
+        if [ "$changed" -eq 0 ] && { [ "$clean" -eq "$total" ] || [ "$partial" = true ]; } && [ "$total" -ge 1 ]; then
           echo "has_changes=false" >> "$GITHUB_OUTPUT"
+        fi
+        if [ "$partial" = true ]; then
+          echo "::warning::$first"
+          exit 0
         fi
         echo "$first"

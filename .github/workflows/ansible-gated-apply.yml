@@ -24,6 +24,12 @@ name: Ansible gated apply
 # waiting is never replaced: a newer apply queues behind it. The drift check
 # shares the plan group, since both ask the same host lock.
 #
+# A host that fails its plan fails the plan, and nothing is applied, unless the
+# caller sets skip-failed-hosts: then the plan goes on without the failed hosts,
+# the apply covers only the hosts that passed (their places in the host list are
+# checked by the apply guard), and the checks job stays red while any host was
+# skipped. README: "When one host fails its plan".
+#
 # CI never holds a root shell. The only host access is an SSH key whose
 # authorized_keys line on the host runs one forced command, and that command
 # takes one commit id and nothing else. The plan job holds the check key. The
@@ -155,6 +161,20 @@ on:
         type: string
         required: false
         default: ''
+      skip-failed-hosts:
+        description: >-
+          false (the default) keeps the plan all-or-nothing: one host that fails
+          its check fails the plan, and no host is applied. true lets a delivery
+          go on without the hosts that failed their plan: the plan still judges
+          every host the same way, the apply (after its approval) covers only the
+          hosts that passed, the failed hosts get nothing until a later plan finds
+          them clean, and the run still ends red while any host was skipped. Leave
+          it false when a commit can depend on an order across hosts (a role on one
+          host that another host needs), because a skipped host breaks that order.
+          A plan in which no host passed still fails.
+        type: boolean
+        required: false
+        default: false
     secrets:
       ssh_hosts:
         description: >-
@@ -666,6 +686,8 @@ jobs:
       hosts_digest: ${{ steps.ssh.outputs.hosts-digest }}
       push_hosts_digest: ${{ steps.ssh.outputs.push-hosts-digest }}
       jump2_hosts_digest: ${{ steps.ssh.outputs.jump2-hosts-digest }}
+      apply_hosts: ${{ steps.ssh.outputs.apply-hosts }}
+      failed_hosts: ${{ steps.ssh.outputs.failed-hosts }}
     steps:
       # Whether any host is pushed to. A step condition cannot read a secret, so
       # this step reads it and says so in an output. Everything else about the
@@ -843,6 +865,7 @@ jobs:
           working-directory: ${{ inputs.working-directory }}
           host-timeout: ${{ inputs.host-timeout-minutes }}
           environment: ${{ inputs.environment }}
+          skip-failed-hosts: ${{ inputs.skip-failed-hosts }}
 
   # The apply job. Its environment is the deployment gate: GitHub holds the job
   # until the environment's required reviewers approve it, and only then does it
@@ -881,6 +904,8 @@ jobs:
           PLANNED_SHA: ${{ needs.plan.outputs.sha }}
           HAS_CHANGES: ${{ needs.plan.outputs.has_changes }}
           PLANNED_DIGEST: ${{ needs.plan.outputs.hosts_digest }}
+          PLANNED_APPLY_HOSTS: ${{ needs.plan.outputs.apply_hosts }}
+          SKIP_FAILED_HOSTS: ${{ inputs.skip-failed-hosts }}
           HOSTS: ${{ secrets.ssh_hosts }}
           PLANNED_PUSH_DIGEST: ${{ needs.plan.outputs.push_hosts_digest }}
           PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}
@@ -905,13 +930,41 @@ jobs:
           printf '%s' "$PLANNED_SHA" | grep -Eq '^[0-9a-f]{40}$' || fail "The planned commit is not 40 lowercase hex digits."
           [ "$PLANNED_SHA" = "$SHA" ] || fail "The planned commit differs from this run's commit."
           list=""
+          host_count=0
           while IFS= read -r dest; do
             [ -n "$dest" ] || continue
             list="${list:+$list }$dest"
+            host_count=$((host_count + 1))
           done <<< "$HOSTS"
           digest=$(printf '%s' "$list" | shasum -a 256 | cut -d ' ' -f 1)
           printf '%s' "$PLANNED_DIGEST" | grep -Eq '^[0-9a-f]{64}$' || fail "The planned host digest is missing."
           [ "$digest" = "$PLANNED_DIGEST" ] || fail "The hosts are not the hosts that were planned."
+          # The hosts to apply, as the places in the hosts list that the plan found
+          # clean or changing (the digest above proves the list is the planned one, so
+          # a number means the same host as at plan time). The list is held to digits,
+          # strictly ascending (so no repeat), none above the host count and not empty.
+          # Unless the caller opted in to skip-failed-hosts, it must be every host, so a
+          # plan that was not opted in can never produce a partial apply.
+          case "$SKIP_FAILED_HOSTS" in true | false) ;; *) fail "skip-failed-hosts must be true or false." ;; esac
+          # The pattern needs at least one number, so an empty list is refused here too.
+          numbers_re='^[1-9][0-9]*( [1-9][0-9]*)*$'
+          [[ "$PLANNED_APPLY_HOSTS" =~ $numbers_re ]] || fail "The planned apply hosts are not a list of one or more host numbers."
+          previous=0
+          apply_hosts=""
+          for number in $PLANNED_APPLY_HOSTS; do
+            [ "$number" -gt "$previous" ] || fail "The planned apply hosts are not in strictly ascending order."
+            [ "$number" -le "$host_count" ] || fail "The planned apply hosts name a host beyond the end of the hosts list."
+            previous="$number"
+            apply_hosts="${apply_hosts:+$apply_hosts }$number"
+          done
+          if [ "$SKIP_FAILED_HOSTS" != true ]; then
+            every=""
+            for ((number = 1; number <= host_count; number++)); do
+              every="${every:+$every }$number"
+            done
+            [ "$apply_hosts" = "$every" ] || fail "The plan covers only some of the hosts, but skip-failed-hosts is not true."
+          fi
+          echo "apply_hosts=$apply_hosts" >> "$GITHUB_OUTPUT"
           # The push list is held to the plan the same way. A list the plan did not
           # have, a list the plan had and this run lacks, and a different list all
           # differ from the planned digest, which is empty when the plan had none.
@@ -970,6 +1023,7 @@ jobs:
       - name: Apply on each host, then run it again to prove nothing is left to change
         env:
           HOSTS: ${{ secrets.ssh_hosts }}
+          APPLY_HOSTS: ${{ steps.guard.outputs.apply_hosts }}
           SHA: ${{ needs.plan.outputs.sha }}
           HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout-minutes }}
           SSH_KEY: ${{ secrets.ssh_apply_key }}
@@ -989,6 +1043,7 @@ jobs:
             exit 1
           }
           destination_pattern='^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'
+          [ -n "$APPLY_HOSTS" ] || fail "The guard published no host to apply."
           [ -n "$SSH_KEY" ] || [ -n "$HOST_KEYS" ] || fail "The ssh_apply_key secret is empty. It is a secret of the deployment environment."
           [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
           # A jump needs a host and a key, or neither. The host goes into an ssh
@@ -1316,16 +1371,32 @@ jobs:
           if [ -n "$JUMP2_HOSTS" ] && [ "${#ssh_args_two[@]}" -eq 0 ]; then
             fail "ssh_jump2_hosts is set but no second hop is configured."
           fi
+          # i counts every host of the list, so a host's number, its key file id.NN and
+          # its route keep their meaning whether or not the hosts before it are
+          # skipped. A host the guard did not list failed its plan: it is not asked at
+          # all, and a later plan will find it clean before it receives this commit.
           i=0
+          applied=0
           while IFS= read -r dest; do
             [ -n "$dest" ] || continue
             i=$((i + 1))
+            case " $APPLY_HOSTS " in
+              *" $i "*) ;;
+              *)
+                printf 'Host %s: skipped, its plan failed.\n' "$i" >> "$GITHUB_STEP_SUMMARY"
+                continue
+                ;;
+            esac
+            applied=$((applied + 1))
             ask "$i" "$dest" "apply" "10:applied" "0:unchanged"
             first="$REPLY_VERDICT"
             ask "$i" "$dest" "the second run, which must change nothing" "0:unchanged"
             printf 'Host %s: %s, then a second run that changed nothing.\n' "$i" "$first" >> "$GITHUB_STEP_SUMMARY"
           done <<< "$HOSTS"
-          echo "Applied commit $SHA on $i host(s)."
+          echo "Applied commit $SHA on $applied host(s)."
+          if [ "$applied" -lt "$i" ]; then
+            echo "$((i - applied)) host(s) were skipped because their plan failed."
+          fi
 
   # The check a caller requires. It runs even when a needed job failed or was
   # skipped, and it fails unless each needed job ended as expected for this
@@ -1347,6 +1418,7 @@ jobs:
           PLAN: ${{ needs.plan.result }}
           APPLY: ${{ needs.apply.result }}
           HAS_CHANGES: ${{ needs.plan.outputs.has_changes }}
+          FAILED_HOSTS: ${{ needs.plan.outputs.failed_hosts }}
           DRY_RUN: ${{ inputs.dry-run }}
           RERUN: ${{ needs.discover.outputs.recheck }}
         run: |
@@ -1381,6 +1453,16 @@ jobs:
               else
                 expect apply "$APPLY" success
               fi
+              # A plan can succeed with hosts left out (skip-failed-hosts). The hosts that
+              # passed are delivered, and the run stays red while any host was skipped, so
+              # a host that gets nothing is never silent.
+              case "$FAILED_HOSTS" in
+                "" | 0) ;;
+                *)
+                  echo "$FAILED_HOSTS host(s) failed their plan and were skipped."
+                  problems=1
+                  ;;
+              esac
               ;;
             false)
               expect plan "$PLAN" skipped
