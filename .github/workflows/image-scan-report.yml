@@ -1,0 +1,63 @@
+name: Image scan report (manual)
+
+# Counts the critical and high findings of the images in report-images.txt without failing
+# on them, so the first numbers are read before the gate in image-scan.yml blocks a deploy.
+# It cannot be called from another repository (it has no workflow_call trigger), and the
+# gate workflow has no report-only input, so this never weakens the gate. It runs when the
+# list changes and on demand. Counts are in each job's log as a `counts` line and a notice
+# annotation, and in its job summary.
+#
+# Pulls are anonymous and the job holds no package permission: the images listed are public.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/actions/image-scan/report-images.txt
+      - .github/workflows/image-scan-report.yml
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/image-scan
+
+jobs:
+  list:
+    name: Read the image list
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      images: ${{ steps.list.outputs.images }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the image list
+        id: list
+        run: python3 -I "$ACTION_DIR/image-scan.py" list-images --file "$ACTION_DIR/report-images.txt" --github-output "$GITHUB_OUTPUT"
+
+  report:
+    name: Report ${{ matrix.image }}
+    needs: list
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ${{ fromJSON(needs.list.outputs.images) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Count the findings of the image, report only
+        uses: ./.github/actions/image-scan
+        with:
+          source: registry:${{ matrix.image }}
+          image-name: ${{ matrix.image }}
+          report-only: 'true'

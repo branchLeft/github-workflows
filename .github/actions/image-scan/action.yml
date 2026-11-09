@@ -1,0 +1,144 @@
+name: Image scan
+description: >-
+  Catalogue an image with Syft and scan the catalogue with Grype. Writes the SBOM, the
+  findings and a severity count, and fails the step on any critical or high finding that
+  no valid exemption covers. The rules and their reasons are in image-scan.md beside this file.
+
+# The threshold is fixed in image-scan.py and is not an input. Both tools are run with a
+# config file from this directory, so a .grype.yaml or .syft.yaml in the scanned repository
+# is never read. The tools are installed from a pinned release and verified against a
+# pinned checksum. `report-only` exists for the manual report workflow; the gate workflow
+# does not expose it.
+
+inputs:
+  source:
+    description: >-
+      What Syft catalogues, in Syft's own syntax: `registry:<name>@sha256:<digest>` for an
+      image, `dir:<path>` for the self-test.
+    required: true
+  image-name:
+    description: The image name without its digest. Shown in findings and matched by an exemption's `image` key.
+    required: true
+  exemptions-path:
+    description: Exemptions file, relative to the workspace root. A missing file means no exemptions.
+    required: false
+    default: ''
+  report-only:
+    description: "'true' counts and reports but does not fail on findings. A tool failure still fails."
+    required: false
+    default: 'false'
+  registry-authority:
+    description: Registry host the credentials below are for. Empty means anonymous pulls.
+    required: false
+    default: ''
+  registry-username:
+    description: Registry user name.
+    required: false
+    default: ''
+  registry-password:
+    description: Registry password or token.
+    required: false
+    default: ''
+
+outputs:
+  verdict:
+    description: "`PASS` or `BLOCK`. Unset if the evaluation did not complete: read that as BLOCK."
+    value: ${{ steps.judge.outputs.verdict }}
+  blocking:
+    description: Critical or high findings no valid exemption covers.
+    value: ${{ steps.judge.outputs.blocking }}
+  exempted:
+    description: Critical or high findings a valid exemption covers.
+    value: ${{ steps.judge.outputs.exempted }}
+  critical:
+    description: Critical findings, exemptions not subtracted.
+    value: ${{ steps.judge.outputs.critical }}
+  high:
+    description: High findings, exemptions not subtracted.
+    value: ${{ steps.judge.outputs.high }}
+  medium:
+    description: Medium findings.
+    value: ${{ steps.judge.outputs.medium }}
+  low:
+    description: Low findings.
+    value: ${{ steps.judge.outputs.low }}
+  negligible:
+    description: Negligible findings.
+    value: ${{ steps.judge.outputs.negligible }}
+  unknown:
+    description: Findings with no severity.
+    value: ${{ steps.judge.outputs.unknown }}
+  packages:
+    description: Packages in the SBOM.
+    value: ${{ steps.judge.outputs.packages }}
+  out-dir:
+    description: Directory holding the SBOMs, the Grype report and the findings file.
+    value: ${{ steps.dirs.outputs.out }}
+
+runs:
+  using: composite
+  steps:
+    - id: dirs
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/image-scan-out" "$RUNNER_TEMP/image-scan-bin"
+        echo "out=$RUNNER_TEMP/image-scan-out" >> "$GITHUB_OUTPUT"
+
+    - name: Install Syft from its pinned release
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: python3 -I "$ACTION_PATH/image-scan.py" install --tool syft --pins "$ACTION_PATH/tool-pins.json" --bin-dir "$RUNNER_TEMP/image-scan-bin" --github-path "$GITHUB_PATH"
+
+    - name: Install Grype from its pinned release
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+      run: python3 -I "$ACTION_PATH/image-scan.py" install --tool grype --pins "$ACTION_PATH/tool-pins.json" --bin-dir "$RUNNER_TEMP/image-scan-bin" --github-path "$GITHUB_PATH"
+
+    - name: Catalogue the image with Syft
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        SOURCE: ${{ inputs.source }}
+        REGISTRY_AUTHORITY: ${{ inputs.registry-authority }}
+        REGISTRY_USERNAME: ${{ inputs.registry-username }}
+        REGISTRY_PASSWORD: ${{ inputs.registry-password }}
+        OUT: ${{ steps.dirs.outputs.out }}
+      run: |
+        set -euo pipefail
+        if [ -n "$REGISTRY_AUTHORITY" ]; then
+          export SYFT_REGISTRY_AUTH_AUTHORITY="$REGISTRY_AUTHORITY"
+          export SYFT_REGISTRY_AUTH_USERNAME="$REGISTRY_USERNAME"
+          export SYFT_REGISTRY_AUTH_PASSWORD="$REGISTRY_PASSWORD"
+        fi
+        syft scan "$SOURCE" -c "$ACTION_PATH/syft-config.yaml" -o syft-json="$OUT/sbom.syft.json" -o spdx-json="$OUT/sbom.spdx.json"
+
+    - name: Scan the SBOM with Grype
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        OUT: ${{ steps.dirs.outputs.out }}
+      run: grype "sbom:$OUT/sbom.syft.json" -c "$ACTION_PATH/grype-config.yaml" -o json="$OUT/grype.json"
+
+    - name: Judge the findings
+      id: judge
+      shell: bash
+      env:
+        ACTION_PATH: ${{ github.action_path }}
+        IMAGE_NAME: ${{ inputs.image-name }}
+        EXEMPTIONS: ${{ inputs.exemptions-path }}
+        REPORT_ONLY: ${{ inputs.report-only }}
+        OUT: ${{ steps.dirs.outputs.out }}
+      run: |
+        set -euo pipefail
+        args=()
+        if [ -n "$EXEMPTIONS" ]; then args+=(--exemptions "$EXEMPTIONS"); fi
+        if [ "$REPORT_ONLY" = true ]; then args+=(--report-only); fi
+        python3 -I "$ACTION_PATH/image-scan.py" evaluate \
+          --grype-json "$OUT/grype.json" --sbom "$OUT/sbom.syft.json" \
+          --image "$IMAGE_NAME" --root "$GITHUB_WORKSPACE" \
+          --findings-out "$OUT/findings.jsonl" \
+          --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY" \
+          "${args[@]}"

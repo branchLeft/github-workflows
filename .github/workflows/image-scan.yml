@@ -1,0 +1,144 @@
+name: image-scan (reusable)
+
+# Scans a container image, named by digest, with Grype over a Syft SBOM, and fails on any
+# critical or high finding that no valid exemption covers. Callable from any branchLeft-owned
+# repo via `workflow_call`. Rules, the exemption file and the limits: the README section for
+# this workflow and .github/actions/image-scan/image-scan.md.
+#
+# Uses actions/checkout and actions/upload-artifact plus `run:` steps, so it passes under
+# `allowed_actions: selected` with GitHub-owned actions allowed and no per-repo allow-list change.
+#
+# The gate is fixed. There is no input for the threshold, for report-only or for the tool
+# versions, so a caller cannot weaken it. The only caller-controlled data are the image and
+# the path of the exemptions file in the caller's own repository.
+#
+# Order in a publish pipeline: push the image, scan the pushed digest in this job, and attest
+# only in a job that `needs` this one, so an image that fails the scan is never attested:
+#
+#   jobs:
+#     publish:
+#       # builds and pushes; exposes the pushed digest as a job output
+#     scan:
+#       needs: publish
+#       permissions:
+#         contents: read
+#         packages: read
+#       uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@v1.0.6
+#       with:
+#         image: ghcr.io/branchleft/example@${{ needs.publish.outputs.digest }}
+#     attest:
+#       needs: [publish, scan]
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "The image, pinned by digest: registry/name@sha256:<64 hex digits>. A tag is refused."
+        type: string
+        required: true
+      exemptions-path:
+        description: "Exemptions file in the caller's repository (see the README). A missing file means no exemptions."
+        type: string
+        default: ".image-scan-exemptions.json"
+    outputs:
+      verdict:
+        description: "PASS or BLOCK"
+        value: ${{ jobs.image-scan.outputs.verdict }}
+      blocking:
+        description: "Critical or high findings no valid exemption covers"
+        value: ${{ jobs.image-scan.outputs.blocking }}
+      critical:
+        description: "Critical findings, exemptions not subtracted"
+        value: ${{ jobs.image-scan.outputs.critical }}
+      high:
+        description: "High findings, exemptions not subtracted"
+        value: ${{ jobs.image-scan.outputs.high }}
+      sbom-artifact:
+        description: "Name of the uploaded artifact holding the SBOMs, the Grype report and the findings"
+        value: ${{ jobs.image-scan.outputs.sbom-artifact }}
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  image-scan:
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      verdict: ${{ steps.scan.outputs.verdict }}
+      blocking: ${{ steps.scan.outputs.blocking }}
+      critical: ${{ steps.scan.outputs.critical }}
+      high: ${{ steps.scan.outputs.high }}
+      sbom-artifact: ${{ steps.ref.outputs.artifact }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The revision the caller pinned, read from the caller's own workflow
+      # files checked out above. The job_workflow_sha context is empty inside a
+      # reusable workflow, and an empty `ref:` makes actions/checkout take the
+      # default branch, so the pin would be decorative. Fails closed on none or
+      # on two distinct pins. This body is tools/resolve-pinned-ref.sh, inlined
+      # because the pinned revision cannot be fetched before it is known.
+      - name: Resolve the revision the caller pinned
+        id: pin
+        env:
+          CALLED_WORKFLOW: image-scan.yml
+        run: |
+          set -euo pipefail
+          workflow_re='^[A-Za-z0-9._-]+\.yml$'
+          [[ "${CALLED_WORKFLOW:-}" =~ $workflow_re ]] || { echo "::error::CALLED_WORKFLOW must name a workflow file."; exit 1; }
+          workflow_pat="uses:[[:space:]]*['\"]?branchLeft/github-workflows/\.github/workflows/${CALLED_WORKFLOW//./\\.}"
+          ref_pat="@[^[:space:]\"'#]+"
+          refs=$(grep -rhoE "${workflow_pat}${ref_pat}" .github/workflows/ 2>/dev/null | sed 's/.*@//' | sort -u || true)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          if [ "$n" -ne 1 ]; then
+            echo "::error::expected exactly one pinned ${CALLED_WORKFLOW} revision under .github/workflows/, found ${n}: ${refs}. Refusing to run unpinned tooling."
+            exit 1
+          fi
+          printf 'ref=%s\n' "$refs" >> "${GITHUB_OUTPUT:-/dev/stdout}"
+          echo "Running branchLeft/github-workflows@$refs"
+
+      - name: Checkout the scan tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/github-workflows
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .image-scan-tools
+          persist-credentials: false
+
+      - name: Refuse an image that is not pinned by digest
+        id: ref
+        env:
+          IMAGE: ${{ inputs.image }}
+        run: python3 -I .image-scan-tools/.github/actions/image-scan/image-scan.py check-input --image "$IMAGE" --github-output "$GITHUB_OUTPUT"
+
+      # Only ghcr.io gets the token, and only as read-only package access: the job holds no
+      # other credential. Another registry is pulled anonymously.
+      - name: Scan the image
+        id: scan
+        uses: ./.image-scan-tools/.github/actions/image-scan
+        with:
+          source: registry:${{ inputs.image }}
+          image-name: ${{ steps.ref.outputs.name }}
+          exemptions-path: ${{ inputs.exemptions-path }}
+          registry-authority: ${{ steps.ref.outputs.registry == 'ghcr.io' && 'ghcr.io' || '' }}
+          registry-username: ${{ steps.ref.outputs.registry == 'ghcr.io' && github.actor || '' }}
+          registry-password: ${{ steps.ref.outputs.registry == 'ghcr.io' && github.token || '' }}
+
+      # After a blocked scan too: the SBOM and the findings are the evidence.
+      - name: Upload the SBOM and the findings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.ref.outputs.artifact }}
+          path: ${{ runner.temp }}/image-scan-out/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,0 +1,124 @@
+name: Image scan (self-test)
+
+# This repo tests the action with its own working copy (the local path below), not a
+# tagged one, so a pull request that changes the action is checked by the change itself.
+# It runs on every pull request, with no path filter, so a change elsewhere in the repo
+# cannot skip it. The end-to-end job runs the real Syft and the real Grype, installed
+# the way the reusable workflow installs them, over two lockfile fixtures.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/image-scan
+
+jobs:
+  unit-tests:
+    name: Gate unit tests and sabotage
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Includes SabotageTests: each control is broken in a copy, its tests must go red
+      # there, and the unmodified copy must be green.
+      - name: Run the gate unit tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
+
+  end-to-end:
+    name: Real Syft and Grype over fixtures
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The scanned repository's own tool configs must change nothing: these two would
+      # hide the fixture's findings if either tool read them.
+      - name: Plant a Grype ignore rule and a Syft exclude in the workspace root
+        run: |
+          cp "$ACTION_DIR/fixtures/planted-grype.yaml" .grype.yaml
+          cp "$ACTION_DIR/fixtures/planted-syft.yaml" .syft.yaml
+
+      - name: Scan a lockfile with known high findings, as the gate runs
+        id: vulnerable
+        continue-on-error: true
+        uses: ./.github/actions/image-scan
+        with:
+          source: dir:.github/actions/image-scan/fixtures/e2e-vulnerable
+          image-name: fixture/vulnerable
+
+      - name: The gate failed the step despite the planted configs
+        env:
+          OUTCOME: ${{ steps.vulnerable.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: The SBOM was written before the gate failed
+        env:
+          OUT: ${{ runner.temp }}/image-scan-out
+        run: |
+          test -s "$OUT/sbom.syft.json"
+          test -s "$OUT/sbom.spdx.json"
+          test -s "$OUT/findings.jsonl"
+          grep -q '"clause":"SEC-4","file":"[^"]*","line":1,"level":"error"' "$OUT/findings.jsonl"
+
+      - name: Scan the same lockfile report-only, to read the counts
+        id: counted
+        uses: ./.github/actions/image-scan
+        with:
+          source: dir:.github/actions/image-scan/fixtures/e2e-vulnerable
+          image-name: fixture/vulnerable
+          report-only: 'true'
+
+      - name: The counts show the high findings and the BLOCK verdict
+        env:
+          VERDICT: ${{ steps.counted.outputs.verdict }}
+          HIGH: ${{ steps.counted.outputs.high }}
+          BLOCKING: ${{ steps.counted.outputs.blocking }}
+          PACKAGES: ${{ steps.counted.outputs.packages }}
+        run: |
+          test "$VERDICT" = BLOCK
+          test "$HIGH" -ge 1
+          test "$BLOCKING" -ge 1
+          test "$PACKAGES" -ge 1
+
+      - name: Scan a lockfile with no known finding
+        id: clean
+        uses: ./.github/actions/image-scan
+        with:
+          source: dir:.github/actions/image-scan/fixtures/e2e-clean
+          image-name: fixture/clean
+
+      - name: The clean lockfile passes
+        env:
+          VERDICT: ${{ steps.clean.outputs.verdict }}
+          BLOCKING: ${{ steps.clean.outputs.blocking }}
+        run: |
+          test "$VERDICT" = PASS
+          test "$BLOCKING" = 0
+
+      - name: Scan the clean lockfile with an expired exemption in the file
+        id: expired
+        continue-on-error: true
+        uses: ./.github/actions/image-scan
+        with:
+          source: dir:.github/actions/image-scan/fixtures/e2e-clean
+          image-name: fixture/clean
+          exemptions-path: .github/actions/image-scan/fixtures/exemptions-expired.json
+
+      - name: An expired exemption failed the step though nothing else was wrong
+        env:
+          OUTCOME: ${{ steps.expired.outcome }}
+        run: test "$OUTCOME" = failure

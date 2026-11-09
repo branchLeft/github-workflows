@@ -1,0 +1,2 @@
+# Pinned so that a .syft.yaml in the scanned repository cannot exclude paths from the SBOM.
+check-for-app-update: false

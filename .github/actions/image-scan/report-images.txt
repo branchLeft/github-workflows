@@ -1,0 +1,11 @@
+# Images the manual report workflow counts findings for. One name@sha256:<digest> per line.
+# Each line says where its digest was read; none was read from a running host.
+ghcr.io/branchleft/portal-apps@sha256:06f282c3701cc4ac192cf367c8e290a2c31bb8b77fc70c74555072f7d5631d28 # shared-infra ansible/owner_vars/ops1.yml on main
+ghcr.io/branchleft/mailgun-shim@sha256:37c60999cd3bad612f5f1d4947ddf88716e138b17ddf9dd29a23964b88b7c21d # shared-infra mail/provision/shim-compose.yml on main
+ghcr.io/branchleft/mailgun-shim@sha256:c32a32e93025aeb2b397b5dbf8e8b17e59256f56e3e881ffc49c71f6b8965571 # ghost-platform scripts/mail-gate on main
+ghcr.io/branchleft/ghost-tenant@sha256:53d73190888804176adc85538ec870cf2f1c2f591e4b99f9451b72b739229005 # ghost-tenant-blog Pulumi.blog.yaml on main
+ghcr.io/branchleft/ghost-tenant@sha256:4b0441a00e96ad63539d43ff0078719a36fae00c2cdec4d966cd368cb15e14b1 # ghost-platform restore drill on main
+ghcr.io/branchleft/edge-caddy@sha256:d0094ac8b31b377c6028e397ca394a8ed9962dce316505fc50cf13aa2b286c3a # the only tag published (caddy-2.11.4-1)
+ghcr.io/branchleft/website@sha256:8ae9c186c20f9302df62645cc660c2ce5b205195b236b52657ec1e8a86663eaf # PROXY: the latest tag on 9 Nov; no repo pins the running digest
+docker.io/library/mysql@sha256:7dcddc01f13bab2f15cde676d44d01f61fc9f99fe7785e86196dfc07d358ae2b # ghost-platform db/RUNBOOK-db.md mysql:8.0 pin
+docker.io/prom/mysqld-exporter@sha256:abed8dac117b4ae5b70757f988e44795935b9a72c3b58d720c67ba688f8cb79e # ghost-platform db/stack/compose.yml

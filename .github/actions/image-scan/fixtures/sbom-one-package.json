@@ -1,0 +1,6 @@
+{
+  "artifacts": [
+    {"id": "fixture-1", "name": "lodash", "version": "4.17.15", "type": "npm"}
+  ],
+  "schema": {"version": "16.0.0"}
+}
