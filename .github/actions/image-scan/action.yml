@@ -27,6 +27,16 @@ inputs:
     description: "'true' counts and reports but does not fail on findings. A tool failure still fails."
     required: false
     default: 'false'
+  allow-empty-sbom:
+    description: "'true' lets an SBOM with no packages pass with a warning. The default fails it."
+    required: false
+    default: 'false'
+  platform:
+    description: >-
+      Platform of a multi-platform image to scan, as Syft's --platform takes it (linux/arm64).
+      Empty scans the runner's own platform.
+    required: false
+    default: ''
   registry-authority:
     description: Registry host the credentials below are for. Empty means anonymous pulls.
     required: false
@@ -102,6 +112,7 @@ runs:
       env:
         ACTION_PATH: ${{ github.action_path }}
         SOURCE: ${{ inputs.source }}
+        PLATFORM: ${{ inputs.platform }}
         REGISTRY_AUTHORITY: ${{ inputs.registry-authority }}
         REGISTRY_USERNAME: ${{ inputs.registry-username }}
         REGISTRY_PASSWORD: ${{ inputs.registry-password }}
@@ -113,7 +124,9 @@ runs:
           export SYFT_REGISTRY_AUTH_USERNAME="$REGISTRY_USERNAME"
           export SYFT_REGISTRY_AUTH_PASSWORD="$REGISTRY_PASSWORD"
         fi
-        syft scan "$SOURCE" -c "$ACTION_PATH/syft-config.yaml" -o syft-json="$OUT/sbom.syft.json" -o spdx-json="$OUT/sbom.spdx.json"
+        args=()
+        if [ -n "$PLATFORM" ]; then args+=(--platform "$PLATFORM"); fi
+        syft scan "$SOURCE" "${args[@]}" -c "$ACTION_PATH/syft-config.yaml" -o syft-json="$OUT/sbom.syft.json" -o spdx-json="$OUT/sbom.spdx.json"
 
     - name: Scan the SBOM with Grype
       shell: bash
@@ -130,12 +143,14 @@ runs:
         IMAGE_NAME: ${{ inputs.image-name }}
         EXEMPTIONS: ${{ inputs.exemptions-path }}
         REPORT_ONLY: ${{ inputs.report-only }}
+        ALLOW_EMPTY: ${{ inputs.allow-empty-sbom }}
         OUT: ${{ steps.dirs.outputs.out }}
       run: |
         set -euo pipefail
         args=()
         if [ -n "$EXEMPTIONS" ]; then args+=(--exemptions "$EXEMPTIONS"); fi
         if [ "$REPORT_ONLY" = true ]; then args+=(--report-only); fi
+        if [ "$ALLOW_EMPTY" = true ]; then args+=(--allow-empty-sbom); fi
         python3 -I "$ACTION_PATH/image-scan.py" evaluate \
           --grype-json "$OUT/grype.json" --sbom "$OUT/sbom.syft.json" \
           --image "$IMAGE_NAME" --root "$GITHUB_WORKSPACE" \

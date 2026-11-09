@@ -40,6 +40,14 @@ on:
         description: "Exemptions file in the caller's repository (see the README). A missing file means no exemptions."
         type: string
         default: ".image-scan-exemptions.json"
+      platform:
+        description: "For a multi-platform image: the platform to scan, such as linux/arm64. Empty scans the runner's own platform (linux/amd64)."
+        type: string
+        default: ""
+      allow-empty-sbom:
+        description: "Let an image whose SBOM lists no packages (a bare scratch image) pass with a warning. Off by default: an empty catalogue fails."
+        type: boolean
+        default: false
     outputs:
       verdict:
         description: "PASS or BLOCK"
@@ -118,7 +126,8 @@ jobs:
         id: ref
         env:
           IMAGE: ${{ inputs.image }}
-        run: python3 -I .image-scan-tools/.github/actions/image-scan/image-scan.py check-input --image "$IMAGE" --github-output "$GITHUB_OUTPUT"
+          PLATFORM: ${{ inputs.platform }}
+        run: python3 -I .image-scan-tools/.github/actions/image-scan/image-scan.py check-input --image "$IMAGE" --platform="$PLATFORM" --github-output "$GITHUB_OUTPUT"
 
       # Only ghcr.io gets the token, and only as read-only package access: the job holds no
       # other credential. Another registry is pulled anonymously.
@@ -129,6 +138,8 @@ jobs:
           source: registry:${{ inputs.image }}
           image-name: ${{ steps.ref.outputs.name }}
           exemptions-path: ${{ inputs.exemptions-path }}
+          platform: ${{ inputs.platform }}
+          allow-empty-sbom: ${{ inputs.allow-empty-sbom }}
           registry-authority: ${{ steps.ref.outputs.registry == 'ghcr.io' && 'ghcr.io' || '' }}
           registry-username: ${{ steps.ref.outputs.registry == 'ghcr.io' && github.actor || '' }}
           registry-password: ${{ steps.ref.outputs.registry == 'ghcr.io' && github.token || '' }}

@@ -135,6 +135,7 @@ class ImageReferenceTests(unittest.TestCase):
             f"registry:ghcr.io/branchleft/website@sha256:{DIGEST}",
             f"ghcr.io/x/y@sha256:{DIGEST}; echo hi",
             f"ghcr.io/x/y@sha256:{DIGEST}\nextra",
+            f"ghcr.io/x/y@sha256:{DIGEST}\n",
             f" ghcr.io/x/y@sha256:{DIGEST}",
             f"@sha256:{DIGEST}",
             "",
@@ -159,6 +160,18 @@ class ImageReferenceTests(unittest.TestCase):
                 ["name=ghcr.io/a/b", "registry=ghcr.io", f"digest={DIGEST}", f"artifact=image-scan-{DIGEST[:12]}"],
             )
 
+    def test_a_platform_is_a_plain_specifier_or_nothing(self):
+        for platform in ("", "linux", "arm64", "linux/arm64", "linux/arm64/v8"):
+            with self.subTest(platform=platform):
+                self.assertEqual(gate.parse_platform(platform), platform)
+        for platform in ("--evil", "linux/", "/arm64", "Linux/arm64", "linux/arm64 x", "linux/arm64\n", "a/b/c/d"):
+            with self.subTest(platform=platform), self.assertRaises(gate.ScanError):
+                gate.parse_platform(platform)
+
+    def test_check_input_refuses_a_bad_platform(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(gate.main(["check-input", "--image", f"ghcr.io/a/b@sha256:{DIGEST}", "--platform=--evil"]), 2)
+
     def test_check_input_exits_non_zero_on_a_tag(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(gate.main(["check-input", "--image", "ghcr.io/a/b:latest"]), 2)
@@ -179,12 +192,19 @@ class ThresholdTests(GateTestCase):
         self.assertEqual(space.outputs()["critical"], "1")
 
     def test_medium_low_negligible_and_unknown_do_not_block(self):
-        space = self.workspace([match(f"CVE-{i}", sev) for i, sev in enumerate(("Medium", "Low", "Negligible", "Unknown", "Surprising"))])
+        space = self.workspace([match(f"CVE-{i}", sev) for i, sev in enumerate(("Medium", "Low", "Negligible", "Unknown"))])
         code, _ = space.run()
         self.assertEqual(code, 0)
         out = space.outputs()
         self.assertEqual(out["verdict"], "PASS")
-        self.assertEqual((out["medium"], out["low"], out["negligible"], out["unknown"]), ("1", "1", "1", "2"))
+        self.assertEqual((out["medium"], out["low"], out["negligible"], out["unknown"]), ("1", "1", "1", "1"))
+
+    def test_a_severity_grype_does_not_emit_fails_closed_and_never_passes(self):
+        for severity in (" High", "High ", "HIGH", "high", "Surprising", "", None, 5, ["High"]):
+            with self.subTest(severity=severity):
+                space = self.workspace([match("CVE-1", severity)])
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(gate.main(space.argv()), 2)
 
     def test_the_threshold_is_critical_and_high_and_not_an_option(self):
         self.assertEqual(gate.BLOCKING, ("critical", "high"))
@@ -229,6 +249,26 @@ class ThresholdTests(GateTestCase):
         self.assertTrue(any("record an exemption (SEC-5)" in m for m in messages))
 
 
+class DuplicateMatchTests(GateTestCase):
+    NO_FIX = staticmethod(lambda: match("CVE-2026-0001", "High", fix_state="not-fixed"))
+    FIXABLE = staticmethod(lambda: match("CVE-2026-0001", "High", fix_state="fixed", fix_versions=["3.0.2"]))
+
+    def test_a_vulnerability_with_any_fix_is_fixable_in_either_report_order(self):
+        for order in ((self.NO_FIX, self.FIXABLE), (self.FIXABLE, self.NO_FIX)):
+            with self.subTest(first=order[0] is self.NO_FIX):
+                space = self.workspace([item() for item in order], [exemption()])
+                code, _ = space.run()
+                self.assertEqual(code, 1)
+                self.assertEqual(space.outputs()["blocking"], "1")
+                self.assertEqual(space.outputs()["exempted"], "0")
+
+    def test_two_reports_of_one_vulnerability_count_once_at_the_highest_severity(self):
+        space = self.workspace([match("CVE-1", "Medium"), match("CVE-1", "Critical"), match("CVE-1", "High")])
+        space.run()
+        out = space.outputs()
+        self.assertEqual((out["critical"], out["high"], out["medium"]), ("1", "0", "0"))
+
+
 class FailClosedTests(GateTestCase):
     def run_with(self, space):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -258,9 +298,16 @@ class FailClosedTests(GateTestCase):
         space.sbom.write_text('{"nothing": 1}', encoding="utf-8")
         self.assertEqual(self.run_with(space), 2)
 
-    def test_an_sbom_with_no_packages_passes_with_a_warning(self):
+    def test_an_sbom_with_no_packages_fails_unless_empty_is_allowed(self):
         space = self.workspace([], packages=0)
         code, _ = space.run()
+        self.assertEqual(code, 1)
+        self.assertIn(("CON-11", "error"), self.levels(space))
+        self.assertEqual(space.outputs()["verdict"], "BLOCK")
+
+    def test_an_explicitly_allowed_empty_sbom_passes_with_a_warning(self):
+        space = self.workspace([], packages=0)
+        code, _ = space.run("--allow-empty-sbom")
         self.assertEqual(code, 0)
         self.assertIn(("CON-11", "warning"), self.levels(space))
 
@@ -345,7 +392,7 @@ class ExemptionTests(GateTestCase):
         bare = self.workspace([match("CVE-2026-0001", "Critical")], [entry])
         self.assertEqual(bare.run()[0], 1)
         self.assertIn(("SEC-5", "error"), self.levels(bare))
-        approved = self.workspace([match("CVE-2026-0001", "Critical")], [exemption(**{"approved-by": "platform owner, recorded in the exemption's review"})])
+        approved = self.workspace([match("CVE-2026-0001", "Critical")], [exemption(**{"approved-by": "NAME-OR-ROLE, with where the approval is recorded"})])
         self.assertEqual(approved.run()[0], 0)
 
     def test_a_high_exemption_needs_no_approval(self):
@@ -548,7 +595,10 @@ class ConfigTests(unittest.TestCase):
         names = re.findall(r"^  ([a-z-]+):$", block, re.MULTILINE)
         self.assertEqual(
             names,
-            ["source", "image-name", "exemptions-path", "report-only", "registry-authority", "registry-username", "registry-password"],
+            [
+                "source", "image-name", "exemptions-path", "report-only", "allow-empty-sbom", "platform",
+                "registry-authority", "registry-username", "registry-password",
+            ],
         )
 
 
@@ -572,10 +622,10 @@ class WorkflowTests(unittest.TestCase):
                     with self.subTest(workflow=name, uses=found.group(1)):
                         self.assertRegex(found.group(1), r"^(\./\S+|[\w.-]+/[\w./-]+@[0-9a-f]{40})$")
 
-    def test_the_gate_workflow_takes_exactly_two_inputs_and_no_way_to_lower_the_gate(self):
+    def test_the_gate_workflow_takes_exactly_four_inputs_and_no_way_to_lower_the_threshold(self):
         text = self.text("image-scan.yml")
         block = text.split("    inputs:\n")[1].split("    outputs:\n")[0]
-        self.assertEqual(re.findall(r"^      ([a-z-]+):$", block, re.MULTILINE), ["image", "exemptions-path"])
+        self.assertEqual(re.findall(r"^      ([a-z-]+):$", block, re.MULTILINE), ["image", "exemptions-path", "platform", "allow-empty-sbom"])
         self.assertNotIn("report-only", text.replace("report-only mode", "").split("jobs:")[1])
         self.assertNotIn("secrets:", text)
 
@@ -652,6 +702,33 @@ class SabotageTests(unittest.TestCase):
             "    if actual != sha256:\n",
             "    if False:\n",
             {"test_a_download_not_matching_its_pin_is_refused_and_nothing_is_written"},
+        ),
+        "a trailing newline is accepted": (
+            "    found = IMAGE_RE.fullmatch(reference)  # control: fullmatch, so a trailing newline is not accepted by `$`\n",
+            "    found = IMAGE_RE.match(reference)\n",
+            {"test_a_tag_or_a_malformed_reference_is_refused"},
+        ),
+        "an unknown severity is judged as unknown": (
+            "            if not isinstance(raw_severity, str) or raw_severity not in GRYPE_SEVERITIES:  # control: only a severity Grype emits is judged\n"
+            '                raise ScanError("a match in the Grype report has a severity Grype does not emit")\n'
+            "            match = Match(\n"
+            "                ids=tuple(str(item).lower() for item in ids),\n"
+            "                severity=GRYPE_SEVERITIES[raw_severity],\n",
+            "            match = Match(\n"
+            "                ids=tuple(str(item).lower() for item in ids),\n"
+            '                severity=GRYPE_SEVERITIES.get(raw_severity, "unknown"),\n',
+            {"test_a_severity_grype_does_not_emit_fails_closed_and_never_passes"},
+        ),
+        "the verdict depends on report order": (
+            "        fix_versions=tuple(dict.fromkeys(better.fix_versions + other.fix_versions)),\n"
+            '        fix_state="fixed" if "fixed" in (first.fix_state, second.fix_state) else better.fix_state,  # control: any fix makes it fixable\n',
+            "        fix_versions=better.fix_versions,\n        fix_state=better.fix_state,\n",
+            {"test_a_vulnerability_with_any_fix_is_fixable_in_either_report_order"},
+        ),
+        "an empty SBOM passes": (
+            '        level = "warning" if allow_empty else "error"  # control: an empty catalogue is nothing judged, not a pass\n',
+            '        level = "warning"\n',
+            {"test_an_sbom_with_no_packages_fails_unless_empty_is_allowed"},
         ),
         "a tag is accepted": (
             "    if not found:\n",

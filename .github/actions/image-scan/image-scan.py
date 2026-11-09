@@ -46,6 +46,15 @@ COMPONENT = r"[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*"
 IMAGE_RE = re.compile(
     rf"^(?P<name>(?:(?:{COMPONENT}(?:\.{COMPONENT})*(?::[0-9]+)?)/)?{COMPONENT}(?:/{COMPONENT})*)@sha256:(?P<digest>[0-9a-f]{{64}})$"
 )
+PLATFORM_RE = re.compile(r"[a-z0-9]+(?:/[a-z0-9]+){0,2}")
+GRYPE_SEVERITIES = {
+    "Critical": "critical",
+    "High": "high",
+    "Medium": "medium",
+    "Low": "low",
+    "Negligible": "negligible",
+    "Unknown": "unknown",
+}
 INSTALL_HOSTS = ("github.com",)
 
 
@@ -124,10 +133,17 @@ def clean(text: object, limit: int = 160) -> str:
 
 def parse_image(reference: str) -> tuple[str, str]:
     """Return (name, digest) of `name@sha256:<digest>`, or raise. A tag alone is refused: it can move."""
-    found = IMAGE_RE.match(reference)
+    found = IMAGE_RE.fullmatch(reference)  # control: fullmatch, so a trailing newline is not accepted by `$`
     if not found:
         raise ScanError("the image must be a reference pinned by digest, name@sha256:<64 lowercase hex digits>")
     return found.group("name"), found.group("digest")
+
+
+def parse_platform(platform: str) -> str:
+    """An optional `os`, `arch` or `os/arch[/variant]` for Syft's --platform; empty means the runner's own."""
+    if platform and not PLATFORM_RE.fullmatch(platform):
+        raise ScanError("the platform must look like linux/arm64, arm64 or linux/arm64/v8")
+    return platform
 
 
 def registry_of(name: str) -> str:
@@ -206,6 +222,18 @@ def load_exemptions(path: pathlib.Path | None, today: datetime.date) -> tuple[li
     return valid, faults
 
 
+def merge(first: Match, second: Match) -> Match:
+    """Two reports of one finding become one that does not depend on their order: the higher
+    severity, and fixable if either report has a fix, so an exemption cannot ride on the other."""
+    better, other = (first, second) if SEVERITIES.index(first.severity) <= SEVERITIES.index(second.severity) else (second, first)
+    return dataclasses.replace(
+        better,
+        ids=tuple(dict.fromkeys(better.ids + other.ids)),
+        fix_versions=tuple(dict.fromkeys(better.fix_versions + other.fix_versions)),
+        fix_state="fixed" if "fixed" in (first.fix_state, second.fix_state) else better.fix_state,  # control: any fix makes it fixable
+    )
+
+
 def load_matches(path: pathlib.Path) -> list[Match]:
     """Read the Grype JSON strictly. One match per (vulnerability, package, version, type), at its highest severity."""
     try:
@@ -223,9 +251,12 @@ def load_matches(path: pathlib.Path) -> list[Match]:
             ids += [related["id"] for related in raw.get("relatedVulnerabilities") or []]
             fix = vulnerability.get("fix") or {}
             locations = artifact.get("locations") or []
+            raw_severity = vulnerability["severity"]
+            if not isinstance(raw_severity, str) or raw_severity not in GRYPE_SEVERITIES:  # control: only a severity Grype emits is judged
+                raise ScanError("a match in the Grype report has a severity Grype does not emit")
             match = Match(
                 ids=tuple(str(item).lower() for item in ids),
-                severity=str(vulnerability["severity"]).lower() if str(vulnerability["severity"]).lower() in SEVERITIES else "unknown",
+                severity=GRYPE_SEVERITIES[raw_severity],
                 package=str(artifact["name"]).lower(),
                 version=str(artifact.get("version", "")),
                 kind=str(artifact.get("type", "")),
@@ -237,8 +268,7 @@ def load_matches(path: pathlib.Path) -> list[Match]:
             raise ScanError("a match in the Grype report does not have the expected shape") from error
         key = (match.vulnerability, match.package, match.version, match.kind)
         kept = seen.get(key)
-        if kept is None or SEVERITIES.index(match.severity) < SEVERITIES.index(kept.severity):
-            seen[key] = match
+        seen[key] = match if kept is None else merge(kept, match)
     return list(seen.values())
 
 
@@ -259,7 +289,7 @@ def covers(exemption: Exemption, match: Match, image: str) -> bool:
     return not exemption.image or exemption.image == image
 
 
-def evaluate(matches: list[Match], exemptions: list[Exemption], faults: list[Finding], image: str, exemptions_file: str, packages: int) -> Result:
+def evaluate(matches: list[Match], exemptions: list[Exemption], faults: list[Finding], image: str, exemptions_file: str, packages: int, allow_empty: bool = False) -> Result:
     counts = dict.fromkeys(SEVERITIES, 0)
     findings = list(faults)
     blocking = 0
@@ -302,7 +332,8 @@ def evaluate(matches: list[Match], exemptions: list[Exemption], faults: list[Fin
         if exemption.index not in used and exemption.index not in ignored:
             findings.append(Finding(CLAUSE_EXEMPTION, clean(exemptions_file), exemption.index, "info", f"exemption {exemption.index} for {clean(exemption.vulnerability)} covers no finding in this image"))
     if packages == 0:
-        findings.append(Finding(CLAUSE_SBOM, clean(image), 1, "warning", "the SBOM lists no packages, so the scan had nothing to judge"))
+        level = "warning" if allow_empty else "error"  # control: an empty catalogue is nothing judged, not a pass
+        findings.append(Finding(CLAUSE_SBOM, clean(image), 1, level, "the SBOM lists no packages, so the scan had nothing to judge"))
     return Result(counts=counts, blocking=blocking, exempted=exempted, packages=packages, findings=findings)
 
 
@@ -340,6 +371,7 @@ def safe_relative(raw: str, root: pathlib.Path) -> pathlib.Path:
 
 def cmd_check_input(args: argparse.Namespace) -> int:
     name, digest = parse_image(args.image)
+    parse_platform(args.platform)
     registry = registry_of(name)
     print(f"image={name}@sha256:{digest}")
     print(f"registry={registry}")
@@ -437,6 +469,7 @@ def cmd_evaluate(args: argparse.Namespace) -> int:
         args.image,
         args.exemptions or "",
         count_packages(pathlib.Path(args.sbom)),
+        args.allow_empty_sbom,
     )
     for finding in result.findings:
         print(finding.as_json())
@@ -468,6 +501,7 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     check = commands.add_parser("check-input")
     check.add_argument("--image", required=True)
+    check.add_argument("--platform", default="")
     check.add_argument("--github-output")
     check.set_defaults(run=cmd_check_input)
     fetch_tool = commands.add_parser("install")
@@ -489,6 +523,7 @@ def build_parser() -> argparse.ArgumentParser:
     judge.add_argument("--exemptions", help="path inside --root; absent file means no exemptions")
     judge.add_argument("--root", default=".")
     judge.add_argument("--report-only", action="store_true", help="count and report but exit 0 on findings; used by the manual report only")
+    judge.add_argument("--allow-empty-sbom", action="store_true", help="an SBOM with no packages warns instead of failing")
     judge.add_argument("--today", help="YYYY-MM-DD; tests only")
     judge.add_argument("--findings-out")
     judge.add_argument("--github-output")
