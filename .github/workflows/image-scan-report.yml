@@ -15,6 +15,11 @@ on:
     paths:
       - .github/actions/image-scan/report-images.txt
       - .github/workflows/image-scan-report.yml
+  push:
+    branches: [main]
+    paths:
+      - .github/actions/image-scan/report-images.txt
+      - .github/workflows/image-scan-report.yml
 
 permissions:
   contents: read
