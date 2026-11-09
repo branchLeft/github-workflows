@@ -1,0 +1,41 @@
+name: Attest-and-verify action CI
+
+# Proves the attest-and-verify composite action's verify and wrong-identity
+# scripts against a stub gh, and lints the action's definition. A real
+# attestation is only created and verified by the publish workflows of the
+# repositories that call the action; see
+# .github/actions/attest-and-verify-image/verify-image-attestation.md.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/actions/attest-and-verify-image/**
+      - .github/workflows/attest-and-verify-image-ci.yml
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/actions/attest-and-verify-image/**
+      - .github/workflows/attest-and-verify-image-ci.yml
+
+permissions:
+  contents: read
+
+jobs:
+  action-tests:
+    name: verify scripts and action lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Run the verify script test
+        run: ./.github/actions/attest-and-verify-image/test-verify-image-attestation.sh
+
+      # Plain node:test, no dependency to install.
+      - name: Lint the action
+        run: node --test .github/actions/attest-and-verify-image/action.test.js
