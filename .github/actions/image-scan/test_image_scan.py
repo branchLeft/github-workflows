@@ -55,6 +55,7 @@ def exemption(vuln="CVE-2026-0001", package="openssl", **overrides):
     entry = {
         "vulnerability": vuln,
         "package": package,
+        "image": IMAGE,
         "reason": "the vulnerable function is never called by this image",
         "granted": "2026-11-01",
         "expires": "2026-11-30",
@@ -157,7 +158,7 @@ class ImageReferenceTests(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertEqual(
                 out.read_text(encoding="utf-8").splitlines(),
-                ["name=ghcr.io/a/b", "registry=ghcr.io", f"digest={DIGEST}", f"artifact=image-scan-{DIGEST[:12]}"],
+                ["name=ghcr.io/a/b", "registry=ghcr.io", f"digest={DIGEST}", f"artifact=image-scan-{DIGEST[:12]}-linux-amd64"],
             )
 
     def test_a_platform_is_a_plain_specifier_or_nothing(self):
@@ -171,6 +172,32 @@ class ImageReferenceTests(unittest.TestCase):
     def test_check_input_refuses_a_bad_platform(self):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(gate.main(["check-input", "--image", f"ghcr.io/a/b@sha256:{DIGEST}", "--platform=--evil"]), 2)
+
+    def artifact(self, platform, digest=DIGEST):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = pathlib.Path(tmp, "out.txt")
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(
+                    gate.main(["check-input", "--image", f"ghcr.io/a/b@sha256:{digest}", f"--platform={platform}", "--github-output", str(out)]), 0
+                )
+            return dict(line.split("=", 1) for line in out.read_text(encoding="utf-8").splitlines())["artifact"]
+
+    def test_two_platforms_of_one_digest_get_distinct_artifact_names_and_a_call_is_stable(self):
+        amd, arm, variant = self.artifact("linux/amd64"), self.artifact("linux/arm64"), self.artifact("linux/arm64/v8")
+        self.assertEqual(len({amd, arm, variant}), 3)
+        self.assertEqual(arm, self.artifact("linux/arm64"))
+        self.assertEqual(arm, f"image-scan-{DIGEST[:12]}-linux-arm64")
+        self.assertEqual(variant, f"image-scan-{DIGEST[:12]}-linux-arm64-v8")
+
+    def test_no_platform_names_the_runner_platform(self):
+        self.assertEqual(self.artifact(""), f"image-scan-{DIGEST[:12]}-linux-amd64")
+        self.assertEqual(self.artifact(""), self.artifact("linux/amd64"))
+
+    def test_different_digests_get_different_artifact_names(self):
+        self.assertNotEqual(self.artifact("", "a" * 64), self.artifact("", "b" * 64))
+
+    def test_an_artifact_name_holds_only_characters_the_upload_allows(self):
+        self.assertRegex(self.artifact("linux/arm64/v8"), r"^[A-Za-z0-9._-]+$")
 
     def test_check_input_exits_non_zero_on_a_tag(self):
         with contextlib.redirect_stdout(io.StringIO()):
@@ -407,6 +434,41 @@ class ExemptionTests(GateTestCase):
         for entry in (exemption(package="zlib"), exemption(vuln="CVE-2026-9999")):
             with self.subTest(entry=entry):
                 space = self.workspace([self.blocked_high()], [entry])
+                self.assertEqual(space.run()[0], 1)
+
+    def test_an_exemption_must_name_the_image(self):
+        entry = exemption()
+        del entry["image"]
+        for label, candidate in (
+            ("absent", entry),
+            ("empty", exemption(image="")),
+            ("blank", exemption(image="  ")),
+            ("with a digest", exemption(image=f"ghcr.io/example/app@sha256:{DIGEST}")),
+            ("with a tag", exemption(image="ghcr.io/example/app:1.2")),
+            ("not text", exemption(image=5)),
+        ):
+            with self.subTest(image=label):
+                space = self.workspace([self.blocked_high()], [candidate])
+                code, _ = space.run()
+                self.assertEqual(code, 1)
+                self.assertEqual(space.outputs()["blocking"], "1")
+                self.assertIn(("SEC-5", "error"), self.levels(space))
+
+    def test_the_self_test_fixture_is_refused_for_its_expiry_and_nothing_else(self):
+        space = self.workspace([])
+        argv = space.argv()
+        argv[argv.index("--root") + 1] = str(FIXTURES)
+        argv[argv.index("--exemptions") + 1] = "exemptions-expired.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(gate.main(argv), 1)
+        messages = [f["message"] for f in space.findings() if f["level"] == "error"]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("expired on 2020-01-02", messages[0])
+
+    def test_a_blank_approval_does_not_approve_a_critical_exemption(self):
+        for approval in ("", "   ", "\t\n"):
+            with self.subTest(approval=approval):
+                space = self.workspace([match("CVE-2026-0001", "Critical")], [exemption(**{"approved-by": approval})])
                 self.assertEqual(space.run()[0], 1)
 
     def test_an_image_scoped_exemption_covers_only_that_image(self):
@@ -729,6 +791,21 @@ class SabotageTests(unittest.TestCase):
             '        level = "warning" if allow_empty else "error"  # control: an empty catalogue is nothing judged, not a pass\n',
             '        level = "warning"\n',
             {"test_an_sbom_with_no_packages_fails_unless_empty_is_allowed"},
+        ),
+        "an exemption may name a tagged image": (
+            "    if not NAME_RE.fullmatch(raw[\"image\"].strip()):  # control: an exemption names its image, without a tag or digest\n",
+            "    if False:\n",
+            {"test_an_exemption_must_name_the_image"},
+        ),
+        "an exemption may leave the image out": (
+            'REQUIRED_KEYS = ("vulnerability", "package", "image", "reason", "granted", "expires")\n',
+            'REQUIRED_KEYS = ("vulnerability", "package", "reason", "granted", "expires")\n',
+            {"test_an_exemption_must_name_the_image"},
+        ),
+        "the platform is not in the artifact name": (
+            "    return f\"image-scan-{digest[:12]}-{(platform or 'linux/amd64').replace('/', '-')}\"  # control: the platform is in the name\n",
+            "    return f\"image-scan-{digest[:12]}\"\n",
+            {"test_two_platforms_of_one_digest_get_distinct_artifact_names_and_a_call_is_stable"},
         ),
         "a tag is accepted": (
             "    if not found:\n",

@@ -39,13 +39,13 @@ CLAUSE_SCAN = "SEC-7"
 CLAUSE_SBOM = "CON-11"
 
 EXEMPTION_KEYS = {"vulnerability", "package", "image", "reason", "granted", "expires", "approved-by"}
-REQUIRED_KEYS = ("vulnerability", "package", "reason", "granted", "expires")
+REQUIRED_KEYS = ("vulnerability", "package", "image", "reason", "granted", "expires")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 UNSAFE_RE = re.compile(r"[^A-Za-z0-9 ._:@/+~(),=<>-]")
 COMPONENT = r"[a-z0-9]+(?:(?:\.|_|__|-+)[a-z0-9]+)*"
-IMAGE_RE = re.compile(
-    rf"^(?P<name>(?:(?:{COMPONENT}(?:\.{COMPONENT})*(?::[0-9]+)?)/)?{COMPONENT}(?:/{COMPONENT})*)@sha256:(?P<digest>[0-9a-f]{{64}})$"
-)
+NAME = rf"(?:(?:{COMPONENT}(?:\.{COMPONENT})*(?::[0-9]+)?)/)?{COMPONENT}(?:/{COMPONENT})*"
+NAME_RE = re.compile(NAME)
+IMAGE_RE = re.compile(rf"^(?P<name>{NAME})@sha256:(?P<digest>[0-9a-f]{{64}})$")
 PLATFORM_RE = re.compile(r"[a-z0-9]+(?:/[a-z0-9]+){0,2}")
 GRYPE_SEVERITIES = {
     "Critical": "critical",
@@ -146,6 +146,12 @@ def parse_platform(platform: str) -> str:
     return platform
 
 
+def artifact_name(digest: str, platform: str) -> str:
+    """The upload name of one scan. The platform is in it, so two calls for two platforms of one
+    digest cannot collide; no platform means the runner's own."""
+    return f"image-scan-{digest[:12]}-{(platform or 'linux/amd64').replace('/', '-')}"  # control: the platform is in the name
+
+
 def registry_of(name: str) -> str:
     """The registry host of an image name; a first component without a dot, a colon or `localhost` is a Docker Hub namespace."""
     first = name.split("/", 1)[0]
@@ -174,9 +180,10 @@ def parse_exemption(index: int, raw: object, today: datetime.date) -> Exemption:
         value = raw.get(key)
         if not isinstance(value, str) or not value.strip():
             raise ValueError(f"{key} is missing or empty")
-    for key in ("image", "approved-by"):
-        if key in raw and not isinstance(raw[key], str):
-            raise ValueError(f"{key} must be text")
+    if "approved-by" in raw and not isinstance(raw["approved-by"], str):
+        raise ValueError("approved-by must be text")
+    if not NAME_RE.fullmatch(raw["image"].strip()):  # control: an exemption names its image, without a tag or digest
+        raise ValueError("image must be an image name without a tag or digest")
     if len(raw["reason"]) > MAX_REASON:
         raise ValueError(f"reason is longer than {MAX_REASON} characters")
     granted = parse_date(raw["granted"], "granted")
@@ -193,7 +200,7 @@ def parse_exemption(index: int, raw: object, today: datetime.date) -> Exemption:
         index=index,
         vulnerability=raw["vulnerability"].strip().lower(),
         package=raw["package"].strip().lower(),
-        image=str(raw.get("image", "")).strip(),
+        image=raw["image"].strip(),
         reason=raw["reason"].strip(),
         granted=granted,
         expires=expires,
@@ -286,7 +293,7 @@ def count_packages(path: pathlib.Path) -> int:
 def covers(exemption: Exemption, match: Match, image: str) -> bool:
     if exemption.package != match.package or exemption.vulnerability not in match.ids:
         return False
-    return not exemption.image or exemption.image == image
+    return exemption.image == image
 
 
 def evaluate(matches: list[Match], exemptions: list[Exemption], faults: list[Finding], image: str, exemptions_file: str, packages: int, allow_empty: bool = False) -> Result:
@@ -371,13 +378,13 @@ def safe_relative(raw: str, root: pathlib.Path) -> pathlib.Path:
 
 def cmd_check_input(args: argparse.Namespace) -> int:
     name, digest = parse_image(args.image)
-    parse_platform(args.platform)
+    requested = parse_platform(args.platform)
     registry = registry_of(name)
     print(f"image={name}@sha256:{digest}")
     print(f"registry={registry}")
     if args.github_output:
         with open(args.github_output, "a", encoding="utf-8") as handle:
-            handle.write(f"name={name}\nregistry={registry}\ndigest={digest}\nartifact=image-scan-{digest[:12]}\n")
+            handle.write(f"name={name}\nregistry={registry}\ndigest={digest}\nartifact={artifact_name(digest, requested)}\n")
     return 0
 
 

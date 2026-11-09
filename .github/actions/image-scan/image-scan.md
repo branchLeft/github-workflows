@@ -53,10 +53,10 @@ and `CODEOWNERS` on that file is the control that makes the approval real.
 | --- | --- | --- |
 | `vulnerability` | yes | A CVE or advisory id. It matches the finding's id or any alias Grype lists, ignoring case. |
 | `package` | yes | The package name. |
-| `image` | no, but set it | The image name without its digest. Absent covers that vulnerability and package in every image scanned with this file, so a file shared by several images needs it to keep an exemption to the image it was reviewed for. |
+| `image` | yes | The image name without a tag or digest, as the caller passes it to the workflow. `SEC-5` says an exemption names the finding, and a finding is in an image: an exemption without one is refused rather than read as covering every image. |
 | `reason` | yes | Not empty, at most 500 characters. |
 | `granted`, `expires` | yes | `YYYY-MM-DD`. `granted` is not in the future, and `expires` is at most 30 days after it and not before today. |
-| `approved-by` | for a critical finding | Not empty, free text. The script cannot tell who approved, so review of the file by the `CODEOWNERS` owner is the check. |
+| `approved-by` | for a critical finding | Free text, not empty or blank. The script cannot tell who approved or whether it is true: the control is `CODEOWNERS` on this file, so the platform owner reviews every change to it. |
 
 An exemption covers a finding only when the finding has no fix. If a fix exists the exemption is
 ignored with a warning and the finding blocks: update instead. Any entry that is malformed,
@@ -85,7 +85,7 @@ except `blocking`. The reusable workflow forwards `verdict`, `blocking`, `critic
 ## Accepted behaviour
 
 - **An image with no packages fails by default.** An empty catalogue means nothing was judged, and a catalogue that failed to see anything looks the same as a bare `scratch` image. A fail-closed default costs a bare image one explicit line: the reusable workflow's `allow-empty-sbom: true` makes it a warning. It does not change anything else.
-- **One platform is scanned.** For a multi-platform image the digest names the index, and Syft picks one image from it: the runner's own platform (`linux/amd64`) unless the optional `platform` input is given (Syft's `--platform`, such as `linux/arm64`; checked against Syft v1.56.0). A caller that publishes several platforms calls the workflow once per platform. The other platforms are not scanned by a call that names none of them.
+- **One platform is scanned per call.** For a multi-platform image the digest names the index, and Syft picks one image from it: the runner's own platform (`linux/amd64`) unless the optional `platform` input is given (Syft's `--platform`, such as `linux/arm64`; checked against Syft v1.56.0). A caller that publishes several platforms calls the workflow once per platform. The uploaded artifact is named `image-scan-<first 12 hex of the digest>-<platform with / as ->` (`linux-amd64` when no platform is given), so two calls in one run do not collide, and each call's `sbom-artifact` output names its own. The other platforms are not scanned by a call that names none of them.
 - **Findings are a day's view.** The Grype database is fetched at scan time, so the same digest can pass today and block tomorrow. That is why `SEC-6` re-scans live images; this gate is the build-time half.
 
 ## Limits

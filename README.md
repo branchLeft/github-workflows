@@ -1035,7 +1035,7 @@ that fails the scan is never attested. The scan uploads the SBOM as the artifact
 | Input | Default | Meaning |
 | --- | --- | --- |
 | `image` | required | `registry/name@sha256:<digest>`. A tag is refused. |
-| `exemptions-path` | `.image-scan-exemptions.json` | Exemptions file in the caller's repository. Put `CODEOWNERS` on it. Set `image` on each entry. |
+| `exemptions-path` | `.image-scan-exemptions.json` | Exemptions file in the caller's repository. Put `CODEOWNERS` on it. Each entry must name its `image`. |
 | `platform` | empty | Platform of a multi-platform image to scan (`linux/arm64`). Empty scans the runner's own. |
 | `allow-empty-sbom` | `false` | Let an image with no packages pass with a warning. Off, an empty SBOM fails. |
 
@@ -1043,7 +1043,7 @@ that fails the scan is never attested. The scan uploads the SBOM as the artifact
 | --- | --- |
 | `verdict` | `PASS` or `BLOCK`. Unset if the job did not finish: read that as `BLOCK`. |
 | `blocking`, `critical`, `high` | Counts. `blocking` is net of exemptions. |
-| `sbom-artifact` | Name of the uploaded artifact: SBOMs (Syft JSON and SPDX JSON), Grype report, findings. |
+| `sbom-artifact` | Name of the uploaded artifact: SBOMs (Syft JSON and SPDX JSON), Grype report, findings. It is `image-scan-<12 hex of the digest>-<platform>`, so a call per platform of one digest does not collide. |
 
 The caller's job must grant `packages: read` for a ghcr.io image, and the caller must keep
 exactly one occurrence of `image-scan.yml@` under `.github/workflows/`, for the same reason as

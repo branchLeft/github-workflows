@@ -3,6 +3,7 @@
     {
       "vulnerability": "CVE-2000-0001",
       "package": "example",
+      "image": "fixture/clean",
       "reason": "A fixture entry that expired long ago; the gate must refuse it.",
       "granted": "2019-12-20",
       "expires": "2020-01-02"
