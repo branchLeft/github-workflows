@@ -1008,6 +1008,49 @@ a `Case` in `CASES`, run `python3 tools/sabotage.py --discover NAME` to see whic
 tests the edit turns red, and name them. `python3 tools/sabotage.py NAME` runs the
 cases whose name contains `NAME`, and `--list` lists them.
 
+### `image-scan.yml`
+
+Scans a container image, named by digest, with Grype over a Syft SBOM, and fails on any
+critical or high finding that no valid exemption covers (`SEC-4`, `SEC-7`, `CON-11`).
+The threshold is fixed: there is no input for it, for a report-only mode or for the tool
+versions. Syft and Grype are installed from pinned releases and checked against a pinned
+SHA-256, and run with config files from this repository, so a `.grype.yaml` in the
+caller is never read. It uses `actions/checkout` and `actions/upload-artifact` only.
+The rules, the exemption file and the limits: [`image-scan.md`](.github/actions/image-scan/image-scan.md).
+
+```yaml
+jobs:
+  scan:
+    needs: publish # pushed the image; its digest output is "sha256:<64 hex>"
+    permissions: { contents: read, packages: read }
+    uses: branchLeft/github-workflows/.github/workflows/image-scan.yml@v1.0.6
+    with: { image: "ghcr.io/branchleft/example@${{ needs.publish.outputs.digest }}" }
+```
+
+Put the scan between the push and the attest. The scan reads the pushed digest from the
+registry, so it runs after the push. The attest is a job that `needs` the scan, so an image
+that fails the scan is never attested. The scan uploads the SBOM as the artifact named by the
+`sbom-artifact` output, for the attest job to download.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `image` | required | `registry/name@sha256:<digest>`. A tag is refused. |
+| `exemptions-path` | `.image-scan-exemptions.json` | Exemptions file in the caller's repository. Put `CODEOWNERS` on it. Each entry must name its `image`. |
+| `platform` | empty | Platform of a multi-platform image to scan (`linux/arm64`). Empty scans the runner's own. |
+| `allow-empty-sbom` | `false` | Let an image with no packages pass with a warning. Off, an empty SBOM fails. |
+
+| Output | Meaning |
+| --- | --- |
+| `verdict` | `PASS` or `BLOCK`. Unset if the job did not finish: read that as `BLOCK`. |
+| `blocking`, `critical`, `high` | Counts. `blocking` is net of exemptions. |
+| `sbom-artifact` | Name of the uploaded artifact: SBOMs (Syft JSON and SPDX JSON), Grype report, findings. It is `image-scan-<12 hex of the digest>-<platform>`, so a call per platform of one digest does not collide. |
+
+The caller's job must grant `packages: read` for a ghcr.io image, and the caller must keep
+exactly one occurrence of `image-scan.yml@` under `.github/workflows/`, for the same reason as
+[the pin of `merged-status.yml`](#pinning-and-the-one-thing-that-will-bite-an-adopter).
+`image-scan-report.yml` is a manual, report-only run over `report-images.txt` that prints the
+counts without failing; it cannot be called from another repository.
+
 ## Actions
 
 A reusable workflow is a whole job; a composite action is a step inside the
