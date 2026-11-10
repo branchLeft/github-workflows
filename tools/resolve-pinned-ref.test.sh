@@ -58,7 +58,7 @@ run_case no-workflows-dir docs-lint.yml 1 ""
 # The inline copy in each reusable workflow must carry every line of the
 # resolver, so the code the tests exercise is the code that runs.
 body=$(grep -vE '^(#|$)' "$RESOLVER")
-for wf in docs-lint opv-lint; do
+for wf in docs-lint opv-lint image-scan; do
   file="$REPO/.github/workflows/$wf.yml"
   missing=0
   while IFS= read -r line; do
