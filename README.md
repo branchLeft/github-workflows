@@ -898,7 +898,8 @@ Slack token, a payment key, a JWT) and read the diff whole. The seventh,
 `credential-assignment`, finds a word such as `password`, `secret`, `token`,
 `api_key` or `credential` followed by `:` or `=` and a value of four characters or
 more. That form also occurs in text that holds no credential, so this pattern reads
-a copy of the diff from which four shapes have first been taken out, lower-cased:
+a copy of the diff from which four shapes (and the named allowances, below the table)
+have first been taken out, lower-cased:
 
 | Shape taken out | Why it is not a credential | Example (synthetic) |
 | --- | --- | --- |
@@ -906,6 +907,36 @@ a copy of the diff from which four shapes have first been taken out, lower-cased
 | `${NAME}`, `${NAME:?...}` and `$(cat PATH)` | A reference to where a value comes from, not the value. A `${NAME:-...}` or `${NAME:=...}` default and any other `$(...)` are read whole. | `EXAMPLE_TOKEN: ${EXAMPLE_TOKEN:?set it in /etc/example/app.env}` |
 | A key that ends in `_file`, `_filename`, `_path` or `_dir` (also after `.` or `-`), with its `:` or `=` and a value that starts with `/` or `~` | The value is a location. | `password_file: /etc/example/db-password` |
 | A value that is `true`, `false`, `null` or `none`, followed by `,`, `}`, `]` or the end of the line | A flag. | `"example_password": true,` |
+
+One more thing is taken out of that copy: a **named allowance**. It is a pair of a
+file path and one whole line of text, and it is listed in the `allowances` array of
+`.github/actions/ssh-check-hosts/action.yml`, which the code owners approve, so a
+new entry is a reviewed change to that file and nothing else adds one. A diff line is
+blanked in the copy only when all of these hold: the line, after its `+`, `-` or
+space and with its outer whitespace trimmed, is exactly the entry's text, in the
+case written; and it sits under the diff header (`+++ after: <path>`) of a file
+whose path is the entry's path or ends in `/` and the entry's path; and no
+`--- before` line has started another file since. A line that adds, drops or
+changes anything (another value, another name, a quote, a trailing comment, a
+second assignment) is not the entry and is read whole, as is the same line in any
+other file. The text shown to the approver is still the diff whole, so the owner
+sees the allowed file's diff in full. The line is blanked, not the diff: a
+credential anywhere else in the same diff still withholds all of it. A header is
+text in the diff, so a file's own content can imitate one; the most that gains is
+that the one fixed, public line is not read there. The line is one-line by design:
+the scan reads a line at a time, so splitting a name from its value across two lines
+is not an accepted way round it (shared-infra's `test_plan_diff_scan.py` fails a
+copied file that does).
+
+Current entries:
+
+| File path (ends with) | Line | Why it is not a credential |
+| --- | --- | --- |
+| `hetzner/provision/branchleft-verify-image` | `export GH_TOKEN=placeholder-not-a-credential` | A fixed placeholder string, not a credential, that `gh` needs set to start when it verifies an attestation offline. The same line is in ghost-platform's `scripts/verify-image-attestation.sh`. |
+
+To add an entry, put a `path|line` item in the array, add a row here, and add the
+cases to the tests that show the new line passes in its file and is withheld in any
+other file or with anything added.
 
 Only the shape is removed. A credential later on the same line is still read, and
 so is a key that only ends like a file key (`token_profile`), a file key whose value

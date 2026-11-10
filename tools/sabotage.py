@@ -1441,6 +1441,41 @@ CASES: list[Case] = [
         [Edit(ACTION, "-e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?[[:space:]]*([],}]|$)/ \\2/g'", "-e 's/[:=][[:space:]]*\"?(true|false|null|none)\"?([^a-z0-9_]|$)/ \\2/g'")],
         [f"{P}.test_a_secret_beside_a_flag_word_a_file_key_or_a_sudoers_tag_is_withheld_and_never_printed"],
     ),
+    # The one named allowance: the exact line, in the file whose header names it, and nothing else.
+    # First the allowance not read at all (the named line is withheld again), then each way it could
+    # be widened: any file, a line that only starts like the entry, or a path that only ends alike.
+    Case(
+        "scan: the named allowance is not read by the credential-assignment pattern",
+        [Edit(ACTION, 'tr \'[:upper:]\' \'[:lower:]\' < "$allowed"', 'tr \'[:upper:]\' \'[:lower:]\' < "$cleaned"')],
+        [f"{P}.test_the_named_placeholder_in_its_own_file_is_shown_and_does_not_fail_the_job"],
+    ),
+    Case(
+        "scan: the named allowance applies in any file",
+        [Edit(ACTION, "if (file != \"\" && $0 ~ /^[-+ ]/) {", "if ($0 ~ /^[-+ ]/) {"),
+         Edit(ACTION, "text == aline[k] && (file == apath[k] || (length(file) > length(apath[k]) && substr(file, length(file) - length(apath[k])) == \"/\" apath[k]))", "text == aline[k]")],
+        [f"{P}.test_the_named_placeholder_is_withheld_in_any_other_place_or_with_anything_added"],
+    ),
+    Case(
+        "scan: the named allowance applies to a path that only ends alike",
+        [Edit(ACTION, "substr(file, length(file) - length(apath[k])) == \"/\" apath[k]", "substr(file, length(file) - length(apath[k]) + 1) == apath[k]")],
+        [f"{P}.test_the_named_placeholder_is_withheld_in_any_other_place_or_with_anything_added"],
+    ),
+    Case(
+        "scan: the named allowance applies to a line that only starts with the entry",
+        [Edit(ACTION, "text == aline[k] &&", "index(text, aline[k]) == 1 &&")],
+        [f"{P}.test_the_named_placeholder_is_withheld_in_any_other_place_or_with_anything_added"],
+    ),
+    Case(
+        "scan: the named allowance takes the rest of the line with it",
+        [Edit(ACTION, "{ $0 = substr($0, 1, 1) }", "{ $0 = \"\" }"),
+         Edit(ACTION, "text == aline[k] &&", "index(text, aline[k]) == 1 &&")],
+        [f"{P}.test_the_named_placeholder_is_withheld_in_any_other_place_or_with_anything_added"],
+    ),
+    Case(
+        "scan: a file header carries over into the next file of the same diff",
+        [Edit(ACTION, "/^--- before/ { file = \"\"; print; next }", "/^--- before/ { print; next }")],
+        [f"{P}.test_the_named_placeholder_is_withheld_in_any_other_place_or_with_anything_added"],
+    ),
     Case(
         "apply job group cancels a running apply",
         [Edit(GATED, "      group: ansible-apply-${{ github.repository }}-${{ inputs.environment }}\n      cancel-in-progress: false", "      group: ansible-apply-${{ github.repository }}-${{ inputs.environment }}\n      cancel-in-progress: true")],
