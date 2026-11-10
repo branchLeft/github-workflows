@@ -722,6 +722,14 @@ runs:
           'jwt|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.'
           'credential-assignment|(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)[A-Za-z0-9_.-]*"?[[:space:]]*[:=][[:space:]]*"?[^[:space:]"]{4,}'
         )
+        # The named allowances of the credential-assignment pattern, one "path|line" each
+        # (README, "What the scan reads"). A diff line that is exactly the line, in a file
+        # whose diff header ends in the path, is not read by that pattern. Nothing else is.
+        # A new entry is a reviewed change to this file, which the code owners approve.
+        allowances=(
+          'hetzner/provision/branchleft-verify-image|export GH_TOKEN=placeholder-not-a-credential'
+        )
+        allowance_text=$(printf '%s\n' "${allowances[@]}")
         # Key material is copied to this file so a diff that quotes it is caught.
         # It is created private, and removed on every way out of the step.
         keylines="$plan_dir/keylines"
@@ -876,9 +884,32 @@ runs:
           #   a key whose name ends in file, filename, path or dir (after a _, . or -) whose value
           #     starts with / or ~, so the value is a location and not the secret;
           #   a value that is true, false, null or none, followed by , } ] or the end of the line.
+          # Before that, a line that is exactly a named allowance, under the diff header of
+          # its file, is blanked in the copy. The whole line must equal the entry's text.
           # Every other pattern reads the diff whole. The text shown is the diff whole too.
+          allowed="$base.allowed"
+          ALLOWANCES="$allowance_text" awk '
+              BEGIN {
+                count = split(ENVIRON["ALLOWANCES"], entries, "\n")
+                for (k = 1; k <= count; k++) {
+                  cut = index(entries[k], "|")
+                  if (cut > 1) { n++; apath[n] = substr(entries[k], 1, cut - 1); aline[n] = substr(entries[k], cut + 1) }
+                }
+              }
+              /^--- before/ { file = ""; print; next }
+              /^\+\+\+ after: / { file = substr($0, 12); print; next }
+              {
+                if (file != "" && $0 ~ /^[-+ ]/) {
+                  text = substr($0, 2)
+                  gsub(/^[ \t]+|[ \t\r]+$/, "", text)
+                  for (k = 1; k <= n; k++) {
+                    if (text == aline[k] && (file == apath[k] || (length(file) > length(apath[k]) && substr(file, length(file) - length(apath[k])) == "/" apath[k]))) { $0 = substr($0, 1, 1) }
+                  }
+                }
+                print
+              }' "$cleaned" > "$allowed"
           scanned="$base.scan"
-          LC_ALL=C tr '[:upper:]' '[:lower:]' < "$cleaned" \
+          LC_ALL=C tr '[:upper:]' '[:lower:]' < "$allowed" \
             | LC_ALL=C sed -E \
               -e 's/(^|[[:space:])])nopasswd:/\1/g' \
               -e 's/\$\{[a-z_][a-z0-9_]*(:?\?[^}]*)?\}//g' \
