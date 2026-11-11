@@ -3,8 +3,11 @@
 @branchleft/components	0.6.0
 @branchleft/ghost-platform-render-core	0.1.1
 @branchleft/ghost-platform-render-core	0.2.0
+@branchleft/ghost-platform-render-core	0.3.0
+@branchleft/ghost-platform-render-core	0.4.0
 @branchleft/ghost-platform-tenant	5.0.0
 @branchleft/ghost-platform-tenant	7.0.0
+@branchleft/ghost-platform-tenant	8.0.0
 @branchleft/hetzner-host	0.2.0
 @branchleft/hetzner-host	0.3.0
 @branchleft/prettier-config	0.3.1
