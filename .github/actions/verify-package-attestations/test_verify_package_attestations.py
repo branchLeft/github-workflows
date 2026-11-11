@@ -36,7 +36,8 @@ HERE = pathlib.Path(__file__).resolve().parent
 FIXTURES = HERE / "fixtures"
 SCRIPT = HERE / "verify-package-attestations.py"
 INSIDE_SABOTAGE = "VERIFY_PACKAGE_ATTESTATIONS_SABOTAGE"
-TOKEN = "stub-not-a-credential"
+STUB = "stub-not-a-credential"
+EMPTY = ""
 COMMIT = "7432906a8dd245b766e81dc5b157d444ed68dcd2"
 
 spec = importlib.util.spec_from_file_location("verify_package_attestations", SCRIPT)
@@ -136,7 +137,7 @@ class World:
     def environment(self, **extra: str) -> dict[str, str]:
         return {
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
-            "GH_TOKEN": TOKEN,
+            "GH_TOKEN": STUB,
             "STUB_ATTEST_DIR": str(self.attest),
             "STUB_TARBALLS": str(self.tarballs),
             "STUB_LOG": str(self.log),
@@ -235,7 +236,7 @@ class World:
 
         return fake
 
-    def scan(self, table: object = TABLE, token: str = TOKEN, **extra: str) -> tuple[int, str, str]:
+    def scan(self, table: object = TABLE, token: str = STUB, **extra: str) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(M, "run", self.fake_run(self.environment(**extra))), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = M.scan(self.repo, table, token)
@@ -371,7 +372,7 @@ class ScanPasses(WorldCase):
     def test_the_token_goes_to_curl_on_standard_input_only(self) -> None:
         self.world.lock([self.good()])
         self.assertEqual(self.world.scan()[0], 0)
-        self.assertFalse([c for c in self.world.calls() if TOKEN in c])
+        self.assertFalse([c for c in self.world.calls() if STUB in c])
 
 
 class ScanRefuses(WorldCase):
@@ -577,7 +578,7 @@ class ScanRefuses(WorldCase):
 
     def test_an_empty_token_is_refused_before_any_call(self) -> None:
         self.world.lock([self.good()])
-        code, _, err = self.world.scan(token="")
+        code, _, err = self.world.scan(token=EMPTY)
         self.assertEqual(code, 1)
         self.assertIn("GH_TOKEN is empty", err)
         self.assertEqual(self.world.calls(), [])
@@ -779,7 +780,7 @@ class CheckTarballCommand(WorldCase):
         done = self.world.cli("check-tarball", str(self.world.tarballs / "none.tgz"), "--repo", GOOD_REPO, "--signer-workflow", f"{GOOD_REPO}/.github/workflows/{GOOD_WORKFLOW}", "--ref", GOOD_REF)
         self.assertEqual(done.returncode, 1)
         self.attest()
-        done = self.run_check(GH_TOKEN="")
+        done = self.run_check(GH_TOKEN=EMPTY)
         self.assertEqual(done.returncode, 1)
         self.assertIn("GH_TOKEN is empty", done.stderr)
 
@@ -830,7 +831,7 @@ class ProveWrongIdentityCommand(WorldCase):
 
 class TheCommandLine(WorldCase):
     def test_self_test_passes_on_the_real_table_with_no_token(self) -> None:
-        done = self.world.cli("self-test", real=True, GH_TOKEN="")
+        done = self.world.cli("self-test", real=True, GH_TOKEN=EMPTY)
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_the_command_line_has_no_way_to_name_another_table(self) -> None:

@@ -30,6 +30,7 @@ INSIDE_SABOTAGE = "ATTEST_NPM_TARBALL_SABOTAGE"
 GOOD_REF = "refs/tags/render-core-v1.0.0"
 REPO = "branchLeft/ghost-platform"
 SIGNER = f"{REPO}/.github/workflows/publish-render-core.yml"
+EMPTY = ""
 
 
 def load(path: pathlib.Path, name: str):  # type: ignore[no-untyped-def]
@@ -163,7 +164,7 @@ class TheSteps(unittest.TestCase):
                 self.assertNotEqual(self.run_step(self.CHECK, **overrides).returncode, 0)
 
     def test_the_input_check_needs_no_token(self) -> None:
-        self.assertEqual(self.run_step(self.CHECK, GH_TOKEN="").returncode, 0)
+        self.assertEqual(self.run_step(self.CHECK, GH_TOKEN=EMPTY).returncode, 0)
 
 
 class TheStructure(unittest.TestCase):
