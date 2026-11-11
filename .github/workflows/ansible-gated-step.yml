@@ -1,0 +1,480 @@
+name: Ansible gated step
+
+# The reusable sender of one routine step to one host, over the gated pull. A
+# step is a task a role keeps behind the `never` tag; the host's pull-trigger
+# program runs it on a signed commit of main and a typed word. Rules, inputs,
+# secrets, the one-time setup the owner does and the named limits are in
+# ansible-gated-step.md, next to this file.
+#
+# Three jobs. `guard` holds no secret and no environment: it refuses unless the
+# owner dispatched a shaped step for a step and word on the host's allow-list,
+# and prints the three lines the approver reads. `send` waits on the deployment
+# environment, then reads the step key and asks the host twice. `Ansible step
+# checks passed` is the one a caller requires. The apply workflow is untouched.
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: >-
+          Name of the deployment environment that holds the step secrets and
+          whose only required reviewer is the owner. The send job runs in it, so
+          the approval click is GitHub's, not this workflow's.
+        type: string
+        required: false
+        default: control-plane-step
+      step:
+        description: The id of the step to run, typed by the owner at dispatch.
+        type: string
+        required: true
+      confirm:
+        description: >-
+          The word of that step in the host's inventory file, typed by the owner
+          at dispatch. A slip guard, not a secret.
+        type: string
+        required: true
+      owner-login:
+        description: >-
+          The GitHub account that may dispatch a step. Both the account that
+          dispatched and the account that started this run must be it.
+        type: string
+        required: true
+      step-inventory:
+        description: >-
+          The host's inventory file, relative to the repository root, whose
+          pull_trigger_steps list holds the step ids and words the host accepts.
+        type: string
+        required: true
+      step-inputs:
+        description: >-
+          Optional: one id=path line per step, the committed input file that
+          step compares, relative to the repository root. The guard prints that
+          file's sha256 for the approver.
+        type: string
+        required: false
+        default: ''
+      host-timeout-minutes:
+        description: One call to the host is stopped after this many minutes.
+        type: number
+        required: false
+        default: 65
+      send-timeout-minutes:
+        description: The send job is stopped after this many minutes, not counting the wait for approval.
+        type: number
+        required: false
+        default: 140
+    secrets:
+      ssh_step_key:
+        description: >-
+          The private key of the step route, which the host restricts to the
+          forced command in step mode. Store it as a secret of the deployment
+          environment, which the send job reads because it runs in it.
+        required: false
+      ssh_step_host:
+        description: >-
+          The one host the step is sent to, exactly one user@host line, the
+          step account's. Store it in the deployment environment.
+        required: false
+      ssh_known_hosts:
+        description: The known_hosts lines of the host and of any jump host. Store it in the deployment environment.
+        required: false
+      ssh_jump_host:
+        description: >-
+          Optional; both or neither with ssh_jump_key. A user@host the step host
+          is reached through (ProxyJump). Store it in the deployment environment.
+        required: false
+      ssh_jump_key:
+        description: Optional; both or neither with ssh_jump_host. The private key for the jump host and nothing else.
+        required: false
+      ssh_jump2_host:
+        description: >-
+          Optional; both or neither with ssh_jump2_key; needs the first jump. A
+          user@host reached through the first jump host, before the step host.
+        required: false
+      ssh_jump2_key:
+        description: Optional; both or neither with ssh_jump2_host. The private key for the second jump host and nothing else.
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    name: Guard the step request
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.request.outputs.sha }}
+      step: ${{ steps.request.outputs.step }}
+    steps:
+      - name: Refuse unless the owner dispatched a shaped step
+        id: request
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IS_FORK: ${{ github.event.repository.fork }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ inputs.owner-login }}
+          STEP: ${{ inputs.step }}
+          CONFIRM: ${{ inputs.confirm }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          INVENTORY: ${{ inputs.step-inventory }}
+          STEP_INPUTS: ${{ inputs.step-inputs }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [ "$EVENT_NAME" = workflow_dispatch ] || fail "A step is sent only for a dispatch by hand, not for $EVENT_NAME."
+          [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail "A step is sent only from the default branch."
+          [ "$IS_FORK" != true ] || fail "A step is never sent from a fork."
+          sha_re='^[0-9a-f]{40}$'
+          [[ "$SHA" =~ $sha_re ]] || fail "The commit is not 40 lowercase hex digits."
+          owner_re='^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'
+          [[ "$OWNER" =~ $owner_re ]] || fail "owner-login must be a GitHub account name."
+          owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          actor=$(printf '%s' "$ACTOR" | tr '[:upper:]' '[:lower:]')
+          triggering=$(printf '%s' "$TRIGGERING_ACTOR" | tr '[:upper:]' '[:lower:]')
+          [ "$actor" = "$owner" ] || fail "The dispatch was not made by the owner's account."
+          [ "$triggering" = "$owner" ] || fail "This run was not started by the owner's account."
+          step_re='^[a-z][a-z0-9_]{0,31}$'
+          [[ "$STEP" =~ $step_re ]] || fail "The step must be lowercase letters, digits and underscore, starting with a letter, at most 32 characters."
+          confirm_re='^[A-Z0-9-]{4,32}$'
+          [[ "$CONFIRM" =~ $confirm_re ]] || fail "The confirm word must be 4 to 32 capital letters, digits and dashes."
+          environment_re='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+          [[ "$ENVIRONMENT" =~ $environment_re ]] || fail "The environment input must name a deployment environment."
+          path_re='^[A-Za-z0-9_][A-Za-z0-9_./-]*$'
+          [[ "$INVENTORY" =~ $path_re ]] || fail "step-inventory must be a relative path of letters, digits, dot, underscore, dash and slash."
+          case "$INVENTORY" in *..*) fail "step-inventory must not contain '..'." ;; esac
+          line_re='^[a-z][a-z0-9_]{0,31}=[A-Za-z0-9_][A-Za-z0-9_./-]*$'
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            [[ "$line" =~ $line_re ]] || fail "A line of step-inputs must be id=path, with a relative path of letters, digits, dot, underscore, dash and slash."
+            case "$line" in *..*) fail "A path in step-inputs must not contain '..'." ;; esac
+          done <<< "$STEP_INPUTS"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "step=$STEP" >> "$GITHUB_OUTPUT"
+          echo "The owner dispatched step $STEP at commit $SHA."
+
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify the checkout is the dispatched commit
+        env:
+          SHA: ${{ steps.request.outputs.sha }}
+        run: |
+          set -euo pipefail
+          head=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)
+          [ "$head" = "$SHA" ] || {
+            echo "::error::The checkout is at $head, not at the dispatched commit $SHA."
+            exit 1
+          }
+          echo "The checkout is at $head."
+
+      - name: Judge the step and its word against the host's inventory
+        env:
+          STEP: ${{ steps.request.outputs.step }}
+          CONFIRM: ${{ inputs.confirm }}
+          INVENTORY: ${{ inputs.step-inventory }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          root=$(realpath "$GITHUB_WORKSPACE")
+          file="$GITHUB_WORKSPACE/$INVENTORY"
+          [ -f "$file" ] && [ ! -L "$file" ] || fail "step-inventory is not a regular file of the checkout."
+          resolved=$(realpath "$file")
+          case "$resolved" in
+            "$root"/*) ;;
+            *) fail "step-inventory leaves the checkout." ;;
+          esac
+          entries=$(yq -o=json . "$file" | jq -c --arg step "$STEP" '[(.pull_trigger_steps // [])[] | select(.id == $step)]') \
+            || fail "The inventory file could not be read as a list of steps."
+          [ "$(printf '%s' "$entries" | jq 'length')" = 1 ] || fail "The step is not on the host's step allow-list in the inventory file, exactly once."
+          word=$(printf '%s' "$entries" | jq -r '.[0].word')
+          [ "$word" = "$CONFIRM" ] || fail "The typed word is not the word of this step."
+          echo "The step is on the host's allow-list and the typed word is its word."
+
+      - name: Show the approver what is about to be released
+        env:
+          SHA: ${{ steps.request.outputs.sha }}
+          STEP: ${{ steps.request.outputs.step }}
+          STEP_INPUTS: ${{ inputs.step-inputs }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          input_path=""
+          named=0
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            if [ "${line%%=*}" = "$STEP" ]; then
+              input_path="${line#*=}"
+              named=$((named + 1))
+            fi
+          done <<< "$STEP_INPUTS"
+          [ "$named" -le 1 ] || fail "step-inputs names the step more than once."
+          input_line="input none named for this step"
+          if [ "$named" -eq 1 ]; then
+            root=$(realpath "$GITHUB_WORKSPACE")
+            file="$GITHUB_WORKSPACE/$input_path"
+            [ -f "$file" ] && [ ! -L "$file" ] || fail "The input file named for the step is not a regular file of the checkout."
+            case "$(realpath "$file")" in
+              "$root"/*) ;;
+              *) fail "The input file named for the step leaves the checkout." ;;
+            esac
+            input_line="input $input_path sha256 $(shasum -a 256 "$file" | cut -d ' ' -f 1)"
+          fi
+          {
+            echo "commit $SHA"
+            echo "step $STEP"
+            echo "$input_line"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # The send job. Its environment is the deployment gate: GitHub holds the job
+  # until the environment's required reviewer approves it, and only then does it
+  # read the environment's secrets. It checks the request again because a rerun
+  # of a failed job is started by whoever reruns it, and because the typed
+  # values go into the command it sends.
+  send:
+    name: Send the step to the host (after approval)
+    needs: [guard]
+    runs-on: ubuntu-24.04
+    timeout-minutes: ${{ inputs.send-timeout-minutes }}
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: ansible-step-${{ github.repository }}-${{ inputs.environment }}
+      cancel-in-progress: false
+    steps:
+      - name: Refuse unless this is the owner's guarded step
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          IS_FORK: ${{ github.event.repository.fork }}
+          SHA: ${{ github.sha }}
+          GUARDED_SHA: ${{ needs.guard.outputs.sha }}
+          GUARDED_STEP: ${{ needs.guard.outputs.step }}
+          ACTOR: ${{ github.actor }}
+          TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          OWNER: ${{ inputs.owner-login }}
+          STEP: ${{ inputs.step }}
+          CONFIRM: ${{ inputs.confirm }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          [ "$EVENT_NAME" = workflow_dispatch ] || fail "A step is sent only for a dispatch by hand, not for $EVENT_NAME."
+          [ "$REF" = "refs/heads/$DEFAULT_BRANCH" ] || fail "A step is sent only from the default branch."
+          [ "$IS_FORK" != true ] || fail "A step is never sent from a fork."
+          sha_re='^[0-9a-f]{40}$'
+          [[ "$SHA" =~ $sha_re ]] || fail "The commit is not 40 lowercase hex digits."
+          [ "$GUARDED_SHA" = "$SHA" ] || fail "The commit the guard judged is not this run's commit."
+          [ "$GUARDED_STEP" = "$STEP" ] || fail "The step the guard judged is not this run's step."
+          owner_re='^[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?$'
+          [[ "$OWNER" =~ $owner_re ]] || fail "owner-login must be a GitHub account name."
+          owner=$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')
+          actor=$(printf '%s' "$ACTOR" | tr '[:upper:]' '[:lower:]')
+          triggering=$(printf '%s' "$TRIGGERING_ACTOR" | tr '[:upper:]' '[:lower:]')
+          [ "$actor" = "$owner" ] || fail "The dispatch was not made by the owner's account."
+          [ "$triggering" = "$owner" ] || fail "This run was not started by the owner's account."
+          step_re='^[a-z][a-z0-9_]{0,31}$'
+          [[ "$STEP" =~ $step_re ]] || fail "The step must be lowercase letters, digits and underscore, starting with a letter, at most 32 characters."
+          confirm_re='^[A-Z0-9-]{4,32}$'
+          [[ "$CONFIRM" =~ $confirm_re ]] || fail "The confirm word must be 4 to 32 capital letters, digits and dashes."
+          echo "Sending step $STEP at commit $SHA after the approval of the environment."
+
+      - name: Send the step, then again to prove nothing is left to change
+        env:
+          SHA: ${{ github.sha }}
+          STEP: ${{ inputs.step }}
+          CONFIRM: ${{ inputs.confirm }}
+          HOST_TIMEOUT_MINUTES: ${{ inputs.host-timeout-minutes }}
+          SSH_KEY: ${{ secrets.ssh_step_key }}
+          STEP_HOST: ${{ secrets.ssh_step_host }}
+          KNOWN_HOSTS: ${{ secrets.ssh_known_hosts }}
+          JUMP_HOST: ${{ secrets.ssh_jump_host }}
+          JUMP_KEY: ${{ secrets.ssh_jump_key }}
+          JUMP2_HOST: ${{ secrets.ssh_jump2_host }}
+          JUMP2_KEY: ${{ secrets.ssh_jump2_key }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          destination_pattern='^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'
+          timeout_re='^[1-9][0-9]{0,3}$'
+          [[ "$HOST_TIMEOUT_MINUTES" =~ $timeout_re ]] || fail "host-timeout-minutes must be a whole number of minutes."
+          [ -n "$SSH_KEY" ] || fail "The ssh_step_key secret is empty. It is a secret of the deployment environment."
+          [ -n "$KNOWN_HOSTS" ] || fail "The ssh_known_hosts secret is empty."
+          count=0
+          dest=""
+          while IFS= read -r line; do
+            [ -n "$line" ] || continue
+            count=$((count + 1))
+            dest="$line"
+          done <<< "$STEP_HOST"
+          [ "$count" -eq 1 ] || fail "ssh_step_host must hold exactly one host, as one user@host line, and it holds $count."
+          [[ "$dest" =~ $destination_pattern ]] || fail "ssh_step_host is not of the form user@host."
+          if [ -n "$JUMP_HOST" ] || [ -n "$JUMP_KEY" ]; then
+            [ -n "$JUMP_HOST" ] || fail "ssh_jump_key is set but ssh_jump_host is empty: a jump needs both or neither."
+            [ -n "$JUMP_KEY" ] || fail "ssh_jump_host is set but ssh_jump_key is empty: a jump needs both or neither."
+            [[ "$JUMP_HOST" =~ $destination_pattern ]] || fail "ssh_jump_host is not of the form user@host."
+            [ "$JUMP_KEY" != "$SSH_KEY" ] || fail "ssh_jump_key is the same as the step key: each hop has its own key."
+          fi
+          if [ -n "$JUMP2_HOST" ] || [ -n "$JUMP2_KEY" ]; then
+            { [ -n "$JUMP_HOST" ] && [ -n "$JUMP_KEY" ]; } || fail "A second hop needs ssh_jump_host and ssh_jump_key: it is reached through the first hop."
+            [ -n "$JUMP2_HOST" ] || fail "ssh_jump2_key is set but ssh_jump2_host is empty: a second hop needs both or neither."
+            [ -n "$JUMP2_KEY" ] || fail "ssh_jump2_host is set but ssh_jump2_key is empty: a second hop needs both or neither."
+            [[ "$JUMP2_HOST" =~ $destination_pattern ]] || fail "ssh_jump2_host is not of the form user@host."
+            [ "$JUMP2_KEY" != "$SSH_KEY" ] || fail "ssh_jump2_key is the same as the step key: each hop has its own key."
+            [ "$JUMP2_KEY" != "$JUMP_KEY" ] || fail "ssh_jump2_key is the same as ssh_jump_key: each hop has its own key."
+          fi
+          work="$RUNNER_TEMP/ansible-step"
+          mkdir "$work"
+          # The key copies go on every way out of the step, a refusal included.
+          trap 'rm -rf "$work"' EXIT
+          # Each line of a key is masked in the log as soon as the key is on disk.
+          mask_lines() {
+            local masked
+            while IFS= read -r masked; do
+              echo "::add-mask::$masked"
+            done < <(awk 'length($0) >= 16 && $0 !~ /^-----/' "$1")
+          }
+          (umask 077 && printf '%s\n' "$SSH_KEY" > "$work/id" && printf '%s\n' "$KNOWN_HOSTS" > "$work/known_hosts")
+          mask_lines "$work/id"
+          ssh_args=(-T -i "$work/id" -o IdentitiesOnly=yes -o BatchMode=yes
+            -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/known_hosts"
+            -o GlobalKnownHostsFile=/dev/null -o ConnectTimeout=30 -o ServerAliveInterval=30
+            -o ForwardAgent=no -o ClearAllForwardings=yes)
+          # ssh gives a jump hop none of the options on the command line, so each
+          # hop is a stanza of its own with its own key and strict options. The
+          # alias holds an underscore, which no validated host name can, so no
+          # target can select the stanza.
+          hop_stanza() {
+            local alias="$1" hop="$2" key_file="$3"
+            {
+              printf 'Host %s\n' "$alias"
+              printf '  HostName %s\n' "${hop#*@}"
+              printf '  User %s\n' "${hop%%@*}"
+              printf '  IdentityFile %s\n' "$key_file"
+              printf '  IdentitiesOnly yes\n'
+              printf '  BatchMode yes\n'
+              printf '  StrictHostKeyChecking yes\n'
+              printf '  UserKnownHostsFile %s\n' "$work/known_hosts"
+              printf '  GlobalKnownHostsFile /dev/null\n'
+              printf '  ConnectTimeout 30\n'
+              printf '  ServerAliveInterval 30\n'
+              printf '  ForwardAgent no\n'
+              printf '  ClearAllForwardings yes\n'
+            } >> "$work/jump_config"
+          }
+          if [ -n "$JUMP_HOST" ]; then
+            (umask 077 && printf '%s\n' "$JUMP_KEY" > "$work/jump_id" && : > "$work/jump_config")
+            mask_lines "$work/jump_id"
+            hop_stanza jump_hop "$JUMP_HOST" "$work/jump_id"
+            proxy=jump_hop
+            if [ -n "$JUMP2_HOST" ]; then
+              (umask 077 && printf '%s\n' "$JUMP2_KEY" > "$work/jump2_id")
+              mask_lines "$work/jump2_id"
+              hop_stanza jump_hop2 "$JUMP2_HOST" "$work/jump2_id"
+              proxy=jump_hop,jump_hop2
+            fi
+            ssh_args+=(-F "$work/jump_config" -o "ProxyJump=$proxy")
+          fi
+          re='^pull-trigger verdict=([a-z-]+) exit=([0-9]+) reason=([a-z-]+) mode=step commit=([0-9a-f]{40}) playbook=[A-Za-z0-9_./-]+ changed=([0-9]+|-) step=([a-z][a-z0-9_]{0,31}|-)$'
+          # Send one request and require the answer to be one line, for this
+          # commit and this step, of an accepted kind. Arguments: a label, then
+          # the accepted answers as "exit:verdict" words. The playbook output is
+          # dropped: it is on the host, and the job log is public.
+          ask() {
+            local label="$1" rc=0 out line accepted ok=1 matched=no f_verdict="" f_exit="" f_reason="" f_commit="" f_changed="" f_step=""
+            shift
+            out=$(timeout "${HOST_TIMEOUT_MINUTES}m" ssh "${ssh_args[@]}" -- "$dest" "$SHA $STEP $CONFIRM" < /dev/null 2> /dev/null) || rc=$?
+            line=$(printf '%s\n' "$out" | tr -d '\r' | head -n 1)
+            if [ "$rc" = 255 ]; then
+              fail "$label: the SSH connection failed (exit 255)."
+            fi
+            if [ "$(printf '%s\n' "$out" | wc -l | tr -d ' ')" = 1 ] && [[ "$line" =~ $re ]]; then
+              matched=yes
+              f_verdict="${BASH_REMATCH[1]}"
+              f_exit="${BASH_REMATCH[2]}"
+              f_reason="${BASH_REMATCH[3]}"
+              f_commit="${BASH_REMATCH[4]}"
+              f_changed="${BASH_REMATCH[5]}"
+              f_step="${BASH_REMATCH[6]}"
+            fi
+            if [ "$matched" != yes ]; then
+              fail "$label: the host did not answer with one step summary line (exit $rc)."
+            fi
+            if [ "$f_commit" != "$SHA" ] || [ "$f_exit" != "$rc" ]; then
+              fail "$label: the summary line names another commit or exit status (exit $rc)."
+            fi
+            if [ "$f_step" != "$STEP" ]; then
+              fail "$label: the summary line names another step than the one sent (verdict $f_verdict, reason $f_reason, exit $rc)."
+            fi
+            for accepted in "$@"; do
+              if [ "$accepted" = "$rc:$f_verdict" ]; then
+                ok=0
+              fi
+            done
+            if [ "$ok" -ne 0 ] || [ "$f_changed" = - ] || { [ "$f_verdict" = unchanged ] && [ "$f_changed" != 0 ]; }; then
+              fail "$label: verdict $f_verdict, reason $f_reason, exit $rc."
+            fi
+            REPLY_VERDICT="$f_verdict"
+            REPLY_CHANGED="$f_changed"
+          }
+          ask "The step" "10:applied" "0:unchanged"
+          first="$REPLY_VERDICT"
+          first_changed="$REPLY_CHANGED"
+          ask "The second run, which must change nothing" "0:unchanged"
+          printf 'Step %s at commit %s: %s with %s change(s), then a second run that changed nothing.\n' "$STEP" "$SHA" "$first" "$first_changed" | tee -a "$GITHUB_STEP_SUMMARY"
+
+  # The check a caller requires. It runs even when a needed job failed or was
+  # skipped. A dispatch must have passed the guard and the send; any other event
+  # never sends. It is not a pull request check.
+  checks:
+    name: Ansible step checks passed
+    needs: [guard, send]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to have ended as expected
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          GUARD: ${{ needs.guard.result }}
+          SEND: ${{ needs.send.result }}
+        run: |
+          set -euo pipefail
+          problems=0
+          expect() {
+            if [ "$2" != "$3" ]; then
+              echo "The $1 job reported $2, expected $3."
+              problems=1
+            fi
+          }
+          if [ "$EVENT_NAME" = workflow_dispatch ]; then
+            expect guard "$GUARD" success
+            expect send "$SEND" success
+          else
+            expect send "$SEND" skipped
+          fi
+          if [ "$problems" -ne 0 ]; then
+            echo "Every job must end as expected."
+            exit 1
+          fi
+          echo "Every job ended as expected."
