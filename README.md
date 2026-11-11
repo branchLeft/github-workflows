@@ -1469,6 +1469,44 @@ breaking each control in a copy and requiring its tests to go red, and runs the
 consumer action over a lockfile with no first-party package, one with a package that
 is not in the table, and a directory with no lockfile.
 
+### `.github/actions/check-verify-job-hardened`
+
+Checks, in the calling repo's own CI, that the job which runs
+`verify-package-attestations` cannot pass silently. Every job that calls the action
+fails the check if it, or any of its steps, sets a `continue-on-error` that is not a
+literal `false`; if the job or the verify step has an `if:`; if a job in its `needs`
+chain has an `if:` (a skipped needed job skips it); if its `permissions:` are anything
+but exactly `contents: read` and `packages: read`; or if the step does not use this
+repo's action. A workflow with no such job fails, so removing the job is red. It reads
+the workflow with a strict reader and fails on anything it cannot read with certainty
+(anchors, merge keys, tabs, a duplicate key, a job or step written as a flow mapping).
+It reads only the file it is given; a repo that does not call it is not checked, and
+the check binds only once its job is a required status check, which is an owner
+action. Codes, rules and what it does not check:
+[`check-verify-job-hardened.md`](.github/actions/check-verify-job-hardened/check-verify-job-hardened.md).
+
+**Caller usage** — a step in a job of the repo's own test or lint workflow that runs
+on `pull_request` and on push to the default branch, after the checkout, never in the
+verify job itself, pinned to the signed tag that first carries it:
+
+```yaml
+      - name: Check the verify job cannot pass silently
+        uses: branchLeft/github-workflows/.github/actions/check-verify-job-hardened@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          workflow: .github/workflows/package-attestations-ci.yml
+          job: verify
+```
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `workflow` | required | The workflow file, relative to the workspace root. |
+| `job` | empty | Whitespace-separated job ids that must exist and call the verify action. Empty requires only that at least one job calls it. |
+
+It fails the step, with one annotation per finding, and has no outputs. This repo's
+`check-verify-job-hardened-self.yml` runs its unit tests, which break each control in
+a copy and require its tests to go red, and the action itself over passing and
+failing callers, on every pull request.
+
 ### `.github/actions/ssh-check-hosts`
 
 Asks each host, through the restricted SSH route, what an apply of one commit
