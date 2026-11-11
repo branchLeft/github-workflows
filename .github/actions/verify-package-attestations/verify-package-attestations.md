@@ -30,25 +30,32 @@ for itself. One row per published package:
 | `@branchleft/components`, `@branchleft/brand-branchleft`, `@branchleft/brand-publicpress` | `branchLeft/components` | `publish.yml` | a tag `vX.Y.Z`; the tag is not the package version |
 | `@branchleft/tsconfig`, `@branchleft/prettier-config`, `@branchleft/vitest-config`, `@branchleft/eslint-config` | `branchLeft/standards` | `publish.yml` | tag `vX.Y.Z`, equal to the version |
 
-Each row also carries `first_attested` and `grandfathered`. Both are `UNSET` and
-empty today, because no package has been published through an attesting workflow
-yet. A package whose row is `UNSET` grandfathers nothing: every version of it must
-carry a verified attestation, so the check **fails closed** for that package, with
-a message that names the row. The failure message of a version that is not
-attested says which of three things is wrong:
+Each row also carries `first_attested` and `grandfathered`. `first_attested` is
+`UNSET` on every row today, because no package has been published through an
+attesting workflow yet. `grandfathered` is the exact list of versions published
+before attestation began: the versions the repositories' lockfiles pinned when the
+list was derived (`fixtures/pinned-before-attestation.tsv`, one `package<TAB>version`
+line each). Only a listed version passes without an attestation, whether the row is
+`UNSET` or has a floor. Every other version of the package, and every version of a
+package whose list is empty, must carry a verified attestation, so the check
+**fails closed** for it, with a message that names the row. The failure message of
+a version that is not attested says which of four things is wrong:
 
 | Situation | What the message says |
 | --- | --- |
-| The row's `first_attested` is `UNSET` | The row is `UNSET`: none passes until the floor is set. |
+| The row is `UNSET` and its list is empty | None passes until the floor is set. |
+| The row is `UNSET` and the version is not in its list | Only the listed versions pass. |
 | The version is below `first_attested` and not listed in `grandfathered` | List it in a reviewed change, or install an attested version. |
 | The version is at or above `first_attested` | An attestation is required. |
 
-A version listed in `grandfathered` passes with no download and no lookup. Setting
-the floor is a reviewed change to the table, made after the first attested release
-of that package exists: set `first_attested` to that version and list, by exact
-version, every earlier version the registry holds. A listed version at or above
-the floor, a floor that is not a version, and a list on an `UNSET` row are all
-refused by the table check, which runs before every scan.
+A version listed in `grandfathered` passes with no download and no lookup. Extending
+a list is a reviewed change to the table and is right only for a version that was
+published before attestation began. Setting the floor is a reviewed change made
+after the first attested release of that package exists: set `first_attested` to
+that version and list, by exact version, every earlier version the registry holds.
+A listed version at or above the floor, a floor that is not a version, a listed
+version that is not a version and a version listed twice are all refused by the
+table check, which runs before every scan.
 
 A `@branchleft` package that is not in the table is refused: add a reviewed row
 before it can be installed.

@@ -5,8 +5,9 @@ description: >
   signed build attestation from the repository, workflow and ref that the
   reviewed identity table names for it. Fails closed: an unreadable lockfile, a
   package missing from the table, a download or lookup that fails, bytes that
-  differ from the lockfile, and a table row whose first attested version is UNSET
-  all fail the step.
+  differ from the lockfile, and a version that is not listed and has no
+  attestation (on a row whose first attested version is UNSET too) all fail the
+  step.
 
 # The rules, the identity table and their reasons are in
 # verify-package-attestations.md beside this file. The program is run from the

@@ -1430,10 +1430,12 @@ lockfile all fail it. The rules and the table:
 `grandfathered` versions. A listed version passes with no download. Any other version
 needs a verified attestation, and the failure message says whether the row is `UNSET`,
 the version is below the floor and unlisted, or it is at or above the floor. Every
-row is `UNSET` until the first release published through an attesting workflow
-exists, and an `UNSET` row grandfathers nothing, so the check fails closed for that
-package. Setting a floor and listing the earlier versions is a reviewed change to the
-table, made after that release.
+row's floor is `UNSET` until the first release published through an attesting
+workflow exists. The list of an `UNSET` row is the exact versions the repositories'
+lockfiles pinned before attestation began, and only those pass; every other
+version, and every version of a package with an empty list, fails closed. Extending
+a list, or setting a floor and listing the earlier versions, is a reviewed change to
+the table.
 
 **What is unproven until the first real publish.** These are UNVERIFIED; do not read
 them as facts:
