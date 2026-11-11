@@ -93,6 +93,12 @@ GOOD_REPO = "branchLeft/ghost-platform"
 GOOD_WORKFLOW = "publish-render-core.yml"
 
 
+def pinned_before_attestation() -> list[tuple[str, str]]:
+    """Every package@version the repositories' lockfiles pinned when the list was derived."""
+    rows = (FIXTURES / "pinned-before-attestation.tsv").read_text(encoding="utf-8").splitlines()
+    return [(row.split("\t")[0], row.split("\t")[1]) for row in rows if row]
+
+
 def make_tgz(path: pathlib.Path, name: str, version: str, claimed: tuple[str, str] | None = None) -> None:
     """A deterministic package tarball. ``claimed`` is what its package.json says."""
     shown = claimed or (name, version)
@@ -638,10 +644,15 @@ class TheTable(unittest.TestCase):
             ),
         )
 
-    def test_the_real_table_grandfathers_nothing_it_has_not_listed(self) -> None:
+    def test_the_real_table_lists_exactly_the_versions_pinned_before_attestation(self) -> None:
+        listed = sorted((row.package, version) for row in M.IDENTITIES for version in row.grandfathered)
+        self.assertEqual(listed, sorted(pinned_before_attestation()))
+
+    def test_every_real_grandfathered_list_is_in_ascending_order_and_every_row_is_unset(self) -> None:
         for row in M.IDENTITIES:
-            if row.first_attested == M.UNSET:
-                self.assertEqual(row.grandfathered, (), row.package)
+            keys = [M.version_key(v) for v in row.grandfathered]
+            self.assertEqual(keys, sorted(keys), row.package)  # type: ignore[type-var]
+            self.assertEqual(row.first_attested, M.UNSET, row.package)
 
     def test_every_way_the_table_can_be_wrong_is_found(self) -> None:
         good = TABLE[0]
@@ -658,7 +669,9 @@ class TheTable(unittest.TestCase):
         self.assertTrue(one(ref_regex="tags/v1"))
         self.assertTrue(one(ref_template="refs/tags/other-v{version}"))
         self.assertTrue(one(first_attested="soon"))
-        self.assertTrue(one(first_attested="UNSET", grandfathered=("0.1.0",)))
+        self.assertEqual(one(first_attested="UNSET", grandfathered=("0.1.0",)), [])
+        self.assertTrue(one(first_attested="UNSET", grandfathered=("0.1.0", "0.1.0")))
+        self.assertTrue(one(first_attested="UNSET", grandfathered=("soon",)))
         self.assertTrue(one(grandfathered=("1.0.0",)))
         self.assertTrue(one(grandfathered=("2.0.0",)))
         self.assertTrue(one(grandfathered=("old",)))
@@ -670,6 +683,52 @@ class TheTable(unittest.TestCase):
         keys = [M.version_key(v) for v in order]
         self.assertEqual(keys, sorted(keys))  # type: ignore[type-var]
         self.assertIsNone(M.version_key("1.0"))
+
+
+class TheRealTree(WorldCase):
+    """The real table against a lockfile that pins every version the repositories pin today."""
+
+    def lock_pinned(self) -> None:
+        self.world.lock([self.world.entry(name, version) for name, version in pinned_before_attestation()])
+
+    def test_every_pinned_version_passes_with_no_download_and_no_lookup(self) -> None:
+        self.lock_pinned()
+        done = self.world.cli("scan", str(self.world.repo), real=True)
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+        self.assertIn(f"0 attested, {len(pinned_before_attestation())} grandfathered, 0 refused", done.stdout)
+        self.assertEqual(self.world.calls(), [])
+
+    def test_a_version_that_is_not_listed_fails_closed_on_every_package_with_a_list(self) -> None:
+        listed = {name for name, _ in pinned_before_attestation()}
+        self.assertTrue(listed)
+        for name in sorted(listed):
+            for version in ("0.0.1", "0.3.2", "9.9.9"):
+                with self.subTest(package=name, version=version):
+                    self.setUp()
+                    self.world.package(name, version)
+                    self.world.lock([self.world.entry(name, version)])
+                    done = self.world.cli("scan", str(self.world.repo), real=True)
+                    self.assertEqual(done.returncode, 1, done.stdout)
+                    self.assertIn(f"row {name} has first_attested UNSET", done.stderr)
+                    self.assertIn(f"{version} is not one of them", done.stderr)
+
+    def test_a_listed_version_of_one_package_does_not_pass_for_another(self) -> None:
+        self.world.package("@branchleft/eslint-config", "0.8.8")
+        self.world.lock([self.world.entry("@branchleft/eslint-config", "0.8.8")])
+        done = self.world.cli("scan", str(self.world.repo), real=True)
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("row @branchleft/eslint-config has first_attested UNSET", done.stderr)
+        self.assertIn("no version of it is grandfathered", done.stderr)
+
+    def test_one_unlisted_version_among_listed_ones_fails_the_whole_scan(self) -> None:
+        self.world.package("@branchleft/tsconfig", "0.9.0")
+        self.world.lock(
+            [self.world.entry(name, version) for name, version in pinned_before_attestation()]
+            + [self.world.entry("@branchleft/tsconfig", "0.9.0")]
+        )
+        done = self.world.cli("scan", str(self.world.repo), real=True)
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn(f"{len(pinned_before_attestation())} grandfathered, 1 refused", done.stdout)
 
 
 class TheRealResult(unittest.TestCase):
@@ -911,6 +970,34 @@ class Sabotage(unittest.TestCase):
             {
                 "ScanRefuses.test_a_version_above_the_floor_without_attestation_fails",
                 "ScanRefuses.test_a_version_below_the_floor_that_is_not_listed_fails",
+                "ScanRefuses.test_an_unset_row_without_attestation_fails_closed_and_names_the_row",
+            },
+        ),
+        "one pinned version is removed from the grandfathered list": (
+            SCRIPT_NAME,
+            'grandfathered=("0.3.1", "0.4.0", "0.6.0", "0.7.0", "0.8.8"),',
+            'grandfathered=("0.3.1", "0.4.0", "0.6.0", "0.8.8"),',
+            {
+                "TheRealTree.test_every_pinned_version_passes_with_no_download_and_no_lookup",
+                "TheTable.test_the_real_table_lists_exactly_the_versions_pinned_before_attestation",
+            },
+        ),
+        "an unpinned version is added to the grandfathered list": (
+            SCRIPT_NAME,
+            'grandfathered=("0.2.0", "0.3.0"),',
+            'grandfathered=("0.2.0", "0.3.0", "9.9.9"),',
+            {
+                "TheRealTree.test_a_version_that_is_not_listed_fails_closed_on_every_package_with_a_list",
+                "TheTable.test_the_real_table_lists_exactly_the_versions_pinned_before_attestation",
+            },
+        ),
+        "an unset row grandfathers every version": (
+            SCRIPT_NAME,
+            "    if entry.version in row.grandfathered:",
+            '    if entry.version in row.grandfathered or row.first_attested == UNSET:',
+            {
+                "TheRealTree.test_a_version_that_is_not_listed_fails_closed_on_every_package_with_a_list",
+                "TheRealTree.test_one_unlisted_version_among_listed_ones_fails_the_whole_scan",
                 "ScanRefuses.test_an_unset_row_without_attestation_fails_closed_and_names_the_row",
             },
         ),

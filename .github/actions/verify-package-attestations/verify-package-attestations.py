@@ -74,10 +74,12 @@ class Identity:
 
 
 # One row per published @branchleft package. `first_attested` is UNSET until the
-# first release published through the attesting workflow is known; an UNSET row
-# grandfathers nothing, so that package fails closed once the check is enabled.
-# The floor and the grandfathered list are set in a reviewed change after that
-# release exists. `ref_template` is the exact ref when the tag maps to the package
+# first release published through the attesting workflow is known. `grandfathered`
+# is the exact list of versions published before attestation began; only those
+# versions pass without an attestation, on a floored row and on an UNSET row alike,
+# and every other version fails closed. The list is derived from the versions the
+# repositories' lockfiles pin, and is extended only in a reviewed change.
+# `ref_template` is the exact ref when the tag maps to the package
 # version; None where it does not (the check then uses `ref_regex` alone).
 IDENTITIES: tuple[Identity, ...] = (
     Identity(
@@ -86,6 +88,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish-render-core.yml",
         ref_regex=r"refs/tags/render-core-v\d+\.\d+\.\d+",
         ref_template="refs/tags/render-core-v{version}",
+        grandfathered=("0.1.1", "0.2.0"),
     ),
     Identity(
         package="@branchleft/ghost-platform-tenant",
@@ -93,6 +96,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish-tenant-package.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template="refs/tags/v{version}",
+        grandfathered=("5.0.0", "7.0.0"),
     ),
     Identity(
         package="@branchleft/ghost-platform-broker-api",
@@ -107,6 +111,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish-hetzner-host.yml",
         ref_regex=r"refs/tags/hetzner-host-v\d+\.\d+\.\d+",
         ref_template="refs/tags/hetzner-host-v{version}",
+        grandfathered=("0.2.0", "0.3.0"),
     ),
     Identity(
         package="@branchleft/components",
@@ -114,6 +119,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template=None,
+        grandfathered=("0.3.0", "0.6.0"),
     ),
     Identity(
         package="@branchleft/brand-branchleft",
@@ -121,6 +127,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template=None,
+        grandfathered=("0.3.0",),
     ),
     Identity(
         package="@branchleft/brand-publicpress",
@@ -135,6 +142,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template="refs/tags/v{version}",
+        grandfathered=("0.3.1", "0.4.0", "0.6.0", "0.7.0", "0.8.8"),
     ),
     Identity(
         package="@branchleft/prettier-config",
@@ -142,6 +150,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template="refs/tags/v{version}",
+        grandfathered=("0.3.1", "0.8.8"),
     ),
     Identity(
         package="@branchleft/vitest-config",
@@ -149,6 +158,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template="refs/tags/v{version}",
+        grandfathered=("0.4.0", "0.6.0"),
     ),
     Identity(
         package="@branchleft/eslint-config",
@@ -205,8 +215,8 @@ def validate_table(table: Sequence[Identity]) -> list[str]:
         floor = None if row.first_attested == UNSET else version_key(row.first_attested)
         if row.first_attested != UNSET and floor is None:
             problems.append(f"{where}: first_attested is neither {UNSET} nor a version")
-        if row.first_attested == UNSET and row.grandfathered:
-            problems.append(f"{where}: grandfathered versions need a first_attested floor above them")
+        if len(set(row.grandfathered)) != len(row.grandfathered):
+            problems.append(f"{where}: grandfathered lists a version twice")
         for old in row.grandfathered:
             key = version_key(old)
             if key is None:
@@ -538,9 +548,15 @@ def classify(entry: LockEntry, row: Identity | None) -> tuple[str, str]:
 
 def failure_context(entry: LockEntry, row: Identity) -> str:
     if row.first_attested == UNSET:
+        if not row.grandfathered:
+            return (
+                f"identity table row {row.package} has first_attested UNSET: no version of it is grandfathered "
+                "and none passes without a verified attestation until the floor is set"
+            )
         return (
-            f"identity table row {row.package} has first_attested UNSET: no version of it is grandfathered "
-            "and none passes without a verified attestation until the floor is set"
+            f"identity table row {row.package} has first_attested UNSET: only its {len(row.grandfathered)} "
+            f"grandfathered version(s) {', '.join(row.grandfathered)} pass without a verified attestation, "
+            f"and {entry.version} is not one of them"
         )
     key, floor = version_key(entry.version), version_key(row.first_attested)
     if key is None:
