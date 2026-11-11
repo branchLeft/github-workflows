@@ -1,11 +1,6 @@
-// The attest-and-verify action signs what a repository pushes, and the check
-// that says the signature is genuine is only worth anything if it names the
-// right identity. These checks pin the properties that keep it honest for every
-// calling repository: the identity inputs are required and never defaulted, the
-// attestation is made, then verified twice, then tried with a wrong identity,
-// the scripts are read from this directory (not from the caller's workspace),
-// the verify script forwards every identity flag, and every action used is
-// pinned to a full commit sha. Plain node:test, no dependency to install.
+// Pins the identity properties that keep attest-and-verify honest for every caller: each
+// property and why it matters is in README.md in this folder (section "What action.test.js pins").
+// Plain node:test, no dependency to install.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

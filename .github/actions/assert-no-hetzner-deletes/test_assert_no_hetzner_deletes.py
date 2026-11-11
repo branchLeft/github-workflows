@@ -1,12 +1,6 @@
 #!/usr/bin/env python3
-"""Unit tests for assert-no-hetzner-deletes.
-
-This gate is the only automated thing standing between a merged plan and the
-destruction of a production host or the platform network, so the failure that
-matters is the guard reporting clean over a plan it did not actually
-understand. Every test below is aimed at that shape: a URN it mis-parses, an op
-it waves through, a directory whose coverage it silently skips, or an error
-state that shares an exit code with success.
+"""Unit tests for assert-no-hetzner-deletes: each aims at a guard reporting clean over an unread plan.
+Why: assert-no-hetzner-deletes.md beside the module (section Unit tests).
 """
 
 import contextlib

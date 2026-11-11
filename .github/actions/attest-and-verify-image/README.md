@@ -59,3 +59,13 @@ jobs:
 | `action.test.js` | Lint of the action definition and the scripts' fixed flags. |
 
 CI for this directory is `.github/workflows/attest-and-verify-image-ci.yml`.
+
+## What action.test.js pins
+
+The attest-and-verify action signs what a repository pushes, and the check that says the
+signature is genuine is only worth anything if it names the right identity. These checks pin
+the properties that keep it honest for every calling repository: the identity inputs are
+required and never defaulted, the attestation is made, then verified twice, then tried with a
+wrong identity, the scripts are read from this directory (not from the caller's workspace),
+the verify script forwards every identity flag, and every action used is pinned to a full
+commit sha. Plain node:test, no dependency to install.

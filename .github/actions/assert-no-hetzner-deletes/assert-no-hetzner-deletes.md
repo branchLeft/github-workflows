@@ -106,3 +106,21 @@ action's own `run:` body under bash against a delete fixture
 `SabotageTests` break each control in a copy and require the named tests to go
 red there, then require the unmodified copy to be green. The self-test workflow
 also runs the action itself over both fixtures on every pull request.
+
+## Usage and exit codes
+
+    assert-no-hetzner-deletes.py <preview-json-file>
+    assert-no-hetzner-deletes.py --self-test
+    assert-no-hetzner-deletes.py --verify-coverage <program-dir> --coverage-map <json-file>
+
+Exit 0 if clean, 1 if a protected resource would be destroyed or any input could
+not be read or understood, 2 on usage error.
+
+## Unit tests (test_assert_no_hetzner_deletes.py)
+
+This gate is the only automated thing standing between a merged plan and the
+destruction of a production host or the platform network, so the failure that
+matters is the guard reporting clean over a plan it did not actually
+understand. Every test below is aimed at that shape: a URN it mis-parses, an op
+it waves through, a directory whose coverage it silently skips, or an error
+state that shares an exit code with success.
