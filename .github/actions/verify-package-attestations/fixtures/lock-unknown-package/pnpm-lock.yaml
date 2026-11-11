@@ -1,0 +1,22 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      '@branchleft/not-in-the-table':
+        specifier: 1.0.0
+        version: 1.0.0
+
+packages:
+
+  '@branchleft/not-in-the-table@1.0.0':
+    resolution: {integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==, tarball: https://npm.pkg.github.com/download/@branchleft/not-in-the-table/1.0.0/0123456789abcdef0123456789abcdef01234567}
+
+snapshots:
+
+  '@branchleft/not-in-the-table@1.0.0': {}
