@@ -6,7 +6,6 @@
 # below are the lower-case, Capitalised and UPPER-case spellings.
 
 # CI workflows and actions: they decide pass or fail on every pull request.
-/.github/                                      @branchLeft/branchleft-admin
 **/.github/workflows/                          @branchLeft/branchleft-admin
 **/.github/actions/                            @branchLeft/branchleft-admin
 
@@ -31,14 +30,10 @@
 # runs them, and the ignore files that switch checks off.
 /tools/                                        @branchLeft/branchleft-admin
 /.pre-commit-hooks.yaml                        @branchLeft/branchleft-admin
-/.docs-lint*                                   @branchLeft/branchleft-admin
 /.opv-lintignore                               @branchLeft/branchleft-admin
 
 # Standards gate: the floors, skip rules and mode the standards CI reads.
-/.standardsignore                              @branchLeft/branchleft-admin
-/.standards.mode                               @branchLeft/branchleft-admin
 /tools/floors.tsv                              @branchLeft/branchleft-admin
-/.standards-db-tooling                         @branchLeft/branchleft-admin
 
 # Gate scripts at any depth: the merge script reads a scripts directory, or a
 # name containing guard, approval or deploy, as a gate.
@@ -52,3 +47,10 @@
 **/*deploy*                                    @branchLeft/branchleft-admin
 **/*Deploy*                                    @branchLeft/branchleft-admin
 **/*DEPLOY*                                    @branchLeft/branchleft-admin
+
+# Standards template lines (SYNC-1): these five stay the final lines of this file.
+/.standardsignore        @branchLeft/branchleft-admin
+/.standards.mode         @branchLeft/branchleft-admin
+/.docs-lint*             @branchLeft/branchleft-admin
+/.standards-db-tooling   @branchLeft/branchleft-admin
+/.github/                @branchLeft/branchleft-admin
