@@ -1538,6 +1538,33 @@ class PlanTests(unittest.TestCase):
         # The failed host is still named in the log, as a numbered label with its kind.
         self.assertIn("::error::host 2: kind=failed", result.log)
 
+    def test_a_failed_host_log_line_names_the_task_that_failed_and_none_of_its_output(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        stderr = (
+            "PLAY [all]\n"
+            "TASK [Gather the facts] ****\n"
+            "ok: [host-two]\n"
+            "TASK [Install the package] ****\n"
+            'fatal: [host-two]: FAILED! => {"msg": "output-that-must-not-reach-the-log"}\n'
+        )
+        sandbox.host(HOST_TWO, 30, self.FAILED, stderr)
+        _, result = self.plan(sandbox)
+        self.assertIn("::error::host 2: kind=failed", result.log)
+        self.assertIn("exit 30, task Install the package; scan-hits=none", result.log)
+        self.assertNotIn("Gather the facts", result.log)
+        self.assertNotIn("output-that-must-not-reach-the-log", result.log)
+
+    def test_a_task_name_that_matches_a_secret_pattern_withholds_the_host_and_names_no_task(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        stderr = "TASK [Write password=hunter2hunter2 to the file] ****\nfatal: [host-two]: FAILED!\n"
+        sandbox.host(HOST_TWO, 30, self.FAILED, stderr)
+        _, result = self.plan(sandbox)
+        self.assertIn("kind=withheld", result.log)
+        self.assertNotIn("task=", result.log)
+        self.assertNotIn("hunter2", result.log)
+
     def test_skip_failed_hosts_with_a_passing_host_that_would_change_asks_for_the_approval_of_the_hosts_that_passed(self) -> None:
         sandbox = Sandbox(self)
         sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n-greeting = OLD\n+greeting = NEW\n")

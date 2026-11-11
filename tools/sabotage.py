@@ -1142,6 +1142,17 @@ CASES: list[Case] = [
         [Edit(ACTION, '            playbook=$(redact_jumps "$playbook")\n', "")],
         [f"{RL}.test_a_second_hop_name_in_a_host_line_is_redacted_as_it_is_from_the_diff"],
     ),
+    Case(
+        "log line: the failed task's note prints the host's output line, not the TASK header",
+        [
+            Edit(
+                ACTION,
+                'if (t != "") print substr(t, 1, 160); exit',
+                'if (t != "") print $0; exit',
+            )
+        ],
+        [f"{P}.test_a_failed_host_log_line_names_the_task_that_failed_and_none_of_its_output"],
+    ),
     # The second hop. The control is that the second hop applies to the
     # listed hosts and only to them; the rest hold its validation, its keys and its
     # silence. The widened and dropped cases are the pair the ticket names.
