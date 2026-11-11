@@ -95,7 +95,10 @@ absence of any lockfile are refusals too. A fault inside the program exits 2.
 ## The publisher checks
 
 `check-tarball` takes the identity as literals from the calling workflow
-(`--repo`, `--signer-workflow`, `--ref`), runs steps 5 to 7 above for that
+(`--repo`, `--signer-workflow`, `--ref`). Before any call, the repo, signer workflow
+file and ref must match a row of the identity table: a consumer that no row claims is
+refused by `check-inputs` and by every publisher check, so the mismatch shows before the
+first publish. It then runs steps 5 to 7 above for that
 identity, and retries up to five times because an attestation can take a moment to
 reach the API. `prove-wrong-identity` then requires `gh` to refuse a wrong signer
 workflow and a wrong source ref, and to refuse them **for the identity**: a refusal

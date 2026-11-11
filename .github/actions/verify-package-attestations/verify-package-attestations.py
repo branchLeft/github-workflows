@@ -667,6 +667,20 @@ def scan(root: Path, table: Sequence[Identity], token: str) -> int:
 # ---------------------------------------------------------------- command line
 
 
+def table_row_for(repo: str, file_name: str, ref: str, table: Sequence[Identity]) -> Identity:
+    """The row a consumer claims: same repo and signer workflow file, and a ref its pattern accepts.
+
+    A consumer that no row claims is refused here, before anything is attested, not at the first publish.
+    """
+    named = [row for row in table if row.repo == repo and row.workflow == file_name]
+    if not named:
+        raise Refusal(f"no identity table row names {repo}/.github/workflows/{file_name}")
+    for row in named:
+        if re.fullmatch(row.ref_regex, ref):
+            return row
+    raise Refusal(f"ref {ref!r} matches no ref_regex of the identity table rows for {repo}/.github/workflows/{file_name}")
+
+
 def literal_identity(args: argparse.Namespace) -> tuple[str, str, str]:
     if not REPO.fullmatch(args.repo):
         raise Refusal(f"--repo {args.repo!r} is not owner/name")
@@ -675,6 +689,7 @@ def literal_identity(args: argparse.Namespace) -> tuple[str, str, str]:
         raise Refusal(f"--signer-workflow {args.signer_workflow!r} is not a workflow file of {args.repo}")
     if not re.fullmatch(r"refs/(tags|heads)/[A-Za-z0-9._/-]+", args.ref) or ".." in args.ref:
         raise Refusal(f"--ref {args.ref!r} is not an exact refs/tags/... or refs/heads/... ref")
+    table_row_for(args.repo, args.signer_workflow[len(prefix):], args.ref, IDENTITIES)
     return args.repo, args.signer_workflow, args.ref
 
 
