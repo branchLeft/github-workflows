@@ -727,6 +727,30 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(re.findall(r"^  ([a-z_]+):$", on_block, re.MULTILINE), ["workflow_call"])
         self.assertNotRegex(text, r"(?m)^\s+(?:schedule|workflow_dispatch|push|pull_request):")
 
+    def test_the_nightly_rescan_cannot_skip_or_ignore_a_step_that_decides_the_result(self):
+        """The structural check: every step before the upload, the digest resolution and the scan
+        among them, has no `if:` and no `continue-on-error`, and neither has the job, so the job
+        result is the scan step's own result."""
+        text = self.text("nightly-image-rescan.yml")
+        job = text.split("\n  rescan:\n")[1]
+        self.assertNotRegex(job.split("\n    steps:\n")[0], r"(?m)^    (?:if|continue-on-error):")
+        steps = re.split(r"(?m)^      - ", job.split("\n    steps:\n")[1])[1:]
+        self.assertEqual(len(steps), 7)
+        by_name = {re.match(r"name: (.+)", step).group(1): step for step in steps}
+        upload = by_name["Upload the SBOM and the findings"]
+        self.assertIs(steps[-1], upload)
+        gating = [step for step in steps if step is not upload]
+        scan = by_name["Scan the image"]
+        self.assertIn(by_name["Resolve the digest the tag points at now"], gating)
+        self.assertIn(scan, gating)
+        self.assertEqual([step for step in steps if "uses: ./.image-scan-tools/.github/actions/image-scan\n" in step], [scan])
+        for step in gating:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertNotRegex(step, r"(?m)^        (?:if|continue-on-error):")
+        self.assertEqual(re.findall(r"(?m)^        (?:if|continue-on-error): .*$", upload), ["        if: always()"])
+
+    # A denylist: three strings that must not appear. The structural check is
+    # test_the_nightly_rescan_cannot_skip_or_ignore_a_step_that_decides_the_result.
     def test_the_nightly_rescan_takes_exactly_four_inputs_and_no_way_to_lower_the_threshold(self):
         text = self.text("nightly-image-rescan.yml")
         block = text.split("    inputs:\n")[1].split("    outputs:\n")[0]
