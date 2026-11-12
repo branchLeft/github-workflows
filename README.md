@@ -34,9 +34,13 @@ changed.
 
 A workflow here must never hardcode a tag of this repo internally. Tags are
 immutable, so a literal ref inside a workflow pins callers to a revision that
-has no relationship to the one they asked for — `docs-lint.yml` uses
-`github.job_workflow_sha` to load its own rules from the exact commit the
-caller resolved.
+has no relationship to the one they asked for. Nor can a workflow read its own
+revision from `github.job_workflow_sha`: that context is empty inside a
+reusable workflow, and an empty `ref:` makes `actions/checkout` take the
+default branch, so the caller's pin would do nothing. `docs-lint.yml` reads the
+pin from the caller's own workflow files instead
+([`tools/resolve-pinned-ref.md`](tools/resolve-pinned-ref.md)) and fails if
+there is none or more than one.
 
 ## Workflows
 
@@ -122,6 +126,9 @@ jobs:
 Organisation-level Actions secrets are **not** delivered to a private repo's
 runner on the free plan — measured, with `GITHUB_TOKEN` arriving beside an
 empty organisation secret in the same step. Set both at repository level.
+
+The App needs `issues: read` as well as write access to organisation projects:
+the job reaches each board item through its issue.
 
 **`link-kinds` and `from-statuses` are required and have no default here.**
 Together they are the only place this workflow answers what counts as

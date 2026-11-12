@@ -29,3 +29,9 @@ gh api -X PUT repos/branchLeft/<repo>/actions/permissions/workflow \
   -f default_workflow_permissions=write \
   -F can_approve_pull_request_reviews=false
 ```
+
+A caller whose workflow opens a pull request (`gh pr create`) needs
+`can_approve_pull_request_reviews=true` as well as `pull-requests: write`. The
+permission alone passes silently, then the call fails with "GitHub Actions is
+not permitted to create or approve pull requests". It is one switch for both
+creating and approving, so there is no create-only setting.
