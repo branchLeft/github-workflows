@@ -182,9 +182,7 @@ scan/report/exemption machinery with `docs-lint.yml`
 implementation of the same mechanism.
 
 **Caller usage** — add to the target repo as
-`.github/workflows/opv-lint.yml`, pinned to the tag cut once this workflow
-first ships (see `git tag -l` in this repo for the current one — `opv-lint.yml`
-is not in any tag yet, so `@v1.0.6` above would 404 if copied verbatim today):
+`.github/workflows/opv-lint.yml`, pinned to an exact tag (see Versioning; `git tag -l` in this repo lists them):
 
 ```yaml
 name: opv-lint
@@ -275,8 +273,7 @@ workflow, not made here.
 
 #### How a repository calls it
 
-Add one caller, pinned to an exact tag (see Versioning). The workflow is not in
-any tag yet, so use the tag cut once it ships.
+Add one caller, pinned to an exact tag (see Versioning).
 
 ```yaml
 name: ansible
