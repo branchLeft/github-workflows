@@ -239,7 +239,10 @@ class LockEntry:
 
 
 PNPM_KEY = re.compile(r"  '?/?(@branchleft/[A-Za-z0-9._-]+)@([^'\s:(]+)'?:")
-PNPM_FIRST_PARTY = re.compile(r"""  ["']?/?@branchleft/""")
+PNPM_FIRST_PARTY = re.compile(r"""  ["']?/?@branchleft/""", re.IGNORECASE)
+# The scope is matched in any case so a name in capitals is read and refused, never skipped.
+DOWNLOAD_URL = re.compile(r"npm\.pkg\.github\.com/download/@branchleft/", re.IGNORECASE)
+LOCK_SCOPE_PATH = re.compile(r"node_modules/(@branchleft/)", re.IGNORECASE)
 
 
 def parse_pnpm_lock(text: str, source: str) -> list[LockEntry]:
@@ -277,8 +280,8 @@ def parse_pnpm_lock(text: str, source: str) -> list[LockEntry]:
             )
             continue
         index += 1
-    downloads = text.count("npm.pkg.github.com/download/@branchleft/")
-    parsed = sum(1 for e in entries if "npm.pkg.github.com/download/@branchleft/" in (e.tarball or ""))
+    downloads = len(DOWNLOAD_URL.findall(text))
+    parsed = sum(1 for e in entries if DOWNLOAD_URL.search(e.tarball or ""))
     if downloads != parsed:
         raise Refusal(f"{source}: {downloads} GitHub Packages tarball URL(s) but {parsed} read from the packages: section")
     return entries
@@ -293,18 +296,21 @@ def parse_package_lock(text: str, source: str) -> list[LockEntry]:
         raise Refusal(f"{source}: not a lockfile object")
     packages = data.get("packages")
     if not isinstance(packages, dict):
-        if "@branchleft/" in text:
+        if "@branchleft/" in text.lower():
             raise Refusal(f"{source}: lockfileVersion 1 has no packages map; this program cannot read it")
         return []
     entries: list[LockEntry] = []
     for path, value in packages.items():
-        if "node_modules/@branchleft/" not in path:
+        scoped = list(LOCK_SCOPE_PATH.finditer(path))
+        if not scoped:
             continue
         if not isinstance(value, dict):
             raise Refusal(f"{source}: cannot read the entry {path!r}")
         if value.get("link") is True:
             continue
-        name = "@branchleft/" + path.rsplit("node_modules/@branchleft/", 1)[1]
+        if scoped[-1].group(1) != "@branchleft/":
+            raise Refusal(f"{source}: the entry {path!r}: the scope is not exactly @branchleft/")
+        name = "@branchleft/" + path[scoped[-1].end() :]
         entries.append(
             LockEntry(
                 source,
@@ -314,6 +320,12 @@ def parse_package_lock(text: str, source: str) -> list[LockEntry]:
                 value.get("resolved") if isinstance(value.get("resolved"), str) else None,
             )
         )
+    downloads = sum(
+        1 for v in packages.values() if isinstance(v, dict) and isinstance(v.get("resolved"), str) and DOWNLOAD_URL.search(v["resolved"])
+    )
+    parsed = sum(1 for e in entries if DOWNLOAD_URL.search(e.tarball or ""))
+    if downloads != parsed:
+        raise Refusal(f"{source}: {downloads} GitHub Packages tarball URL(s) but {parsed} read from the packages map")
     return entries
 
 
