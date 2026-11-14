@@ -1673,6 +1673,9 @@ other's server, and with the second hop dropped the listed host is not reached.
 The self-test is `.github/workflows/ssh-check-hosts-self.yml`: it runs the action on a
 real runner against the stand-in host in the fixture, with `fail-on-changes` both
 ways, on every pull request that touches it.
+Every self-test that has a path filter also runs every Monday, which catches a
+dependency its path list missed.
+
 
 The jump is proved on real SSH servers by `.github/workflows/ssh-jump-self.yml`, on
 every pull request and push to main that touches it. It runs `tools/ssh_jump_proof.py`, which starts a
