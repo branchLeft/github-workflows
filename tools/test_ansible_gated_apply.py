@@ -5632,7 +5632,7 @@ class ReportLogTests(unittest.TestCase):
 
     def test_a_value_that_would_start_a_workflow_command_is_defanged(self) -> None:
         def forge(sandbox: Sandbox) -> None:
-            (sandbox.temp / "ansible-plan" / "02.rc").write_text("7\n::error::forged-line%0A::error::more\n")
+            (sandbox.temp / "ansible-plan" / "00002.rc").write_text("7\n::error::forged-line%0A::error::more\n")
 
         _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=(0, "hello\n", "")), tamper=forge)
         lines = result.proc.stdout.splitlines()

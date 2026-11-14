@@ -1636,7 +1636,7 @@ def host_key_cases() -> list[Case]:
     # The selection of a host's key.
     both(
         "the selection ignores the map, so every host gets the shared key",
-        Edit(ACTION, 'if [ -e "$plan_dir/id.$n" ]; then', "if false; then"),
+        Edit(ACTION, 'if [ -e "$plan_dir/id.$key_name" ]; then', "if false; then"),
         Edit(GATED, 'if [ -e "$work/id.$(printf \'%02d\' "$num")" ]; then', "if false; then"),
         [ONE, HEAD],
         [A_ONE],

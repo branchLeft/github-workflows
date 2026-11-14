@@ -973,7 +973,7 @@ def prove_failed_run(
     gateway_mark, target_mark = len(log_text(fixture.gateway)), len(log_text(fixture.target))
     run = run_action(fixture, name, known_hosts, jump=True)
     gateway_log, target_log = log_since(fixture.gateway, gateway_mark), log_since(fixture.target, target_mark)
-    error_text = (run.plan_directory / "01.err").read_text(errors="replace")
+    error_text = (run.plan_directory / "00001.err").read_text(errors="replace")
     stage = "(5)" if expect_forward else "(4)"
     said = [line for line in error_text.splitlines() if "Host key verification failed" in line or "WARNING" in line]
     report.observe(f"{why}: steps {run.steps}, outcome {run.outputs.get('outcome')!r}; ssh said: {said}")
