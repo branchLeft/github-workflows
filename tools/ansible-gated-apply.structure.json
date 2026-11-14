@@ -223,6 +223,10 @@
     }
   },
   "action-self": {
+    "concurrency": {
+      "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+      "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
+    },
     "jobs": {
       "check": {
         "name": "Action wiring: ${{ matrix.name }}",
@@ -358,12 +362,28 @@
     },
     "name": "SSH check hosts (self-test)",
     "on": {
-      "pull_request": null,
+      "pull_request": {
+        "paths": [
+          ".github/actions/ssh-check-hosts/**",
+          ".github/fixtures/ansible-gated-apply/**",
+          ".github/workflows/ssh-check-hosts-self.yml"
+        ]
+      },
       "push": {
         "branches": [
           "main"
+        ],
+        "paths": [
+          ".github/actions/ssh-check-hosts/**",
+          ".github/fixtures/ansible-gated-apply/**",
+          ".github/workflows/ssh-check-hosts-self.yml"
         ]
-      }
+      },
+      "schedule": [
+        {
+          "cron": "17 4 * * 1"
+        }
+      ]
     },
     "permissions": {
       "contents": "read"
@@ -1169,6 +1189,10 @@
     }
   },
   "jump-self": {
+    "concurrency": {
+      "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+      "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
+    },
     "jobs": {
       "jump-proof": {
         "name": "Jump hop on real sshd",
@@ -1195,18 +1219,40 @@
     },
     "name": "SSH jump (self-test)",
     "on": {
-      "pull_request": null,
+      "pull_request": {
+        "paths": [
+          ".github/actions/ssh-check-hosts/**",
+          "tools/ssh_jump_proof.py",
+          "tools/run_workflow_steps.py",
+          ".github/workflows/ssh-jump-self.yml"
+        ]
+      },
       "push": {
         "branches": [
           "main"
+        ],
+        "paths": [
+          ".github/actions/ssh-check-hosts/**",
+          "tools/ssh_jump_proof.py",
+          "tools/run_workflow_steps.py",
+          ".github/workflows/ssh-jump-self.yml"
         ]
-      }
+      },
+      "schedule": [
+        {
+          "cron": "17 4 * * 1"
+        }
+      ]
     },
     "permissions": {
       "contents": "read"
     }
   },
   "self": {
+    "concurrency": {
+      "cancel-in-progress": "${{ github.event_name == 'pull_request' }}",
+      "group": "${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}"
+    },
     "jobs": {
       "gated-apply": {
         "secrets": {
@@ -1282,12 +1328,48 @@
     },
     "name": "Ansible gated apply (self-test)",
     "on": {
-      "pull_request": null,
+      "pull_request": {
+        "paths": [
+          ".github/workflows/ansible-gated-apply.yml",
+          ".github/workflows/ansible-drift-check.yml",
+          ".github/workflows/ansible-gated-apply-self.yml",
+          ".github/workflows/ssh-check-hosts-self.yml",
+          ".github/workflows/ssh-jump-self.yml",
+          ".github/actions/ssh-check-hosts/**",
+          ".github/fixtures/ansible-gated-apply/**",
+          ".github/dependabot.yml",
+          "tools/test_ansible_gated_apply.py",
+          "tools/sabotage.py",
+          "tools/run_workflow_steps.py",
+          "tools/ssh_jump_proof.py",
+          "tools/ansible-gated-apply.structure.json"
+        ]
+      },
       "push": {
         "branches": [
           "main"
+        ],
+        "paths": [
+          ".github/workflows/ansible-gated-apply.yml",
+          ".github/workflows/ansible-drift-check.yml",
+          ".github/workflows/ansible-gated-apply-self.yml",
+          ".github/workflows/ssh-check-hosts-self.yml",
+          ".github/workflows/ssh-jump-self.yml",
+          ".github/actions/ssh-check-hosts/**",
+          ".github/fixtures/ansible-gated-apply/**",
+          ".github/dependabot.yml",
+          "tools/test_ansible_gated_apply.py",
+          "tools/sabotage.py",
+          "tools/run_workflow_steps.py",
+          "tools/ssh_jump_proof.py",
+          "tools/ansible-gated-apply.structure.json"
         ]
-      }
+      },
+      "schedule": [
+        {
+          "cron": "17 4 * * 1"
+        }
+      ]
     },
     "permissions": {
       "actions": "read",

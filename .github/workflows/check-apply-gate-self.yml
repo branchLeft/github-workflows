@@ -1,13 +1,29 @@
 name: Check apply gate (self-test)
 
 # Tested with this repo's own working copy (the local path below), not a tagged
-# one. It runs on every pull request, with no path filter. The action reads a
+# one. It runs when a pull request or a push to main touches a path listed
+# under `on:`, and every Monday on a schedule, which catches a dependency the
+# list missed. The action reads a
 # caller's workflow file, so the callers here are the files under fixtures/.
 
 on:
   pull_request:
+    paths:
+      - .github/actions/check-apply-gate/**
+      - .github/workflows/check-apply-gate-self.yml
   push:
     branches: [main]
+    paths:
+      - .github/actions/check-apply-gate/**
+      - .github/workflows/check-apply-gate-self.yml
+  schedule:
+    - cron: '17 4 * * 1'
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
