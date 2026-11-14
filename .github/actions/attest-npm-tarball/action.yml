@@ -1,0 +1,118 @@
+name: Attest and verify an npm tarball
+description: >
+  Signs one npm package tarball with a GitHub artifact attestation (SLSA build
+  provenance, keyless, bound to the calling workflow's identity), then proves the
+  attestation: it must verify for exactly the identity the caller wrote down, the
+  attested commit must be on main, and a wrong identity must be refused. Place it
+  between `pnpm pack` and `pnpm publish ./the-tarball.tgz`, so the bytes attested
+  are the bytes published. Every consumer-side check is in the sibling action
+  verify-package-attestations; this action reads the same program.
+
+# The attesting job needs `id-token: write` and `attestations: write`; nothing
+# else is widened. The caller's job already holds `contents: read` to pack and
+# whatever the publish step needs. This action does not publish.
+#
+# The program is read from this repository at the commit the caller pinned in its
+# `uses:` line, through the action's own directory and its sibling, so the caller
+# needs no checkout of this repository.
+#
+# Keyless: the signing certificate is minted from the run's own OIDC token and
+# logged in Sigstore's public-good instance. No key, secret or paid service.
+#
+# The expected identity is passed in as literals by each calling workflow. It is
+# never derived from `github.workflow_ref` here, because an identity read from
+# the run being checked would make the check agree with itself. `repo`,
+# `signer-workflow` and `ref` have no default and are required. The caller builds
+# `ref` from the version it packed, not from the ref that triggered the run.
+
+inputs:
+  tarball:
+    description: Path of the packed tarball, a regular file ending in .tgz.
+    required: true
+  repo:
+    description: The repository that owns the signer workflow, owner/repo.
+    required: true
+  signer-workflow:
+    description: The workflow expected to sign it, owner/repo/.github/workflows/file.yml.
+    required: true
+  ref:
+    description: The exact git ref the attested run must have, refs/tags/... or refs/heads/...
+    required: true
+  github-token:
+    description: The token the attestation lookups use. The run's own token is enough; pass nothing wider.
+    required: false
+    default: ${{ github.token }}
+  attempts:
+    description: How many times the verify is tried before it fails, to allow for the attestation reaching the API. A whole number from 1.
+    required: false
+    default: '5'
+  pause-seconds:
+    description: The wait after the first failed attempt; each later wait is this much longer again. A whole number from 0.
+    required: false
+    default: '12'
+
+runs:
+  using: composite
+  steps:
+    - name: Check the inputs
+      shell: bash
+      env:
+        TARBALL: ${{ inputs.tarball }}
+        REPO: ${{ inputs.repo }}
+        SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
+        REF: ${{ inputs.ref }}
+        VERIFIER: ${{ github.action_path }}/../verify-package-attestations/verify-package-attestations.py
+      run: |
+        set -eu
+        case "$TARBALL" in
+          *.tgz) ;;
+          *) echo "::error::tarball must be a path ending in .tgz: '$TARBALL'"; exit 1 ;;
+        esac
+        python3 -I "$VERIFIER" check-inputs "$TARBALL" --repo "$REPO" --signer-workflow "$SIGNER_WORKFLOW" --ref "$REF"
+
+    - name: Attest the tarball
+      id: attest
+      uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+      with:
+        subject-path: ${{ inputs.tarball }}
+        # Storage records need `artifact-metadata: write`, which nothing here uses.
+        create-storage-record: false
+
+    # The same program a consumer will run, through the GitHub API. The
+    # attestation can take a moment to reach the API after `attest`, so a failed
+    # verify is retried by the program: five attempts, waiting 12, 24, 36 and 48
+    # seconds between them. Only the last failure is annotated.
+    - name: Verify the attestation through the GitHub API
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        TARBALL: ${{ inputs.tarball }}
+        REPO: ${{ inputs.repo }}
+        SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
+        REF: ${{ inputs.ref }}
+        ATTEMPTS: ${{ inputs.attempts }}
+        PAUSE_SECONDS: ${{ inputs.pause-seconds }}
+        VERIFIER: ${{ github.action_path }}/../verify-package-attestations/verify-package-attestations.py
+      run: |
+        set -eu
+        python3 -I "$VERIFIER" self-test
+        python3 -I "$VERIFIER" check-tarball "$TARBALL" --repo "$REPO" --signer-workflow "$SIGNER_WORKFLOW" --ref "$REF" --attempts "$ATTEMPTS" --pause "$PAUSE_SECONDS"
+
+    # Sabotage control, run on every publish. The step above just accepted this
+    # exact tarball with the right identity. The program then requires a wrong
+    # signer workflow and a wrong source ref to be refused, and refused for the
+    # identity: a network, Sigstore or token fault also exits non-zero, and fails
+    # the job rather than passing as a refusal. If a wrong identity is accepted,
+    # the verify command proves nothing, and this step fails the job too.
+    - name: Prove a wrong identity is rejected
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        TARBALL: ${{ inputs.tarball }}
+        REPO: ${{ inputs.repo }}
+        SIGNER_WORKFLOW: ${{ inputs.signer-workflow }}
+        REF: ${{ inputs.ref }}
+        VERIFIER: ${{ github.action_path }}/../verify-package-attestations/verify-package-attestations.py
+      run: |
+        set -eu
+        python3 -I "$VERIFIER" prove-wrong-identity "$TARBALL" --repo "$REPO" --signer-workflow "$SIGNER_WORKFLOW" --ref "$REF"

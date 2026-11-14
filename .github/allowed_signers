@@ -1,0 +1,6 @@
+# Allowed signers for the release tags of this repository (OpenSSH allowed_signers
+# format). The verify-tag-signer action trusts a tag only if its signature checks
+# against a key listed here. Public keys only; never private key material.
+# Changed only by a pull request the code owner approves (.github/CODEOWNERS).
+# What the file means and how a key is rotated: .github/actions/verify-tag-signer/verify-tag-signer.md
+release-signer namespaces="git" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFzypQ8SXA9AOHSiboOsrxQMNeikjW7vBKTavKkCLdvx

@@ -1,0 +1,38 @@
+name: Check verify job hardened
+description: >-
+  Check that every job in a workflow of the calling repo that calls the
+  verify-package-attestations action cannot pass silently: no `continue-on-error`
+  other than a literal false, no `if:` on the job or the verify step, no skipped
+  job in its `needs` chain, and permissions of exactly `contents: read` and
+  `packages: read`. Reads the caller's workflow file; call it from a CI job that
+  has checked the repo out.
+
+# The rules and their reasons are in check-verify-job-hardened.md beside this
+# file. It is a check, not a gate on the caller: it cannot see a workflow it is
+# not given, and a repo that does not call it is not checked.
+
+inputs:
+  workflow:
+    description: Path of the workflow file, relative to the workspace root.
+    required: true
+  job:
+    description: >-
+      Whitespace-separated ids of jobs that must exist and call the verify
+      action, as they are keys under `jobs:`. Empty to require only that at least
+      one job calls it. Every job that calls it is checked either way.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - id: check
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      env:
+        WORKFLOW: ${{ inputs.workflow }}
+        JOBS: ${{ inputs.job }}
+        SCRIPT: ${{ github.action_path }}/check-verify-job-hardened.py
+      run: |
+        set -eu
+        python3 -I "$SCRIPT" --workflow "$WORKFLOW" --job "$JOBS"

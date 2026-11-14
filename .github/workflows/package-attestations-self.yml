@@ -1,0 +1,81 @@
+name: Package attestations (self-test)
+
+# This repo tests the two actions with its own working copy (the local paths
+# below), not a tagged one, so a pull request that changes an action is checked
+# by the change itself. It runs on every pull request, with no path filter, so a
+# change elsewhere in the repo cannot skip it. The actions are wired into no
+# workflow of this repo. A real attestation is only created and verified by the
+# publish workflows of the repositories that call them; see
+# .github/actions/attest-npm-tarball/attest-npm-tarball.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  VERIFY_DIR: .github/actions/verify-package-attestations
+  ATTEST_DIR: .github/actions/attest-npm-tarball
+
+jobs:
+  unit-tests:
+    name: Program and action tests, with sabotage
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Includes the Sabotage class: each control is broken in a copy, its tests
+      # must go red there, and the unmodified copy must be green.
+      - name: Run the program tests
+        run: python3 -m unittest discover -s "$VERIFY_DIR" -p 'test_*.py' -v
+
+      - name: Run the attest action tests
+        run: python3 -m unittest discover -s "$ATTEST_DIR" -p 'test_*.py' -v
+
+  action:
+    name: Consumer action wiring
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A lockfile with no first-party package
+        uses: ./.github/actions/verify-package-attestations
+        with:
+          root: .github/actions/verify-package-attestations/fixtures/lock-clean
+
+      - name: A first-party package that is not in the table
+        id: unknown
+        continue-on-error: true
+        uses: ./.github/actions/verify-package-attestations
+        with:
+          root: .github/actions/verify-package-attestations/fixtures/lock-unknown-package
+
+      - name: A package that is not in the table fails the step
+        env:
+          OUTCOME: ${{ steps.unknown.outcome }}
+        run: test "$OUTCOME" = failure
+
+      - name: A directory with no lockfile
+        id: empty
+        continue-on-error: true
+        uses: ./.github/actions/verify-package-attestations
+        with:
+          root: .github/actions/attest-npm-tarball
+
+      - name: No lockfile fails the step
+        env:
+          OUTCOME: ${{ steps.empty.outcome }}
+        run: test "$OUTCOME" = failure
