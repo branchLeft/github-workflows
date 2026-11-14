@@ -1,0 +1,79 @@
+name: Fixture, a CI workflow whose verify job sits among other jobs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches:
+      - main
+    paths-ignore: ['docs/**']
+
+env:
+  CI: "true"
+  continue-on-error: "this is an environment variable, not a job key"
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    if: github.event_name != 'schedule'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: true
+        if: ${{ always() }}
+
+      - name: Print the forbidden words as text
+        run: |
+          echo "continue-on-error: true"
+          echo "if: false"
+          # uses: branchLeft/github-workflows/.github/actions/verify-package-attestations@x
+
+      - name: Shell with a flow list and a quoted name
+        id: shell
+        env: { IF: "false", NAME: 'continue-on-error' }
+        run: >-
+          echo
+          "if: false"
+
+  verify-package-attestations:
+    name: Verify package attestations
+    runs-on: ubuntu-latest
+    # The run's own token reads the private registry, as the install steps do.
+    permissions:
+      contents: read
+      packages: read
+    timeout-minutes: 10
+    needs: [lint-free]
+    continue-on-error: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        continue-on-error: False
+        with:
+          persist-credentials: false
+          if: not-a-key-of-the-step
+
+      - name: Verify locked @branchleft packages
+        continue-on-error: false
+        uses: branchLeft/github-workflows/.github/actions/verify-package-attestations@2c34b90b367fd160bb01d311d29224d250460086 # v1.2.1
+        with:
+          root: .
+
+  lint-free:
+    name: A job with no condition
+    runs-on: ubuntu-latest
+    steps:
+      - name: Nothing
+        run: "true"
+
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: [verify-package-attestations]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Deploy
+        run: echo deploy

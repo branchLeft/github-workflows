@@ -1,0 +1,35 @@
+name: Verify tag signer (self-test)
+
+# This repo tests the action's script with its own working copy, not a tagged
+# one, so a pull request that changes the script, the allowed signers file or the
+# code owners file is checked by the change itself. It runs on every pull
+# request, with no path filter, so a change elsewhere cannot skip it. The action
+# is wired into no workflow of this repo; callers pin a commit of it.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/verify-tag-signer
+
+jobs:
+  unit-tests:
+    name: Signer tests and sabotage
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Makes real tags with real keys, then breaks each control in a copy: the
+      # guarding test must go red there and green on the unmodified copy.
+      - name: Run the signer tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
