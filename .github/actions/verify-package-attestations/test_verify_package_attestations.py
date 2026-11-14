@@ -685,6 +685,32 @@ class TheTable(unittest.TestCase):
         self.assertIsNone(M.version_key("1.0"))
 
 
+class ExactMatching(unittest.TestCase):
+    """A grandfathered entry is one exact version string: nothing longer, shorter or reformatted shares it."""
+
+    ROW = M.Identity(RENDER, "branchLeft/ghost-platform", "publish-render-core.yml", r"refs/tags/render-core-v\d+\.\d+\.\d+", None, M.UNSET, ("0.3.1",))
+
+    def status(self, version: str) -> str:
+        return M.classify(M.LockEntry("pnpm-lock.yaml", RENDER, version, None, None), self.ROW)[0]
+
+    def test_the_exact_version_is_grandfathered(self) -> None:
+        self.assertEqual(self.status("0.3.1"), "grandfathered")
+
+    def test_a_longer_patch_number_is_not_grandfathered_by_a_shorter_one(self) -> None:
+        self.assertEqual(self.status("0.3.10"), "verify")
+
+    def test_a_prerelease_is_not_grandfathered_by_its_release(self) -> None:
+        self.assertEqual(self.status("0.3.1-rc.1"), "verify")
+
+    def test_a_shorter_version_is_not_grandfathered_by_a_longer_one(self) -> None:
+        self.assertEqual(self.status("0.3"), "verify")
+
+    def test_a_leading_v_or_whitespace_variant_is_not_grandfathered(self) -> None:
+        for variant in ("v0.3.1", " 0.3.1", "0.3.1 ", "0.3.1\n", "\t0.3.1"):
+            with self.subTest(variant=variant):
+                self.assertEqual(self.status(variant), "verify")
+
+
 class TheRealTree(WorldCase):
     """The real table against a lockfile that pins every version the repositories pin today."""
 
@@ -922,8 +948,8 @@ class TheCommandLine(WorldCase):
             self.assertEqual(done.returncode, 2)
 
     def test_a_real_table_scan_refuses_an_unset_package_and_names_the_row(self) -> None:
-        self.world.package(RENDER, "0.4.0")
-        self.world.lock([self.world.entry(RENDER, "0.4.0")])
+        self.world.package(RENDER, "0.5.0")
+        self.world.lock([self.world.entry(RENDER, "0.5.0")])
         done = self.world.cli("scan", str(self.world.repo), real=True)
         self.assertEqual(done.returncode, 1, done.stdout)
         self.assertIn(f"row {RENDER} has first_attested UNSET", done.stderr)
@@ -935,7 +961,7 @@ class TheCommandLine(WorldCase):
         self.assertEqual(done.returncode, 0, done.stderr)
 
     def test_a_fault_inside_the_program_is_a_nonzero_exit(self) -> None:
-        self.world.lock([self.world.entry(RENDER, "0.4.0")])
+        self.world.lock([self.world.entry(RENDER, "0.5.0")])
         done = self.world.cli("scan", str(self.world.repo), real=True, PATH="/nonexistent")
         self.assertNotEqual(done.returncode, 0)
 
@@ -1012,6 +1038,50 @@ class Sabotage(unittest.TestCase):
                 "TheRealTree.test_a_version_that_is_not_listed_fails_closed_on_every_package_with_a_list",
                 "TheTable.test_the_real_table_lists_exactly_the_versions_pinned_before_attestation",
             },
+        ),
+        "a version added to the render-core list is removed": (
+            SCRIPT_NAME,
+            'grandfathered=("0.1.1", "0.2.0", "0.3.0", "0.4.0"),',
+            'grandfathered=("0.1.1", "0.2.0", "0.3.0"),',
+            {
+                "TheRealTree.test_every_pinned_version_passes_with_no_download_and_no_lookup",
+                "TheTable.test_the_real_table_lists_exactly_the_versions_pinned_before_attestation",
+            },
+        ),
+        "a version added to the tenant list is removed": (
+            SCRIPT_NAME,
+            'grandfathered=("5.0.0", "7.0.0", "8.0.0"),',
+            'grandfathered=("5.0.0", "7.0.0"),',
+            {
+                "TheRealTree.test_every_pinned_version_passes_with_no_download_and_no_lookup",
+                "TheTable.test_the_real_table_lists_exactly_the_versions_pinned_before_attestation",
+            },
+        ),
+        "grandfathering matches a version by its prefix": (
+            SCRIPT_NAME,
+            "    if entry.version in row.grandfathered:",
+            "    if any(entry.version.startswith(v) or v.startswith(entry.version) for v in row.grandfathered):",
+            {
+                "ExactMatching.test_a_longer_patch_number_is_not_grandfathered_by_a_shorter_one",
+                "ExactMatching.test_a_prerelease_is_not_grandfathered_by_its_release",
+                "ExactMatching.test_a_shorter_version_is_not_grandfathered_by_a_longer_one",
+            },
+        ),
+        "grandfathering matches a version by containment": (
+            SCRIPT_NAME,
+            "    if entry.version in row.grandfathered:",
+            "    if any(v in entry.version for v in row.grandfathered):",
+            {
+                "ExactMatching.test_a_longer_patch_number_is_not_grandfathered_by_a_shorter_one",
+                "ExactMatching.test_a_prerelease_is_not_grandfathered_by_its_release",
+                "ExactMatching.test_a_leading_v_or_whitespace_variant_is_not_grandfathered",
+            },
+        ),
+        "grandfathering trims the version before matching": (
+            SCRIPT_NAME,
+            "    if entry.version in row.grandfathered:",
+            '    if entry.version.strip().lstrip("v") in row.grandfathered:',
+            {"ExactMatching.test_a_leading_v_or_whitespace_variant_is_not_grandfathered"},
         ),
         "an unset row grandfathers every version": (
             SCRIPT_NAME,

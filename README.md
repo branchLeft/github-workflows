@@ -34,9 +34,13 @@ changed.
 
 A workflow here must never hardcode a tag of this repo internally. Tags are
 immutable, so a literal ref inside a workflow pins callers to a revision that
-has no relationship to the one they asked for — `docs-lint.yml` uses
-`github.job_workflow_sha` to load its own rules from the exact commit the
-caller resolved.
+has no relationship to the one they asked for. Nor can a workflow read its own
+revision from `github.job_workflow_sha`: that context is empty inside a
+reusable workflow, and an empty `ref:` makes `actions/checkout` take the
+default branch, so the caller's pin would do nothing. `docs-lint.yml` reads the
+pin from the caller's own workflow files instead
+([`tools/resolve-pinned-ref.md`](tools/resolve-pinned-ref.md)) and fails if
+there is none or more than one.
 
 ## Workflows
 
@@ -123,6 +127,9 @@ Organisation-level Actions secrets are **not** delivered to a private repo's
 runner on the free plan — measured, with `GITHUB_TOKEN` arriving beside an
 empty organisation secret in the same step. Set both at repository level.
 
+The App needs `issues: read` as well as write access to organisation projects:
+the job reaches each board item through its issue.
+
 **`link-kinds` and `from-statuses` are required and have no default here.**
 Together they are the only place this workflow answers what counts as
 delivery, and the reason both exist is that the first cannot answer it alone.
@@ -175,9 +182,7 @@ scan/report/exemption machinery with `docs-lint.yml`
 implementation of the same mechanism.
 
 **Caller usage** — add to the target repo as
-`.github/workflows/opv-lint.yml`, pinned to the tag cut once this workflow
-first ships (see `git tag -l` in this repo for the current one — `opv-lint.yml`
-is not in any tag yet, so `@v1.0.6` above would 404 if copied verbatim today):
+`.github/workflows/opv-lint.yml`, pinned to an exact tag (see Versioning; `git tag -l` in this repo lists them):
 
 ```yaml
 name: opv-lint
@@ -268,8 +273,7 @@ workflow, not made here.
 
 #### How a repository calls it
 
-Add one caller, pinned to an exact tag (see Versioning). The workflow is not in
-any tag yet, so use the tag cut once it ships.
+Add one caller, pinned to an exact tag (see Versioning).
 
 ```yaml
 name: ansible
@@ -1468,6 +1472,44 @@ This repo's `package-attestations-self.yml` runs both actions' tests, which incl
 breaking each control in a copy and requiring its tests to go red, and runs the
 consumer action over a lockfile with no first-party package, one with a package that
 is not in the table, and a directory with no lockfile.
+
+### `.github/actions/check-verify-job-hardened`
+
+Checks, in the calling repo's own CI, that the job which runs
+`verify-package-attestations` cannot pass silently. Every job that calls the action
+fails the check if it, or any of its steps, sets a `continue-on-error` that is not a
+literal `false`; if the job or the verify step has an `if:`; if a job in its `needs`
+chain has an `if:` (a skipped needed job skips it); if its `permissions:` are anything
+but exactly `contents: read` and `packages: read`; or if the step does not use this
+repo's action. A workflow with no such job fails, so removing the job is red. It reads
+the workflow with a strict reader and fails on anything it cannot read with certainty
+(anchors, merge keys, tabs, a duplicate key, a job or step written as a flow mapping).
+It reads only the file it is given; a repo that does not call it is not checked, and
+the check binds only once its job is a required status check, which is an owner
+action. Codes, rules and what it does not check:
+[`check-verify-job-hardened.md`](.github/actions/check-verify-job-hardened/check-verify-job-hardened.md).
+
+**Caller usage** — a step in a job of the repo's own test or lint workflow that runs
+on `pull_request` and on push to the default branch, after the checkout, never in the
+verify job itself, pinned to the signed tag that first carries it:
+
+```yaml
+      - name: Check the verify job cannot pass silently
+        uses: branchLeft/github-workflows/.github/actions/check-verify-job-hardened@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          workflow: .github/workflows/package-attestations-ci.yml
+          job: verify
+```
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `workflow` | required | The workflow file, relative to the workspace root. |
+| `job` | empty | Whitespace-separated job ids that must exist and call the verify action. Empty requires only that at least one job calls it. |
+
+It fails the step, with one annotation per finding, and has no outputs. This repo's
+`check-verify-job-hardened-self.yml` runs its unit tests, which break each control in
+a copy and require its tests to go red, and the action itself over passing and
+failing callers, on every pull request.
 
 ### `.github/actions/ssh-check-hosts`
 

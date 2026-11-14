@@ -88,7 +88,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish-render-core.yml",
         ref_regex=r"refs/tags/render-core-v\d+\.\d+\.\d+",
         ref_template="refs/tags/render-core-v{version}",
-        grandfathered=("0.1.1", "0.2.0"),
+        grandfathered=("0.1.1", "0.2.0", "0.3.0", "0.4.0"),
     ),
     Identity(
         package="@branchleft/ghost-platform-tenant",
@@ -96,7 +96,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish-tenant-package.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template="refs/tags/v{version}",
-        grandfathered=("5.0.0", "7.0.0"),
+        grandfathered=("5.0.0", "7.0.0", "8.0.0"),
     ),
     Identity(
         package="@branchleft/ghost-platform-broker-api",
