@@ -1,0 +1,35 @@
+name: Fixture, a dedicated attestation workflow that keeps the contract
+
+# Comments that name the forbidden forms are not code: continue-on-error: true
+# and if: false in a comment must not fail the check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Verify package attestations
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify package attestations
+        uses: branchLeft/github-workflows/.github/actions/verify-package-attestations@2c34b90b367fd160bb01d311d29224d250460086 # v1.2.1

@@ -1,0 +1,61 @@
+name: Verify tag signer
+description: >-
+  Fail the step unless a release tag of branchLeft/github-workflows is an
+  annotated tag whose SSH signature checks against the allowed signers file
+  held on that repository's main branch. Fails closed: a lightweight tag, an
+  unsigned tag, another signer, an empty file and any unreadable answer all
+  fail the step.
+
+# The rules and their reasons are in verify-tag-signer.md beside this file. The
+# script is run from the revision the caller pinned, via github.action_path, so
+# this file never names a tag of this repo. The allowed signers are read from
+# main, not from the tag being checked, so a tag cannot vouch for itself.
+
+inputs:
+  tag:
+    description: >-
+      The release tag the caller pins the shared workflows to, as v then three
+      dot-separated numbers, for example the part after the at sign in a
+      reusable workflow reference.
+    required: true
+  github-token:
+    description: >-
+      The token the three API reads use. The run's own token is enough; pass
+      nothing wider.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - id: verify
+      shell: bash
+      env:
+        TAG: ${{ inputs.tag }}
+        GH_TOKEN: ${{ inputs.github-token }}
+        SCRIPT: ${{ github.action_path }}/verify-tag-signer.py
+        SHARED: branchLeft/github-workflows
+      run: |
+        set -eu
+        # The tag and the object id both go into an API path, so each is held to
+        # its exact shape first.
+        tag_re='^v[0-9]+\.[0-9]+\.[0-9]+$'
+        sha_re='^[0-9a-f]{40}$'
+        [[ "$TAG" =~ $tag_re ]] || { echo "::error::tag must be v then three dot-separated numbers"; exit 1; }
+        work=$(mktemp -d "${RUNNER_TEMP:-/tmp}/verify-tag-signer.XXXXXX")
+        trap 'rm -rf "$work"' EXIT
+        gh api "repos/${SHARED}/git/ref/tags/${TAG}" > "$work/ref.json" \
+          || { echo "::error::could not read the tag ${TAG}; refusing"; exit 1; }
+        kind=$(jq -r '.object.type // empty' "$work/ref.json")
+        sha=$(jq -r '.object.sha // empty' "$work/ref.json")
+        if [ "$kind" = tag ]; then
+          [[ "$sha" =~ $sha_re ]] || { echo "::error::the tag object id is not 40 lowercase hex digits; refusing"; exit 1; }
+          gh api "repos/${SHARED}/git/tags/${sha}" > "$work/tag.json" \
+            || { echo "::error::could not read the tag object of ${TAG}; refusing"; exit 1; }
+        else
+          # A lightweight tag has no tag object to read; the script names it.
+          echo '{}' > "$work/tag.json"
+        fi
+        gh api -H "Accept: application/vnd.github.raw+json" "repos/${SHARED}/contents/.github/allowed_signers?ref=main" > "$work/allowed_signers" \
+          || { echo "::error::could not read the allowed signers file on main; refusing"; exit 1; }
+        python3 -I "$SCRIPT" "$TAG" "$work/ref.json" "$work/tag.json" "$work/allowed_signers"
