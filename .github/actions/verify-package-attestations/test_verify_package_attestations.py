@@ -604,8 +604,86 @@ class ScanRefuses(WorldCase):
         self.assertEqual(code, 1)
         self.assertIn("tarball URL(s) but", err)
 
+    def test_a_pnpm_entry_with_the_scope_in_capitals_is_refused_not_skipped(self) -> None:
+        url = "https://npm.pkg.github.com/download/@BRANCHLEFT/foo/1.0.0/" + "ab" * 20
+        (self.world.repo / "pnpm-lock.yaml").write_text(
+            f"lockfileVersion: '9.0'\n\npackages:\n\n  '@BRANCHLEFT/foo@1.0.0':\n    resolution: {{integrity: sha512-AAAA, tarball: {url}}}\n",
+            encoding="utf-8",
+        )
+        code, _, err = self.world.scan()
+        self.assertEqual(code, 1)
+        self.assertIn("cannot read the @branchleft entry", err)
+        self.assertEqual(self.world.calls(), [])
+
+    def test_a_pnpm_tarball_url_with_the_scope_in_capitals_outside_the_section_read_is_refused(self) -> None:
+        entry = self.good()
+        self.world.lock([entry])
+        url = str(entry[3]).replace("@branchleft", "@BRANCHLEFT")
+        with (self.world.repo / "pnpm-lock.yaml").open("a", encoding="utf-8") as handle:
+            handle.write(f"\nextra:\n  resolution: {{tarball: {url}}}\n")
+        code, _, err = self.world.scan()
+        self.assertEqual(code, 1)
+        self.assertIn("tarball URL(s) but", err)
+
+    def test_a_package_lock_path_with_the_scope_in_capitals_is_refused_not_skipped(self) -> None:
+        url = "https://npm.pkg.github.com/download/@BRANCHLEFT/foo/1.0.0/" + "ab" * 20
+        lock = {"lockfileVersion": 3, "packages": {"": {"name": "x"}, "node_modules/@BRANCHLEFT/foo": {"version": "1.0.0", "resolved": url}}}
+        (self.world.repo / "package-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+        code, _, err = self.world.scan()
+        self.assertEqual(code, 1)
+        self.assertIn("scope is not exactly @branchleft/", err)
+        self.assertEqual(self.world.calls(), [])
+
+    def test_a_package_lock_entry_under_an_alias_key_is_refused_not_skipped(self) -> None:
+        entry = self.good()
+        lock = {
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "x"},
+                "node_modules/alias-pkg": {"name": RENDER, "version": "1.0.0", "resolved": entry[3], "integrity": entry[2]},
+            },
+        }
+        (self.world.repo / "package-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+        code, _, err = self.world.scan()
+        self.assertEqual(code, 1)
+        self.assertIn("1 GitHub Packages tarball URL(s) but 0 read from the packages map", err)
+        self.assertEqual(self.world.calls(), [])
+
+    def test_a_package_lock_alias_entry_is_refused_beside_an_entry_that_passes(self) -> None:
+        entry = self.good()
+        other = "https://npm.pkg.github.com/download/@branchleft/other/2.0.0/" + "cd" * 20
+        lock = {
+            "lockfileVersion": 3,
+            "packages": {
+                "": {"name": "x"},
+                f"node_modules/{RENDER}": {"version": "1.0.0", "resolved": entry[3], "integrity": entry[2]},
+                "node_modules/alias-pkg": {"name": "@branchleft/other", "version": "2.0.0", "resolved": other},
+            },
+        }
+        (self.world.repo / "package-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+        code, _, err = self.world.scan()
+        self.assertEqual(code, 1)
+        self.assertIn("2 GitHub Packages tarball URL(s) but 1 read from the packages map", err)
+
+    def test_a_package_lock_with_a_dependencies_copy_is_not_counted_twice(self) -> None:
+        entry = self.good()
+        lock = {
+            "lockfileVersion": 2,
+            "packages": {"": {"name": "x"}, f"node_modules/{RENDER}": {"version": "1.0.0", "resolved": entry[3], "integrity": entry[2]}},
+            "dependencies": {RENDER: {"version": "1.0.0", "resolved": entry[3], "integrity": entry[2]}},
+        }
+        (self.world.repo / "package-lock.json").write_text(json.dumps(lock), encoding="utf-8")
+        code, out, err = self.world.scan()
+        self.assertEqual((code, err), (0, ""), out)
+
     def test_a_package_lock_without_a_packages_map_is_refused(self) -> None:
         (self.world.repo / "package-lock.json").write_text('{"lockfileVersion": 1, "dependencies": {"@branchleft/x": {}}}', encoding="utf-8")
+        code, _, err = self.world.scan()
+        self.assertEqual(code, 1)
+        self.assertIn("lockfileVersion 1", err)
+
+    def test_a_package_lock_without_a_packages_map_is_refused_with_the_scope_in_capitals(self) -> None:
+        (self.world.repo / "package-lock.json").write_text('{"lockfileVersion": 1, "dependencies": {"@BRANCHLEFT/x": {}}}', encoding="utf-8")
         code, _, err = self.world.scan()
         self.assertEqual(code, 1)
         self.assertIn("lockfileVersion 1", err)
@@ -1158,6 +1236,45 @@ class Sabotage(unittest.TestCase):
                 "CheckTarballCommand.test_a_consumer_shape_that_no_table_row_claims_is_refused_before_any_call",
                 "CheckTarballCommand.test_check_inputs_refuses_a_ref_that_no_table_row_accepts",
             },
+        ),
+        "the pnpm scope is matched in lower case only": (
+            SCRIPT_NAME,
+            'PNPM_FIRST_PARTY = re.compile(r"""  ["\']?/?@branchleft/""", re.IGNORECASE)',
+            'PNPM_FIRST_PARTY = re.compile(r"""  ["\']?/?@branchleft/""")',
+            {"ScanRefuses.test_a_pnpm_entry_with_the_scope_in_capitals_is_refused_not_skipped"},
+        ),
+        "the tarball URL count is case-sensitive": (
+            SCRIPT_NAME,
+            'DOWNLOAD_URL = re.compile(r"npm\\.pkg\\.github\\.com/download/@branchleft/", re.IGNORECASE)',
+            'DOWNLOAD_URL = re.compile(r"npm\\.pkg\\.github\\.com/download/@branchleft/")',
+            {"ScanRefuses.test_a_pnpm_tarball_url_with_the_scope_in_capitals_outside_the_section_read_is_refused"},
+        ),
+        "the package-lock scope path is matched in lower case only": (
+            SCRIPT_NAME,
+            'LOCK_SCOPE_PATH = re.compile(r"node_modules/(@branchleft/)", re.IGNORECASE)',
+            'LOCK_SCOPE_PATH = re.compile(r"node_modules/(@branchleft/)")',
+            {"ScanRefuses.test_a_package_lock_path_with_the_scope_in_capitals_is_refused_not_skipped"},
+        ),
+        "a package-lock scope that is not exactly lower case is read as a package": (
+            SCRIPT_NAME,
+            '        if scoped[-1].group(1) != "@branchleft/":',
+            "        if False:",
+            {"ScanRefuses.test_a_package_lock_path_with_the_scope_in_capitals_is_refused_not_skipped"},
+        ),
+        "the package-lock tarball URLs are not counted": (
+            SCRIPT_NAME,
+            '    if downloads != parsed:\n        raise Refusal(f"{source}: {downloads} GitHub Packages tarball URL(s) but {parsed} read from the packages map")',
+            '    if False:\n        raise Refusal(f"{source}: {downloads} GitHub Packages tarball URL(s) but {parsed} read from the packages map")',
+            {
+                "ScanRefuses.test_a_package_lock_entry_under_an_alias_key_is_refused_not_skipped",
+                "ScanRefuses.test_a_package_lock_alias_entry_is_refused_beside_an_entry_that_passes",
+            },
+        ),
+        "a lockfileVersion 1 lockfile is searched for the scope in lower case only": (
+            SCRIPT_NAME,
+            '        if "@branchleft/" in text.lower():',
+            '        if "@branchleft/" in text:',
+            {"ScanRefuses.test_a_package_lock_without_a_packages_map_is_refused_with_the_scope_in_capitals"},
         ),
     }
 
