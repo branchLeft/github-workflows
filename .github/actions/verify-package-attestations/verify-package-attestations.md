@@ -90,7 +90,10 @@ before it can be installed.
 Every refusal is collected and printed; the exit status is 1 if any entry was
 refused. A lockfile that cannot be read, a `@branchleft` line the reader does not
 understand, a tarball URL outside the section it reads, a missing token and an
-absence of any lockfile are refusals too. A fault inside the program exits 2.
+absence of any lockfile are refusals too. The scope is matched in any case, so a
+`@BRANCHLEFT` name is read and refused, never skipped. In `package-lock.json` the
+GitHub Packages tarball URLs under `packages` are counted against the entries read,
+so an entry under an alias key refuses. A fault inside the program exits 2.
 
 ## The publisher checks
 
