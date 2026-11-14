@@ -2,8 +2,9 @@ name: Ansible gated apply (self-test)
 
 # This repo tests the reusable workflow with its own working copy (the local
 # path below), not a tagged one, so a pull request that changes the workflow is
-# checked by the change itself. It runs on every pull request, with no path
-# filter, so a change elsewhere in the repo cannot skip it.
+# checked by the change itself. It runs when a pull request or a push to main touches a path listed
+# under `on:`, and every Monday on a schedule, which catches a dependency the
+# list missed.
 #
 # The caller runs lint and Molecule over the fixture project. On a pull request
 # the plan and apply jobs are skipped, as they are for every caller. On a push
@@ -12,8 +13,44 @@ name: Ansible gated apply (self-test)
 
 on:
   pull_request:
+    paths:
+      - .github/workflows/ansible-gated-apply.yml
+      - .github/workflows/ansible-drift-check.yml
+      - .github/workflows/ansible-gated-apply-self.yml
+      - .github/workflows/ssh-check-hosts-self.yml
+      - .github/workflows/ssh-jump-self.yml
+      - .github/actions/ssh-check-hosts/**
+      - .github/fixtures/ansible-gated-apply/**
+      - .github/dependabot.yml
+      - tools/test_ansible_gated_apply.py
+      - tools/sabotage.py
+      - tools/run_workflow_steps.py
+      - tools/ssh_jump_proof.py
+      - tools/ansible-gated-apply.structure.json
   push:
     branches: [main]
+    paths:
+      - .github/workflows/ansible-gated-apply.yml
+      - .github/workflows/ansible-drift-check.yml
+      - .github/workflows/ansible-gated-apply-self.yml
+      - .github/workflows/ssh-check-hosts-self.yml
+      - .github/workflows/ssh-jump-self.yml
+      - .github/actions/ssh-check-hosts/**
+      - .github/fixtures/ansible-gated-apply/**
+      - .github/dependabot.yml
+      - tools/test_ansible_gated_apply.py
+      - tools/sabotage.py
+      - tools/run_workflow_steps.py
+      - tools/ssh_jump_proof.py
+      - tools/ansible-gated-apply.structure.json
+  schedule:
+    - cron: '17 4 * * 1'
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
