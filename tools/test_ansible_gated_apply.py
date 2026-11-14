@@ -4695,9 +4695,22 @@ class SshJumpProofFixtureTests(unittest.TestCase):
         assert match is not None
         self.assertEqual((match.group(1), match.group(2), match.group(4), match.group(5)), ("unchanged", "0", SHA, "0"))
 
-    def test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter(self) -> None:
+    def test_the_self_test_workflow_runs_on_a_change_to_what_it_proves_and_every_week(self) -> None:
         doc: dict[Any, Any] = yaml.safe_load(JUMP_SELF_WORKFLOW.read_text())
-        self.assertEqual(doc[True], {"pull_request": None, "push": {"branches": ["main"]}})
+        triggers = doc[True]
+        self.assertEqual(set(triggers), {"pull_request", "push", "schedule"})
+        # The proof, its runner, the action it proves and the workflow itself: a change to any one runs it.
+        proved = {
+            ".github/actions/ssh-check-hosts/**",
+            "tools/ssh_jump_proof.py",
+            "tools/run_workflow_steps.py",
+            ".github/workflows/ssh-jump-self.yml",
+        }
+        self.assertTrue(proved <= set(triggers["pull_request"]["paths"]), triggers["pull_request"])
+        self.assertEqual(triggers["push"], {"branches": ["main"], "paths": triggers["pull_request"]["paths"]})
+        # The weekly run is the control for a dependency the path list missed.
+        self.assertEqual(len(triggers["schedule"]), 1)
+        self.assertRegex(triggers["schedule"][0]["cron"], r"^\d+ \d+ \* \* \d$")
         self.assertEqual(doc["permissions"], {"contents": "read"})
         self.assertEqual(list(doc["jobs"]), ["jump-proof"])
         job = doc["jobs"]["jump-proof"]

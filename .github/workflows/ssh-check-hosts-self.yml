@@ -2,8 +2,9 @@ name: SSH check hosts (self-test)
 
 # This repo tests the action with its own working copy (the local path below),
 # not a tagged one, so a pull request that changes the action is checked by the
-# change itself. It runs on every pull request, with no path filter, so a change
-# elsewhere in the repo cannot skip it.
+# change itself. It runs when a pull request or a push to main touches a path listed
+# under `on:`, and every Monday on a schedule, which catches a dependency the
+# list missed.
 #
 # It is the one run of the action on a real runner before a merge: the inputs,
 # the outputs and the shell of each step. The host call is the stub in the
@@ -12,8 +13,24 @@ name: SSH check hosts (self-test)
 
 on:
   pull_request:
+    paths:
+      - .github/actions/ssh-check-hosts/**
+      - .github/fixtures/ansible-gated-apply/**
+      - .github/workflows/ssh-check-hosts-self.yml
   push:
     branches: [main]
+    paths:
+      - .github/actions/ssh-check-hosts/**
+      - .github/fixtures/ansible-gated-apply/**
+      - .github/workflows/ssh-check-hosts-self.yml
+  schedule:
+    - cron: '17 4 * * 1'
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
