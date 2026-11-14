@@ -960,6 +960,16 @@ runs:
           esac
           printf '%s\n' "$kind" >> "$kinds"
 
+          # A failed host's note names the task that failed: the last TASK header before the
+          # first fatal line of its output. Its output has passed the scan above, because kind
+          # is still failed only then. Only the text between the header's brackets is read.
+          if [ "$kind" = failed ] && [ -s "$cleaned" ]; then
+            failed_task=$(awk '/^TASK \[/ { t = $0; sub(/^TASK \[/, "", t); sub(/\].*$/, "", t) } /^fatal: / { if (t != "") print substr(t, 1, 160); exit }' "$cleaned")
+            if [ -n "$failed_task" ]; then
+              note="$note, task $failed_task"
+            fi
+          fi
+
           label="host $((10#$n))"
           result="$verdict"
           if [ "$FAIL_ON_CHANGES" = true ]; then
