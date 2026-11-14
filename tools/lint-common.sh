@@ -1,22 +1,7 @@
 #!/usr/bin/env bash
-# Shared scan/report/exemption machinery for this repo's lint checks
-# (docs-lint.sh, opv-lint.sh). Sourced, never executed directly.
-#
-# Each caller owns its own rule ids, patterns and messages; what lives here
-# is the mechanism every check needs identically: resolving which files are
-# enforced under warn-vs-enforce mode, the two exemption tiers (a path glob
-# in an ignorefile, an inline disable-next-line comment), position-preserving
-# span blanking so an except-pattern only removes the text that matched it,
-# and the scan-report-summarise loop itself.
-#
-# A caller sources this, then sets two variables before calling run_rule or
-# check_malformed_suppression:
-#   LINT_IGNOREFILE  - e.g. .docs-lintignore or .opv-lintignore
-#   LINT_PREFIX      - the disable-next-line token, e.g. docs-lint-disable-next-line
-#
-# No runtime dependencies beyond bash + grep + awk, matching docs-lint.sh's
-# own constraint: several callers of these checks have no package.json and
-# no Node.
+# Shared scan/report/exemption machinery for docs-lint.sh and opv-lint.sh. Sourced, never executed.
+# A caller sets LINT_IGNOREFILE and LINT_PREFIX before calling run_rule or check_malformed_suppression.
+# No dependencies beyond bash, grep and awk: some callers have no Node. Design: lint-common.md beside this file.
 
 # ---------------------------------------------------------------------------
 # Repo root + scratch dir. Callers run from anywhere; every path after this

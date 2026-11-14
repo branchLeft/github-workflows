@@ -1034,7 +1034,7 @@ hand is green.
 The tests of every step are the same module as the gated apply's. `tools/sabotage.py`
 breaks each control in a copy of the repository, one exact edit at a time, and requires
 the test that guards it to go red, after a run of the unedited tree that must be green.
-The `Sabotage proof` job of the self-test workflow runs it on every pull request, so
+The `Sabotage proof` job of the self-test workflow runs it on every pull request that touches what it tests, so
 the log of that job is the recorded red and green of every control. Each case in the
 file is one exact edit and the tests (as `Class.method`) that must go red; the
 snapshot is regenerated in the copy first, so it cannot stand in for them. An edit
@@ -1282,7 +1282,7 @@ on push to main, after the checkout, pinned as above:
 It fails the step, with one annotation per finding, and has no outputs.
 
 This repo's `plan-has-changes-self.yml` and `check-apply-gate-self.yml` run both
-actions' unit tests and the actions themselves on every pull request. The
+actions' unit tests and the actions themselves on every pull request that touches them. The
 plan-has-changes run checks the job summary through the runner's own per-step
 summary files, a directory layout that is the runner's and not a documented
 interface: the check fails, rather than passing, if that layout goes.
@@ -1314,7 +1314,7 @@ The same line is appended to the job summary. The action gives a verdict only: a
 caller must also treat a failed `pulumi preview` step as `PAID`. This repo's
 `spend-gate-self.yml` runs the unit tests, which include breaking the free-list
 check in a copy and requiring the `PAID` tests to go red, and runs the action over
-a `FREE` and a `PAID` fixture on every pull request.
+a `FREE` and a `PAID` fixture on every pull request that touches it.
 
 ### `.github/actions/assert-no-hetzner-deletes`
 
@@ -1556,7 +1556,7 @@ verify job itself, pinned to the signed tag that first carries it:
 It fails the step, with one annotation per finding, and has no outputs. This repo's
 `check-verify-job-hardened-self.yml` runs its unit tests, which break each control in
 a copy and require its tests to go red, and the action itself over passing and
-failing callers, on every pull request.
+failing callers, on every pull request that touches it.
 
 ### `.github/actions/ssh-check-hosts`
 
@@ -1719,10 +1719,10 @@ other's server, and with the second hop dropped the listed host is not reached.
 
 The self-test is `.github/workflows/ssh-check-hosts-self.yml`: it runs the action on a
 real runner against the stand-in host in the fixture, with `fail-on-changes` both
-ways, on every pull request.
+ways, on every pull request that touches it.
 
 The jump is proved on real SSH servers by `.github/workflows/ssh-jump-self.yml`, on
-every pull request and on main. It runs `tools/ssh_jump_proof.py`, which starts a
+every pull request and push to main that touches it. It runs `tools/ssh_jump_proof.py`, which starts a
 gateway and a target `sshd` on two loopback addresses, each on port 22 with
 throwaway keys and accounts that it removes at its end, and runs the `validate`,
 `check` and `report` steps of this action as they are written, with the real `ssh`.

@@ -1,12 +1,7 @@
 #!/usr/bin/env bash
-# Checks the runner seam of the reusable docs-lint workflow. The job takes its
-# runner from the caller's runs-on input, and that input defaults to
-# GitHub-hosted ubuntu-latest, so a caller that passes nothing runs as before.
-#
-# Text checks on exact lines: this repo's CI carries no YAML parser, and each
-# assertion names the single line it expects.
-#
-# Usage: tools/docs-lint-workflow.test.sh   (run from anywhere)
+# Checks the runner seam of the reusable docs-lint workflow: the job's runner comes from the
+# caller's runs-on input, defaulting to ubuntu-latest, so a caller that passes nothing runs as before.
+# Text checks on exact lines: this repo's CI has no YAML parser. Usage: tools/docs-lint-workflow.test.sh
 
 set -uo pipefail
 

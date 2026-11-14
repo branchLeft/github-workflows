@@ -2,14 +2,33 @@ name: Image scan (self-test)
 
 # This repo tests the action with its own working copy (the local path below), not a
 # tagged one, so a pull request that changes the action is checked by the change itself.
-# It runs on every pull request, with no path filter, so a change elsewhere in the repo
-# cannot skip it. The end-to-end job runs the real Syft and the real Grype, installed
+# It runs when a pull request or a push to main touches a path listed
+# under `on:`, and every Monday on a schedule, which catches a dependency the
+# list missed. The end-to-end job runs the real Syft and the real Grype, installed
 # the way the reusable workflow installs them, over two lockfile fixtures.
 
 on:
   pull_request:
+    paths:
+      - .github/actions/image-scan/**
+      - .github/workflows/image-scan.yml
+      - .github/workflows/image-scan-report.yml
+      - .github/workflows/image-scan-self.yml
   push:
     branches: [main]
+    paths:
+      - .github/actions/image-scan/**
+      - .github/workflows/image-scan.yml
+      - .github/workflows/image-scan-report.yml
+      - .github/workflows/image-scan-self.yml
+  schedule:
+    - cron: '17 4 * * 1'
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

@@ -1,14 +1,7 @@
 #!/usr/bin/env python3
 """Stands in for `curl` in the tests of verify-package-attestations.py.
 
-It answers only the download the verifier makes: a GitHub Packages tarball URL,
-saved to --output. The bytes come from $STUB_TARBALLS/<name>-<version>.tgz, with
-the scope's slash dropped; a missing file is curl's exit 22 for a 404 answer. The
-token must arrive on standard input as a header line and must not be on the
-command line. Every call is appended to $STUB_LOG when that is set.
-
-`run` is the whole stub, so the tests can call it in-process; run as a script it
-is the program the tests put on PATH.
+Behaviour and environment switches: README.md in this folder. `run` is the whole stub, so tests can call it in-process.
 """
 
 import os

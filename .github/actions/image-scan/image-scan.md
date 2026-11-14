@@ -98,3 +98,9 @@ except `blocking`. The reusable workflow forwards `verdict`, `blocking`, `critic
 - Lockfile scanning (`SEC-7`), licence checks, signing and attestation are other changes.
 - The nightly re-scan (`SEC-6`) is `.github/workflows/nightly-image-rescan.yml`: it runs this action over the digest a tag points at, on the caller's schedule. It files no issue.
 - Syft reads the SBOM from the registry by digest, so the image must already be pushed: scan after the push and before the attest.
+
+## Commands (image-scan.py)
+
+`check-input` refuses an image reference that is not pinned by digest, `install`
+fetches a pinned, checksum-verified Syft or Grype, `evaluate` turns the Grype JSON into
+findings, severity counts and a verdict, and `list-images` reads the manual report's list.

@@ -715,19 +715,24 @@ CASES: list[Case] = [
         [f"{SF}.test_the_stand_in_target_prints_a_summary_line_the_report_step_reads_as_clean"],
     ),
     Case(
-        "jump self-test workflow gains a path filter",
-        [Edit(JUMP_SELF, "  pull_request:\n  push:", "  pull_request:\n    paths: ['tools/**']\n  push:")],
-        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
+        "jump self-test workflow stops running on a change to the proof",
+        [Edit(JUMP_SELF, "      - tools/ssh_jump_proof.py\n", "", count=2)],
+        [f"{SF}.test_the_self_test_workflow_runs_on_a_change_to_what_it_proves_and_every_week"],
+    ),
+    Case(
+        "jump self-test workflow loses its weekly run",
+        [Edit(JUMP_SELF, "  schedule:\n    - cron: '17 4 * * 1'\n", "")],
+        [f"{SF}.test_the_self_test_workflow_runs_on_a_change_to_what_it_proves_and_every_week"],
     ),
     Case(
         "jump self-test workflow job loses its timeout",
         [Edit(JUMP_SELF, "    timeout-minutes: 10\n", "")],
-        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
+        [f"{SF}.test_the_self_test_workflow_runs_on_a_change_to_what_it_proves_and_every_week"],
     ),
     Case(
         "jump self-test workflow does not run the proof",
         [Edit(JUMP_SELF, "run: python3 tools/ssh_jump_proof.py", "run: python3 tools/ssh_jump_proof.py --help")],
-        [f"{SF}.test_the_self_test_workflow_runs_on_every_pull_request_and_main_with_no_path_filter"],
+        [f"{SF}.test_the_self_test_workflow_runs_on_a_change_to_what_it_proves_and_every_week"],
     ),
     # The jump in the gated apply and the drift check (ws#2625). Cases a, b and c
     # are the three the brief names; the rest are the other controls of the
@@ -1141,6 +1146,17 @@ CASES: list[Case] = [
         "log line: the second hop's name is not redacted from a host's line",
         [Edit(ACTION, '            playbook=$(redact_jumps "$playbook")\n', "")],
         [f"{RL}.test_a_second_hop_name_in_a_host_line_is_redacted_as_it_is_from_the_diff"],
+    ),
+    Case(
+        "log line: the failed task's note prints the host's output line, not the TASK header",
+        [
+            Edit(
+                ACTION,
+                'if (t != "") print substr(t, 1, 160); exit',
+                'if (t != "") print $0; exit',
+            )
+        ],
+        [f"{P}.test_a_failed_host_log_line_names_the_task_that_failed_and_none_of_its_output"],
     ),
     # The second hop. The control is that the second hop applies to the
     # listed hosts and only to them; the rest hold its validation, its keys and its

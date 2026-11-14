@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
-"""Image scan gate: judges a Grype report of a container image.
-
-Commands: `check-input` refuses an image reference that is not pinned by digest, `install`
-fetches a pinned, checksum-verified Syft or Grype, `evaluate` turns the Grype JSON into
-findings, severity counts and a verdict, and `list-images` reads the manual report's list. The rules and their reasons are in
-image-scan.md beside this file.
-
-The blocking threshold is a constant, not an argument: no caller can lower it. A finding at
-or above it blocks unless a valid, unexpired exemption covers a finding that has no fix.
+"""Image scan gate: judges a Grype report of a container image; the threshold is a constant.
+Exemptions, commands and rules: image-scan.md beside this file.
 """
 
 from __future__ import annotations

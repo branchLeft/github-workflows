@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
 """Fail if a `pulumi preview --json` plan would destroy a protected Hetzner resource.
-Usage:
-    assert-no-hetzner-deletes.py <preview-json-file>
-    assert-no-hetzner-deletes.py --self-test
-    assert-no-hetzner-deletes.py --verify-coverage <program-dir> --coverage-map <json-file>
-Exit 0 if clean, 1 if a protected resource would be destroyed or any input could
-not be read or understood, 2 on usage error. Rules, limits and the coverage map
-format: assert-no-hetzner-deletes.md beside this file.
+
+Usage, exit codes, rules, limits and the coverage map format: assert-no-hetzner-deletes.md beside this file.
 """
 
 import contextlib

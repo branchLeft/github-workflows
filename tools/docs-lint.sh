@@ -1,13 +1,7 @@
 #!/usr/bin/env bash
-# Enforces the mechanical parts of branchLeft's documentation standard.
-# Rule reference and rationale: tools/docs-lint-rules.md
-#
-# Shared scan/report machinery lives in tools/lint-common.sh; this file owns
-# its rule ids, patterns and messages. Runtime: bash, grep, awk, and npx
-# for markdownlint.
-#
-# Usage: docs-lint.sh [--explain] [--mode warn|enforce] [FILE...]
-# With no FILE every tracked file is scanned; pre-commit passes FILEs.
+# Enforces the mechanical parts of branchLeft's documentation standard. Rule reference: tools/docs-lint-rules.md
+# Shared machinery: tools/lint-common.sh. Runtime: bash, grep, awk and npx (markdownlint).
+# Usage: docs-lint.sh [--explain] [--mode warn|enforce] [FILE...]  (no FILE: every tracked file)
 
 set -uo pipefail
 

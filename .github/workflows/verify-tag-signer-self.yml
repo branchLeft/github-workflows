@@ -2,14 +2,33 @@ name: Verify tag signer (self-test)
 
 # This repo tests the action's script with its own working copy, not a tagged
 # one, so a pull request that changes the script, the allowed signers file or the
-# code owners file is checked by the change itself. It runs on every pull
-# request, with no path filter, so a change elsewhere cannot skip it. The action
+# code owners file is checked by the change itself. It runs when a pull request or a push to main touches a path listed
+# under `on:`, and every Monday on a schedule, which catches a dependency the
+# list missed. The action
 # is wired into no workflow of this repo; callers pin a commit of it.
 
 on:
   pull_request:
+    paths:
+      - .github/actions/verify-tag-signer/**
+      - .github/CODEOWNERS
+      - .github/allowed_signers
+      - .github/workflows/verify-tag-signer-self.yml
   push:
     branches: [main]
+    paths:
+      - .github/actions/verify-tag-signer/**
+      - .github/CODEOWNERS
+      - .github/allowed_signers
+      - .github/workflows/verify-tag-signer-self.yml
+  schedule:
+    - cron: '17 4 * * 1'
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
