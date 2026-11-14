@@ -1,0 +1,22 @@
+{
+  "matches": [
+    {
+      "vulnerability": {"id": "GHSA-35jh-r3h4-6jhm", "namespace": "github:language:javascript", "severity": "High", "fix": {"versions": ["4.17.21"], "state": "fixed"}},
+      "relatedVulnerabilities": [{"id": "CVE-2021-23337", "namespace": "nvd:cpe", "severity": "High"}],
+      "artifact": {"name": "lodash", "version": "4.17.15", "type": "npm", "locations": [{"path": "/package-lock.json"}]}
+    },
+    {
+      "vulnerability": {"id": "GHSA-p6mc-m468-83gw", "namespace": "github:language:javascript", "severity": "High", "fix": {"versions": ["4.17.19"], "state": "fixed"}},
+      "relatedVulnerabilities": [{"id": "CVE-2020-8203", "namespace": "nvd:cpe", "severity": "High"}],
+      "artifact": {"name": "lodash", "version": "4.17.15", "type": "npm", "locations": [{"path": "/package-lock.json"}]}
+    },
+    {
+      "vulnerability": {"id": "GHSA-29mw-wpgm-hmr9", "namespace": "github:language:javascript", "severity": "Medium", "fix": {"versions": ["4.17.21"], "state": "fixed"}},
+      "relatedVulnerabilities": [{"id": "CVE-2020-28500", "namespace": "nvd:cpe", "severity": "Medium"}],
+      "artifact": {"name": "lodash", "version": "4.17.15", "type": "npm", "locations": [{"path": "/package-lock.json"}]}
+    }
+  ],
+  "source": {"type": "sbom", "target": {}},
+  "distro": {"name": "", "version": "", "idLike": null},
+  "descriptor": {"name": "grype", "version": "0.121.1"}
+}

@@ -1,0 +1,103 @@
+[
+  {
+    "attestation": {
+      "bundle_url": "",
+      "initiator": ""
+    },
+    "verificationResult": {
+      "mediaType": "application/vnd.dev.sigstore.verificationresult+json;version=0.1",
+      "signature": {
+        "certificate": {
+          "certificateIssuer": "CN=sigstore-intermediate,O=sigstore.dev",
+          "subjectAlternativeName": "https://github.com/branchLeft/ghost-platform/.github/workflows/broker-release.yml@refs/tags/broker-v0.1.0",
+          "issuer": "https://token.actions.githubusercontent.com",
+          "githubWorkflowTrigger": "push",
+          "githubWorkflowSHA": "7432906a8dd245b766e81dc5b157d444ed68dcd2",
+          "githubWorkflowName": "Broker release",
+          "githubWorkflowRepository": "branchLeft/ghost-platform",
+          "githubWorkflowRef": "refs/tags/broker-v0.1.0",
+          "buildSignerURI": "https://github.com/branchLeft/ghost-platform/.github/workflows/broker-release.yml@refs/tags/broker-v0.1.0",
+          "buildSignerDigest": "7432906a8dd245b766e81dc5b157d444ed68dcd2",
+          "runnerEnvironment": "github-hosted",
+          "sourceRepositoryURI": "https://github.com/branchLeft/ghost-platform",
+          "sourceRepositoryDigest": "7432906a8dd245b766e81dc5b157d444ed68dcd2",
+          "sourceRepositoryRef": "refs/tags/broker-v0.1.0",
+          "sourceRepositoryIdentifier": "1322892070",
+          "sourceRepositoryOwnerURI": "https://github.com/branchLeft",
+          "sourceRepositoryOwnerIdentifier": "308565869",
+          "buildConfigURI": "https://github.com/branchLeft/ghost-platform/.github/workflows/broker-release.yml@refs/tags/broker-v0.1.0",
+          "buildConfigDigest": "7432906a8dd245b766e81dc5b157d444ed68dcd2",
+          "buildTrigger": "push",
+          "runInvocationURI": "https://github.com/branchLeft/ghost-platform/actions/runs/41350728766/attempts/1",
+          "sourceRepositoryVisibilityAtSigning": "public"
+        }
+      },
+      "verifiedTimestamps": [
+        {
+          "type": "Tlog",
+          "uri": "https://rekor.sigstore.dev",
+          "timestamp": "2026-11-01T21:12:41Z"
+        }
+      ],
+      "verifiedIdentity": {
+        "subjectAlternativeName": {
+          "subjectAlternativeName": "",
+          "regexp": "^https://github\\.com/branchLeft/ghost-platform/\\.github/workflows/broker-release\\.yml"
+        },
+        "issuer": {
+          "issuer": "",
+          "regexp": ".*"
+        },
+        "runnerEnvironment": "github-hosted"
+      },
+      "statement": {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [
+          {
+            "name": "broker-bundle-0.1.0.tar.gz",
+            "digest": {
+              "sha256": "6410ecb830f6dd01ff46a459aa3e352e613b241378a4dc24f17f4bd50c4fc864"
+            }
+          }
+        ],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+          "buildDefinition": {
+            "buildType": "https://actions.github.io/buildtypes/workflow/v1",
+            "externalParameters": {
+              "workflow": {
+                "path": ".github/workflows/broker-release.yml",
+                "ref": "refs/tags/broker-v0.1.0",
+                "repository": "https://github.com/branchLeft/ghost-platform"
+              }
+            },
+            "internalParameters": {
+              "github": {
+                "event_name": "push",
+                "repository_id": "1322892070",
+                "repository_owner_id": "308565869",
+                "runner_environment": "github-hosted"
+              }
+            },
+            "resolvedDependencies": [
+              {
+                "digest": {
+                  "gitCommit": "7432906a8dd245b766e81dc5b157d444ed68dcd2"
+                },
+                "uri": "git+https://github.com/branchLeft/ghost-platform@refs/tags/broker-v0.1.0"
+              }
+            ]
+          },
+          "runDetails": {
+            "builder": {
+              "id": "https://github.com/branchLeft/ghost-platform/.github/workflows/broker-release.yml@refs/tags/broker-v0.1.0"
+            },
+            "metadata": {
+              "invocationId": "https://github.com/branchLeft/ghost-platform/actions/runs/41350728766/attempts/1"
+            }
+          }
+        }
+      }
+    }
+  }
+]

@@ -1,0 +1,51 @@
+name: Verify package attestations
+description: >
+  Fails the step unless every @branchleft package locked in the repository's
+  lockfiles is either listed as published before attestation began, or has a
+  signed build attestation from the repository, workflow and ref that the
+  reviewed identity table names for it. Fails closed: an unreadable lockfile, a
+  package missing from the table, a download or lookup that fails, bytes that
+  differ from the lockfile, and a version that is not listed and has no
+  attestation (on a row whose first attested version is UNSET too) all fail the
+  step.
+
+# The rules, the identity table and their reasons are in
+# verify-package-attestations.md beside this file. The program is run from the
+# revision the caller pinned, via github.action_path, so this file never names a
+# tag of this repo. The table is a literal in the program: the caller cannot pass
+# one, because an identity supplied by the repository being checked would let it
+# vouch for itself.
+#
+# The job needs `contents: read` to check out the lockfiles and `packages: read`
+# so the token can download the tarballs. It makes no write and holds no secret.
+
+inputs:
+  root:
+    description: The directory to scan for pnpm-lock.yaml and package-lock.json, relative to the workspace.
+    required: false
+    default: .
+  github-token:
+    description: The token the tarball downloads and the attestation lookups use. The run's own token is enough; pass nothing wider.
+    required: false
+    default: ${{ github.token }}
+
+runs:
+  using: composite
+  steps:
+    - name: Check the identity table
+      shell: bash
+      env:
+        VERIFIER: ${{ github.action_path }}/verify-package-attestations.py
+      run: |
+        set -eu
+        python3 -I "$VERIFIER" self-test
+
+    - name: Verify every locked @branchleft package
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        SCAN_ROOT: ${{ inputs.root }}
+        VERIFIER: ${{ github.action_path }}/verify-package-attestations.py
+      run: |
+        set -eu
+        python3 -I "$VERIFIER" scan "$SCAN_ROOT"

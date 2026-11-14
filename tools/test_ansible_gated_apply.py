@@ -1724,6 +1724,85 @@ class PlanTests(unittest.TestCase):
                 self.assertNotIn("matched a secret pattern", result.summary)
                 self.assertIn(line, result.summary)
 
+    def test_the_named_placeholder_in_its_own_file_is_shown_and_does_not_fail_the_job(self) -> None:
+        # The one allowance: this exact line, under the diff header of this file. Added, kept as
+        # context or removed, and under any indentation, it is let through and the diff is shown whole.
+        header = "--- before: /usr/local/sbin/branchleft-verify-image\n+++ after: /work/repo/hetzner/provision/branchleft-verify-image\n"
+        line = "export GH_TOKEN=placeholder-not-a-credential"
+        for name, shown in {
+            "added": "+    " + line,
+            "context": "     " + line,
+            "removed": "-    " + line,
+            "not indented": "+" + line,
+            "carriage return": "+    " + line + "\r",
+        }.items():
+            with self.subTest(case=name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, header + "@@ -1,2 +1,2 @@\n" + shown + "\n")
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertEqual(result.code, 0, result.log)
+                self.assertNotIn("matched a secret pattern", result.summary)
+                self.assertIn(line, result.summary)
+
+    def test_the_named_placeholder_is_withheld_in_any_other_place_or_with_anything_added(self) -> None:
+        # Each diff keeps the allowed line's name or value but changes the file, the line or what
+        # follows it, so each is read as the credential assignment it is and is withheld.
+        allowed_header = "--- before\n+++ after: /work/repo/hetzner/provision/branchleft-verify-image\n"
+        other_header = "--- before\n+++ after: /work/repo/hetzner/provision/other-program\n"
+        line = "+export GH_TOKEN=placeholder-not-a-credential"
+        cases = {
+            "another file": other_header + line,
+            "a file whose name only ends alike": "--- before\n+++ after: /work/repo/hetzner/provision/xbranchleft-verify-image\n" + line,
+            "a file with a suffix": "--- before\n+++ after: /work/repo/hetzner/provision/branchleft-verify-image.bak\n" + line,
+            "a path shorter than the entry's": "--- before\n+++ after: /branchleft-verify-image\n" + line,
+            "a directory that only ends alike": "--- before\n+++ after: /work/repo/xhetzner/provision/branchleft-verify-image\n" + line,
+            "a section with no after header": allowed_header + line + "\n--- before: /work/repo/other\n" + line,
+            "no file header": "--- before\n" + line,
+            "no file named": "--- before\n+++ after\n" + line,
+            "the next file in the same diff": allowed_header + line + "\n--- before\n+++ after: /work/repo/hetzner/provision/other-program\n" + line,
+            "a header that is not at the start of the section": line + "\n" + allowed_header.replace("--- before\n", ""),
+            "another value": allowed_header + "+export GH_TOKEN=another-placeholder-value",
+            "the same value under another name": allowed_header + "+export GITHUB_TOKEN=placeholder-not-a-credential",
+            "another name under the same value": allowed_header + "+export GH_TOKENS=placeholder-not-a-credential",
+            "a value after it": allowed_header + line + " realvalue123",
+            "a second assignment after it": allowed_header + line + "; db_password=Zx9Qm2LpVt7Rw4Ks",
+            "a command before it": allowed_header + "+true && export GH_TOKEN=placeholder-not-a-credential",
+            "a comment after it": allowed_header + line + " # fixed",
+            # opv-disable-next-line OPV004 synthetic placeholder fixture, not a credential; the test asserts it is withheld
+            "quoted": allowed_header + '+export GH_TOKEN="placeholder-not-a-credential"',
+            "lower case": allowed_header + "+export gh_token=placeholder-not-a-credential",
+            "the case changed in the value": allowed_header + "+export GH_TOKEN=Placeholder-not-a-credential",
+        }
+        for name, diff in cases.items():
+            with self.subTest(case=name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, diff + "\n")
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("matched a secret pattern (credential-assignment)", result.summary)
+                self.assertNotIn("placeholder", result.summary + result.log)
+
+    def test_the_named_placeholder_does_not_let_a_credential_elsewhere_in_the_same_diff_through(self) -> None:
+        # The allowance blanks one line, not a diff: a credential in the same host's diff still withholds it all.
+        sandbox = Sandbox(self)
+        sandbox.host(
+            HOST_ONE,
+            11,
+            WOULD_CHANGE,
+            "--- before\n+++ after: /work/repo/hetzner/provision/branchleft-verify-image\n"
+            "+export GH_TOKEN=placeholder-not-a-credential\n"
+            "--- before\n+++ after: /work/repo/hetzner/provision/other-program\n"
+            "+db_password: Zx9Qm2LpVt7Rw4Ks\n",
+        )
+        sandbox.host(HOST_TWO, 0, CLEAN)
+        _, result = self.plan(sandbox)
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("matched a secret pattern (credential-assignment)", result.summary)
+        self.assertNotIn("Zx9Qm2LpVt7Rw4Ks", result.summary + result.log)
+        self.assertNotIn("branchleft-verify-image", result.summary)
+
     def test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line(self) -> None:
         # Each line must still be withheld. The first four are plain shapes. The rest put a credential
         # beside one of the shapes the scan lets through, to show that only the shape is let through.
