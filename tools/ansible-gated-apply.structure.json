@@ -198,7 +198,7 @@
           },
           "id": "check",
           "name": "Check every host in check mode",
-          "run-sha256": "3d9a698a131b5213127663594f309676458b67af0c6fe710738995344ddd8c29",
+          "run-sha256": "5f36d70e2c30ee208d3c37a6a767beb743d18068425313754046269aa07ebe08",
           "shell": "bash"
         },
         {
