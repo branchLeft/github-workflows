@@ -859,7 +859,6 @@ jobs:
           push-dry-run-stub: ${{ inputs.push-dry-run-stub }}
           push-repo-private: ${{ github.event.repository.private }}
           sha: ${{ steps.guard.outputs.sha }}
-          # standards-allow-next-line CI-2 dry-run is the name of an action input in a with: map, not a run: body (the matcher reads the key as run:)
           dry-run: ${{ inputs.dry-run }}
           dry-run-stub: ${{ inputs.dry-run-stub }}
           working-directory: ${{ inputs.working-directory }}
