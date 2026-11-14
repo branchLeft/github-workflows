@@ -2,16 +2,33 @@ name: Package attestations (self-test)
 
 # This repo tests the two actions with its own working copy (the local paths
 # below), not a tagged one, so a pull request that changes an action is checked
-# by the change itself. It runs on every pull request, with no path filter, so a
-# change elsewhere in the repo cannot skip it. The actions are wired into no
+# by the change itself. It runs when a pull request or a push to main touches a path listed
+# under `on:`, and every Monday on a schedule, which catches a dependency the
+# list missed. The actions are wired into no
 # workflow of this repo. A real attestation is only created and verified by the
 # publish workflows of the repositories that call them; see
 # .github/actions/attest-npm-tarball/attest-npm-tarball.md.
 
 on:
   pull_request:
+    paths:
+      - .github/actions/attest-npm-tarball/**
+      - .github/actions/verify-package-attestations/**
+      - .github/workflows/package-attestations-self.yml
   push:
     branches: [main]
+    paths:
+      - .github/actions/attest-npm-tarball/**
+      - .github/actions/verify-package-attestations/**
+      - .github/workflows/package-attestations-self.yml
+  schedule:
+    - cron: '17 4 * * 1'
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

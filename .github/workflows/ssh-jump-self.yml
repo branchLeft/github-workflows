@@ -4,8 +4,9 @@ name: SSH jump (self-test)
 # ssh-check-hosts action work under ClearAllForwardings=yes and that the key
 # of a jump host opens its destinations and nothing else. It runs the steps of
 # the action in this working copy, so a pull request that changes the action is
-# checked by the change itself. It runs on every pull request, with no path
-# filter, so a change elsewhere in the repo cannot skip it.
+# checked by the change itself. It runs when a pull request or a push to main touches a path listed
+# under `on:`, and every Monday on a schedule, which catches a dependency the
+# list missed.
 #
 # The two servers listen on port 22 of two loopback addresses, because the
 # action's inputs take no port, so the script needs root and runs itself under
@@ -14,8 +15,26 @@ name: SSH jump (self-test)
 
 on:
   pull_request:
+    paths:
+      - .github/actions/ssh-check-hosts/**
+      - tools/ssh_jump_proof.py
+      - tools/run_workflow_steps.py
+      - .github/workflows/ssh-jump-self.yml
   push:
     branches: [main]
+    paths:
+      - .github/actions/ssh-check-hosts/**
+      - tools/ssh_jump_proof.py
+      - tools/run_workflow_steps.py
+      - .github/workflows/ssh-jump-self.yml
+  schedule:
+    - cron: '17 4 * * 1'
+
+# One run per pull request: a newer push cancels the superseded run. A push,
+# schedule or manual run is its own group and is never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
