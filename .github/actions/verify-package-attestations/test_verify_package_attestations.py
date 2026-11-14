@@ -869,6 +869,28 @@ class CheckTarballCommand(WorldCase):
         self.assertEqual(done.returncode, 1)
         self.assertIn("GH_TOKEN is empty", done.stderr)
 
+    def test_a_consumer_shape_that_no_table_row_claims_is_refused_before_any_call(self) -> None:
+        shapes = (
+            ("the ref does not match the row's pattern", GOOD_REPO, GOOD_WORKFLOW, "refs/tags/v1.0.0"),
+            ("the workflow is not the row's signer", GOOD_REPO, "publish-tenant-package.yml", GOOD_REF),
+            ("the repo has no row", "branchLeft/shared-infra", GOOD_WORKFLOW, GOOD_REF),
+        )
+        for label, repo, workflow, ref in shapes:
+            with self.subTest(shape=label):
+                self.world.log.write_text("", encoding="utf-8")
+                self.attest(repo=repo, workflow=workflow, ref=ref)
+                done = self.run_check("--attempts", "1", repo=repo, workflow=workflow, ref=ref)
+                self.assertEqual(done.returncode, 1, done.stdout + done.stderr)
+                self.assertEqual(self.world.calls(), [])
+
+    def test_check_inputs_refuses_a_ref_that_no_table_row_accepts(self) -> None:
+        path, _ = self.world.package(RENDER, "1.0.0")
+        done = self.world.cli(
+            "check-inputs", str(path), "--repo", GOOD_REPO, "--signer-workflow", f"{GOOD_REPO}/.github/workflows/{GOOD_WORKFLOW}", "--ref", "refs/tags/v1.0.0"
+        )
+        self.assertEqual(done.returncode, 1, done.stdout)
+        self.assertIn("matches no ref_regex", done.stderr)
+
 
 class ProveWrongIdentityCommand(WorldCase):
     def prove(self, real: bool = False, **env: str) -> subprocess.CompletedProcess[str]:
@@ -1127,6 +1149,15 @@ class Sabotage(unittest.TestCase):
             "        stdin=f'header = \"Authorization: Bearer {token}\"\\n',",
             "        stdin=None,",
             {"ScanPasses.test_every_identity_flag_is_sent_to_gh", "ScanPasses.test_the_right_tarball_with_the_right_identity_passes"},
+        ),
+        "the consumer ref is not cross-checked against the table": (
+            SCRIPT_NAME,
+            "    table_row_for(args.repo, args.signer_workflow[len(prefix):], args.ref, IDENTITIES)\n",
+            "    _unchecked = (args.signer_workflow, IDENTITIES)\n",
+            {
+                "CheckTarballCommand.test_a_consumer_shape_that_no_table_row_claims_is_refused_before_any_call",
+                "CheckTarballCommand.test_check_inputs_refuses_a_ref_that_no_table_row_accepts",
+            },
         ),
     }
 
