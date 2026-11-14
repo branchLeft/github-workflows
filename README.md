@@ -34,9 +34,13 @@ changed.
 
 A workflow here must never hardcode a tag of this repo internally. Tags are
 immutable, so a literal ref inside a workflow pins callers to a revision that
-has no relationship to the one they asked for — `docs-lint.yml` uses
-`github.job_workflow_sha` to load its own rules from the exact commit the
-caller resolved.
+has no relationship to the one they asked for. Nor can a workflow read its own
+revision from `github.job_workflow_sha`: that context is empty inside a
+reusable workflow, and an empty `ref:` makes `actions/checkout` take the
+default branch, so the caller's pin would do nothing. `docs-lint.yml` reads the
+pin from the caller's own workflow files instead
+([`tools/resolve-pinned-ref.md`](tools/resolve-pinned-ref.md)) and fails if
+there is none or more than one.
 
 ## Workflows
 
@@ -123,6 +127,9 @@ Organisation-level Actions secrets are **not** delivered to a private repo's
 runner on the free plan — measured, with `GITHUB_TOKEN` arriving beside an
 empty organisation secret in the same step. Set both at repository level.
 
+The App needs `issues: read` as well as write access to organisation projects:
+the job reaches each board item through its issue.
+
 **`link-kinds` and `from-statuses` are required and have no default here.**
 Together they are the only place this workflow answers what counts as
 delivery, and the reason both exist is that the first cannot answer it alone.
@@ -175,9 +182,7 @@ scan/report/exemption machinery with `docs-lint.yml`
 implementation of the same mechanism.
 
 **Caller usage** — add to the target repo as
-`.github/workflows/opv-lint.yml`, pinned to the tag cut once this workflow
-first ships (see `git tag -l` in this repo for the current one — `opv-lint.yml`
-is not in any tag yet, so `@v1.0.6` above would 404 if copied verbatim today):
+`.github/workflows/opv-lint.yml`, pinned to an exact tag (see Versioning; `git tag -l` in this repo lists them):
 
 ```yaml
 name: opv-lint
@@ -268,8 +273,7 @@ workflow, not made here.
 
 #### How a repository calls it
 
-Add one caller, pinned to an exact tag (see Versioning). The workflow is not in
-any tag yet, so use the tag cut once it ships.
+Add one caller, pinned to an exact tag (see Versioning).
 
 ```yaml
 name: ansible
@@ -1334,6 +1338,178 @@ runs the unit tests, which include breaking each control in a copy and requiring
 tests to go red, and runs the action against a stub `gh` for a required reviewer, a
 reviewer App rule, an ungated environment, unreadable rules and a path as the
 environment name.
+
+### `.github/actions/attest-npm-tarball`
+
+Signs one packed `@branchleft` npm tarball with a GitHub artifact attestation (SLSA
+build provenance, keyless), then proves it before anything is published: it must
+verify for exactly the repository, signer workflow and ref the caller wrote down,
+the attested commit must be on `main`, and a wrong signer workflow and a wrong ref
+must each be refused for their identity. GitHub Packages is not asked to support
+provenance: the attestation is stored by GitHub and keyed by the tarball's
+`sha256`, so the registry is unchanged. What each step does and why:
+[`attest-npm-tarball.md`](.github/actions/attest-npm-tarball/attest-npm-tarball.md).
+
+Pack once, call the action on that file, then publish that file, pinned by commit:
+
+```yaml
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      # ... checkout, install, build, then `pnpm pack`, with the path and version as step outputs ...
+      - name: Attest and verify the tarball
+        uses: branchLeft/github-workflows/.github/actions/attest-npm-tarball@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          tarball: ${{ steps.pack.outputs.tarball }}
+          repo: branchLeft/ghost-platform
+          signer-workflow: branchLeft/ghost-platform/.github/workflows/publish-render-core.yml
+          ref: refs/tags/render-core-v${{ steps.pack.outputs.version }}
+      - name: Publish the attested tarball
+        run: pnpm publish "$TARBALL" --no-git-checks
+        env:
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+```
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `tarball` | required | The packed `.tgz`, the same file the publish step publishes. |
+| `repo` | required | `owner/name` that owns the signer workflow. A literal: no default. |
+| `signer-workflow` | required | `owner/name/.github/workflows/file.yml` expected to sign. A literal: no default. |
+| `ref` | required | The exact `refs/tags/...` or `refs/heads/...` the attested run must have. Build it from the packed version, never from `github.ref`: an identity read from the run being checked agrees with itself. |
+| `github-token` | the run's own token | The token the lookups use. Pass nothing wider. |
+| `attempts`, `pause-seconds` | `5`, `12` | Retries while the attestation reaches the API: waits of 12, 24, 36 and 48 seconds. |
+
+Only the attesting job holds `id-token: write` and `attestations: write`; the action
+asks for nothing else and publishes nothing. It reads the program from the sibling
+directory `verify-package-attestations`, at the commit the caller pinned, so the
+caller needs no checkout of this repository.
+
+**The owner's step.** Merging this change is not enough: a caller pins the SHA of a
+tag, and tags here are signed and immutable. After merge, sign and push the next
+tag on the merge commit, then each repository's pull request pins that tag's SHA:
+
+```bash
+git tag -s v1.2.0 -m "v1.2.0: attest-npm-tarball and verify-package-attestations" <merge commit>
+git push origin v1.2.0
+```
+
+### `.github/actions/verify-package-attestations`
+
+Fails the step unless every `@branchleft` package locked in the repository's
+`pnpm-lock.yaml` and `package-lock.json` files is either listed as published before
+attestation began, or has a signed build attestation from the repository, workflow
+and ref that a reviewed identity table names for it. For each package it downloads
+the tarball, requires its `sha512` to equal the lockfile `integrity`, requires the
+`package.json` inside to name the same package and version, runs `gh attestation
+verify`, reads the certificate fields of the result again itself, and requires the
+attested commit to be on `main`. The table is a literal in the program: the caller
+cannot pass one, and nothing is derived from the artifact. Every refusal is
+printed; any one fails the step. An unreadable lockfile, a `@branchleft` package
+missing from the table, a failed download or lookup, and a directory with no
+lockfile all fail it. The rules and the table:
+[`verify-package-attestations.md`](.github/actions/verify-package-attestations/verify-package-attestations.md).
+
+```yaml
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          persist-credentials: false
+      - name: Verify the signed build proof of our packages
+        uses: branchLeft/github-workflows/.github/actions/verify-package-attestations@FULL_COMMIT_SHA # vX.Y.Z
+```
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `root` | `.` | The directory scanned, recursively, for lockfiles. `node_modules` and `.git` are skipped. |
+| `github-token` | the run's own token | The token the downloads and lookups use. Pass nothing wider. |
+
+**Which versions need a proof.** Each table row has `first_attested` and a list of
+`grandfathered` versions. A listed version passes with no download. Any other version
+needs a verified attestation, and the failure message says whether the row is `UNSET`,
+the version is below the floor and unlisted, or it is at or above the floor. Every
+row's floor is `UNSET` until the first release published through an attesting
+workflow exists. The list of an `UNSET` row is the exact versions the repositories'
+lockfiles pinned before attestation began, and only those pass; every other
+version, and every version of a package with an empty list, fails closed. Extending
+a list, or setting a floor and listing the earlier versions, is a reviewed change to
+the table.
+
+**What is unproven until the first real publish.** These are UNVERIFIED; do not read
+them as facts:
+
+- That `pnpm publish ./x.tgz` to GitHub Packages stores the packed bytes unchanged
+  and serves them unchanged, so the downloaded `sha512` equals the lockfile
+  `integrity`. If the registry repacks, the consumer check refuses every attested
+  package, which is the safe direction.
+- That an attestation created for a tarball before it is published reaches the
+  attestation API, and that a consumer's `GITHUB_TOKEN` can read another
+  repository's attestations, compare an attested commit with `main`, and download a
+  package from GitHub Packages (with `packages: read` and the package's repository
+  access). The publisher side is shown only for a release asset, not an npm tarball.
+- That the runner image's `gh` accepts every flag used (`--signer-workflow`,
+  `--source-ref`, `--cert-oidc-issuer`, `--predicate-type`,
+  `--deny-self-hosted-runners`, `--format json`). They are shown to work with
+  `gh` 2.97.0.
+- That `curl` does not send the token to the other host a download redirects to.
+- That a pinned remote caller can read the sibling directory `../verify-package-attestations`
+  from the action's own path.
+
+What is shown: the `--format json` field names the program reads
+(`verificationResult.signature.certificate.*` and `verificationResult.statement.*`),
+the words `gh` uses for a wrong signer workflow, a wrong ref and an unknown digest,
+all from a read-only `gh attestation verify` of an existing attestation of a release
+bundle of this organisation, kept without its bundle as
+`verify-package-attestations/fixtures/real-gh-verify-output.json`.
+
+This repo's `package-attestations-self.yml` runs both actions' tests, which include
+breaking each control in a copy and requiring its tests to go red, and runs the
+consumer action over a lockfile with no first-party package, one with a package that
+is not in the table, and a directory with no lockfile.
+
+### `.github/actions/check-verify-job-hardened`
+
+Checks, in the calling repo's own CI, that the job which runs
+`verify-package-attestations` cannot pass silently. Every job that calls the action
+fails the check if it, or any of its steps, sets a `continue-on-error` that is not a
+literal `false`; if the job or the verify step has an `if:`; if a job in its `needs`
+chain has an `if:` (a skipped needed job skips it); if its `permissions:` are anything
+but exactly `contents: read` and `packages: read`; or if the step does not use this
+repo's action. A workflow with no such job fails, so removing the job is red. It reads
+the workflow with a strict reader and fails on anything it cannot read with certainty
+(anchors, merge keys, tabs, a duplicate key, a job or step written as a flow mapping).
+It reads only the file it is given; a repo that does not call it is not checked, and
+the check binds only once its job is a required status check, which is an owner
+action. Codes, rules and what it does not check:
+[`check-verify-job-hardened.md`](.github/actions/check-verify-job-hardened/check-verify-job-hardened.md).
+
+**Caller usage** — a step in a job of the repo's own test or lint workflow that runs
+on `pull_request` and on push to the default branch, after the checkout, never in the
+verify job itself, pinned to the signed tag that first carries it:
+
+```yaml
+      - name: Check the verify job cannot pass silently
+        uses: branchLeft/github-workflows/.github/actions/check-verify-job-hardened@FULL_COMMIT_SHA # vX.Y.Z
+        with:
+          workflow: .github/workflows/package-attestations-ci.yml
+          job: verify
+```
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `workflow` | required | The workflow file, relative to the workspace root. |
+| `job` | empty | Whitespace-separated job ids that must exist and call the verify action. Empty requires only that at least one job calls it. |
+
+It fails the step, with one annotation per finding, and has no outputs. This repo's
+`check-verify-job-hardened-self.yml` runs its unit tests, which break each control in
+a copy and require its tests to go red, and the action itself over passing and
+failing callers, on every pull request.
 
 ### `.github/actions/ssh-check-hosts`
 
