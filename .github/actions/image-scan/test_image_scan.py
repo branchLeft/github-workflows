@@ -671,7 +671,7 @@ WORKFLOWS = HERE.parent.parent / "workflows"
 class WorkflowTests(unittest.TestCase):
     """Text checks on exact lines: this repo's CI carries no YAML parser."""
 
-    NAMES = ("image-scan.yml", "image-scan-self.yml", "image-scan-report.yml")
+    NAMES = ("image-scan.yml", "image-scan-self.yml", "image-scan-report.yml", "nightly-image-rescan.yml")
 
     def text(self, name):
         return (WORKFLOWS / name).read_text(encoding="utf-8")
@@ -698,7 +698,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotRegex(text, r"(?m)^\s+(?:id-token|actions|attestations|checks|pull-requests|issues|packages): write")
 
     def test_no_input_is_interpolated_into_a_script(self):
-        for name in self.NAMES[:1] + ("../actions/image-scan/action.yml",):
+        for name in (self.NAMES[0], self.NAMES[3], "../actions/image-scan/action.yml"):
             in_run = False
             for line in self.text(name).splitlines():
                 stripped = line.strip()
@@ -719,6 +719,65 @@ class WorkflowTests(unittest.TestCase):
     def test_the_gate_scans_after_the_digest_check_and_uploads_even_on_failure(self):
         text = self.text("image-scan.yml")
         self.assertLess(text.index("check-input"), text.index("uses: ./.image-scan-tools/.github/actions/image-scan"))
+        self.assertIn("        if: always()\n        uses: actions/upload-artifact@", text)
+
+    def test_the_nightly_rescan_is_callable_only_and_the_schedule_is_the_callers(self):
+        text = self.text("nightly-image-rescan.yml")
+        on_block = text.split("\non:\n")[1].split("\npermissions:\n")[0]
+        self.assertEqual(re.findall(r"^  ([a-z_]+):$", on_block, re.MULTILINE), ["workflow_call"])
+        self.assertNotRegex(text, r"(?m)^\s+(?:schedule|workflow_dispatch|push|pull_request):")
+
+    def test_the_nightly_rescan_cannot_skip_or_ignore_a_step_that_decides_the_result(self):
+        """The structural check: every step before the upload, the digest resolution and the scan
+        among them, has no `if:` and no `continue-on-error`, and neither has the job, so the job
+        result is the scan step's own result."""
+        text = self.text("nightly-image-rescan.yml")
+        job = text.split("\n  rescan:\n")[1]
+        self.assertNotRegex(job.split("\n    steps:\n")[0], r"(?m)^    (?:if|continue-on-error):")
+        steps = re.split(r"(?m)^      - ", job.split("\n    steps:\n")[1])[1:]
+        self.assertEqual(len(steps), 7)
+        by_name = {re.match(r"name: (.+)", step).group(1): step for step in steps}
+        upload = by_name["Upload the SBOM and the findings"]
+        self.assertIs(steps[-1], upload)
+        gating = [step for step in steps if step is not upload]
+        scan = by_name["Scan the image"]
+        self.assertIn(by_name["Resolve the digest the tag points at now"], gating)
+        self.assertIn(scan, gating)
+        self.assertEqual([step for step in steps if "uses: ./.image-scan-tools/.github/actions/image-scan\n" in step], [scan])
+        for step in gating:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertNotRegex(step, r"(?m)^        (?:if|continue-on-error):")
+        self.assertEqual(re.findall(r"(?m)^        (?:if|continue-on-error): .*$", upload), ["        if: always()"])
+
+    # A denylist: three strings that must not appear. The structural check is
+    # test_the_nightly_rescan_cannot_skip_or_ignore_a_step_that_decides_the_result.
+    def test_the_nightly_rescan_takes_exactly_four_inputs_and_no_way_to_lower_the_threshold(self):
+        text = self.text("nightly-image-rescan.yml")
+        block = text.split("    inputs:\n")[1].split("    outputs:\n")[0]
+        self.assertEqual(re.findall(r"^      ([a-z-]+):$", block, re.MULTILINE), ["image", "tag", "exemptions-path", "platform"])
+        body = text.split("\njobs:\n")[1]
+        for forbidden in ("report-only", "allow-empty-sbom", "continue-on-error"):
+            self.assertNotIn(forbidden, body)
+        self.assertNotIn("secrets:", text)
+
+    def test_the_nightly_rescan_reads_the_callers_exemption_file_into_the_gate(self):
+        text = self.text("nightly-image-rescan.yml")
+        self.assertEqual(text.count("          exemptions-path: ${{ inputs.exemptions-path }}\n"), 1)
+        self.assertEqual(text.count("        uses: ./.image-scan-tools/.github/actions/image-scan\n"), 1)
+
+    def test_the_nightly_rescan_holds_read_permissions_only_and_sends_the_token_to_ghcr_only(self):
+        text = self.text("nightly-image-rescan.yml")
+        self.assertEqual(text.count("permissions:\n  contents: read\n  packages: read\n"), 1)
+        self.assertEqual(text.count("    permissions:\n      contents: read\n      packages: read\n"), 1)
+        self.assertNotRegex(text, r"(?m)^\s+(?:id-token|actions|attestations|checks|pull-requests|issues|packages): write")
+        self.assertEqual(text.count("steps.ref.outputs.registry == 'ghcr.io' &&"), 3)
+        self.assertEqual(text.count('if [ "${IMAGE%%/*}" = ghcr.io ]; then\n'), 1)
+
+    def test_the_nightly_rescan_scans_the_digest_it_resolved_after_the_digest_check_and_uploads_even_on_failure(self):
+        text = self.text("nightly-image-rescan.yml")
+        self.assertLess(text.index("imagetools inspect"), text.index("check-input"))
+        self.assertLess(text.index("check-input"), text.index("uses: ./.image-scan-tools/.github/actions/image-scan"))
+        self.assertIn("          source: registry:${{ steps.live.outputs.image }}\n", text)
         self.assertIn("        if: always()\n        uses: actions/upload-artifact@", text)
 
     def test_the_report_workflow_cannot_be_called_and_holds_no_package_permission(self):

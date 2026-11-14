@@ -95,7 +95,8 @@ except `blocking`. The reusable workflow forwards `verdict`, `blocking`, `critic
 - The registry token goes to `ghcr.io` only. Any other registry is pulled anonymously.
 - The Grype database is downloaded at scan time and Grype refuses a database older than its own age limit. The result depends on the day, which is the point of `SEC-6`, not a flaw.
 - A finding is only as good as Syft's catalogue of the image: a package Syft cannot see is not scanned.
-- Lockfile scanning (`SEC-7`), the nightly re-scan (`SEC-6`), licence checks, signing and attestation are other changes.
+- Lockfile scanning (`SEC-7`), licence checks, signing and attestation are other changes.
+- The nightly re-scan (`SEC-6`) is `.github/workflows/nightly-image-rescan.yml`: it runs this action over the digest a tag points at, on the caller's schedule. It files no issue.
 - Syft reads the SBOM from the registry by digest, so the image must already be pushed: scan after the push and before the attest.
 
 ## Commands (image-scan.py)

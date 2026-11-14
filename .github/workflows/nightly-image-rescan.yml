@@ -1,0 +1,171 @@
+name: nightly-image-rescan (reusable)
+
+# Re-scans a live image, named by the tag that points at it, with the same Grype-over-Syft
+# gate as image-scan.yml, and fails on any critical or high finding that no valid exemption
+# covers (SEC-6). It resolves the tag to a digest at run time, so each night scans what is
+# live now rather than what was pushed once. The rules, the exemption file and the limits:
+# .github/actions/image-scan/image-scan.md.
+#
+# The schedule belongs to the caller. This file has `workflow_call` and nothing else, so it
+# cannot run by itself and cannot be told to run less often. The caller owns the cron line:
+#
+#   on:
+#     schedule:
+#       - cron: "17 3 * * *"
+#     workflow_dispatch:
+#   permissions:
+#     contents: read
+#   jobs:
+#     rescan:
+#       permissions:
+#         contents: read
+#         packages: read
+#       uses: branchLeft/github-workflows/.github/workflows/nightly-image-rescan.yml@<tag that carries this file>
+#       with:
+#         image: ghcr.io/branchleft/example
+#
+# Why this does not call image-scan.yml: that workflow finds the revision the caller pinned by
+# reading `image-scan.yml@` in the caller's own workflow files, and a caller of this file
+# pins this file instead, so the nested call would find no pin and stop. This file resolves its
+# own pin the same way and then runs the same action from that revision.
+#
+# The gate is fixed. There is no input for the threshold, for report-only or for the tool
+# versions, so a caller cannot weaken it. The only caller-controlled data are the image, the
+# tag and the path of the exemptions file in the caller's own repository.
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "The image name without a tag or digest: registry/name, lower case."
+        type: string
+        required: true
+      tag:
+        description: "The tag that points at the live image. It is resolved to a digest when the job runs."
+        type: string
+        default: "latest"
+      exemptions-path:
+        description: "Exemptions file in the caller's repository (see the README). A missing file means no exemptions."
+        type: string
+        default: ".image-scan-exemptions.json"
+      platform:
+        description: "For a multi-platform image: the platform to scan, such as linux/arm64. Empty scans the runner's own platform (linux/amd64)."
+        type: string
+        default: ""
+    outputs:
+      verdict:
+        description: "PASS or BLOCK"
+        value: ${{ jobs.rescan.outputs.verdict }}
+      blocking:
+        description: "Critical or high findings no valid exemption covers"
+        value: ${{ jobs.rescan.outputs.blocking }}
+      image:
+        description: "The image as scanned, name@sha256:<digest>"
+        value: ${{ jobs.rescan.outputs.image }}
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  rescan:
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    outputs:
+      verdict: ${{ steps.scan.outputs.verdict }}
+      blocking: ${{ steps.scan.outputs.blocking }}
+      image: ${{ steps.live.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # The revision the caller pinned, read from the caller's own workflow
+      # files checked out above. The job_workflow_sha context is empty inside a
+      # reusable workflow, and an empty `ref:` makes actions/checkout take the
+      # default branch, so the pin would be decorative. Fails closed on none or
+      # on two distinct pins. This body is tools/resolve-pinned-ref.sh, inlined
+      # because the pinned revision cannot be fetched before it is known.
+      - name: Resolve the revision the caller pinned
+        id: pin
+        env:
+          CALLED_WORKFLOW: nightly-image-rescan.yml
+        run: |
+          set -euo pipefail
+          workflow_re='^[A-Za-z0-9._-]+\.yml$'
+          [[ "${CALLED_WORKFLOW:-}" =~ $workflow_re ]] || { echo "::error::CALLED_WORKFLOW must name a workflow file."; exit 1; }
+          workflow_pat="uses:[[:space:]]*['\"]?branchLeft/github-workflows/\.github/workflows/${CALLED_WORKFLOW//./\\.}"
+          ref_pat="@[^[:space:]\"'#]+"
+          refs=$(grep -rhoE "${workflow_pat}${ref_pat}" .github/workflows/ 2>/dev/null | sed 's/.*@//' | sort -u || true)
+          n=$(printf '%s' "$refs" | grep -c . || true)
+          if [ "$n" -ne 1 ]; then
+            echo "::error::expected exactly one pinned ${CALLED_WORKFLOW} revision under .github/workflows/, found ${n}: ${refs}. Refusing to run unpinned tooling."
+            exit 1
+          fi
+          printf 'ref=%s\n' "$refs" >> "${GITHUB_OUTPUT:-/dev/stdout}"
+          echo "Running branchLeft/github-workflows@$refs"
+
+      - name: Checkout the scan tooling
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/github-workflows
+          ref: ${{ steps.pin.outputs.ref }}
+          path: .image-scan-tools
+          persist-credentials: false
+
+      # The name and the tag are refused unless they are plain lower-case image characters and
+      # do not start with a dash, so neither can become an option of the docker command. The
+      # token is given to ghcr.io only. The result is checked again in the next step, which
+      # accepts only name@sha256:<64 hex digits>.
+      - name: Resolve the digest the tag points at now
+        id: live
+        env:
+          IMAGE: ${{ inputs.image }}
+          TAG: ${{ inputs.tag }}
+          REGISTRY_USER: ${{ github.actor }}
+          REGISTRY_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          case "$IMAGE" in ''|-*|*[!a-z0-9./_:-]*) echo "::error::the image must be a lower-case registry/name with no tag or digest"; exit 1;; esac
+          case "$TAG" in ''|-*|*[!A-Za-z0-9._-]*) echo "::error::the tag must be letters, digits, dots, dashes and underscores"; exit 1;; esac
+          if [ "${IMAGE%%/*}" = ghcr.io ]; then
+            printf '%s' "$REGISTRY_TOKEN" | docker login ghcr.io --username "$REGISTRY_USER" --password-stdin
+          fi
+          digest=$(docker buildx imagetools inspect --format '{{.Manifest.Digest}}' "$IMAGE:$TAG")
+          printf 'image=%s@%s\n' "$IMAGE" "$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse anything that is not an image pinned by digest
+        id: ref
+        env:
+          IMAGE: ${{ steps.live.outputs.image }}
+          PLATFORM: ${{ inputs.platform }}
+        run: python3 -I .image-scan-tools/.github/actions/image-scan/image-scan.py check-input --image "$IMAGE" --platform="$PLATFORM" --github-output "$GITHUB_OUTPUT"
+
+      # Only ghcr.io gets the token, and only as read-only package access: the job holds no
+      # other credential. Another registry is pulled anonymously.
+      - name: Scan the image
+        id: scan
+        uses: ./.image-scan-tools/.github/actions/image-scan
+        with:
+          source: registry:${{ steps.live.outputs.image }}
+          image-name: ${{ steps.ref.outputs.name }}
+          exemptions-path: ${{ inputs.exemptions-path }}
+          platform: ${{ inputs.platform }}
+          registry-authority: ${{ steps.ref.outputs.registry == 'ghcr.io' && 'ghcr.io' || '' }}
+          registry-username: ${{ steps.ref.outputs.registry == 'ghcr.io' && github.actor || '' }}
+          registry-password: ${{ steps.ref.outputs.registry == 'ghcr.io' && github.token || '' }}
+
+      # After a blocked scan too: the SBOM and the findings are the evidence.
+      - name: Upload the SBOM and the findings
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ steps.ref.outputs.artifact }}
+          path: ${{ runner.temp }}/image-scan-out/
+          if-no-files-found: warn
+          retention-days: 30

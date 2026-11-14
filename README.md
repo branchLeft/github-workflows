@@ -1086,6 +1086,53 @@ exactly one occurrence of `image-scan.yml@` under `.github/workflows/`, for the 
 `image-scan-report.yml` is a manual, report-only run over `report-images.txt` that prints the
 counts without failing; it cannot be called from another repository.
 
+### `nightly-image-rescan.yml`
+
+The nightly re-scan of a live image (`SEC-6`). It resolves a tag to the digest it points
+at when the job runs, then scans that digest with the same action as `image-scan.yml`,
+so the same fixed threshold applies: any critical or high finding no valid exemption
+covers fails the run. Exemptions are read from the caller's `.image-scan-exemptions.json`.
+**The schedule is the caller's.** This file has `workflow_call` and no other trigger; the
+caller owns the cron line and `workflow_dispatch`.
+
+```yaml
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  rescan:
+    permissions: { contents: read, packages: read }
+    uses: branchLeft/github-workflows/.github/workflows/nightly-image-rescan.yml@TAG_OF_THE_RELEASE_THAT_CARRIES_THIS_FILE
+    with: { image: "ghcr.io/branchleft/example" }
+```
+
+Pin to the first release tag that contains this file; an earlier tag has no such workflow.
+
+| Input | Default | Meaning |
+| --- | --- | --- |
+| `image` | required | `registry/name`, lower case, no tag or digest. |
+| `tag` | `latest` | The tag that points at the live image. Resolved to a digest on each run. |
+| `exemptions-path` | `.image-scan-exemptions.json` | As for `image-scan.yml`. Each entry must name its `image`. |
+| `platform` | empty | As for `image-scan.yml`. |
+
+Outputs: `verdict`, `blocking` and `image` (the `name@sha256:<digest>` that was scanned).
+
+It does not call `image-scan.yml`, because that workflow reads its pin from the
+`image-scan.yml@` line in the caller's workflow files, and a caller of this file has a
+`nightly-image-rescan.yml@` line instead. This file resolves its own pin the same way and
+runs the same action from that revision. The caller must keep exactly one occurrence of
+`nightly-image-rescan.yml@` under `.github/workflows/`.
+
+- **A failed run is the only alert.** It does not file an issue; `SEC-6` also asks for
+  one, which is a separate change.
+- **No alert when the nightly does not run.** GitHub disables a scheduled workflow after
+  60 days without repository activity, as for `ansible-drift-check.yml`.
+- A scheduled run starts from the default branch of the caller, so the exemption file it
+  reads is the one on that branch.
+
 ## Actions
 
 A reusable workflow is a whole job; a composite action is a step inside the
