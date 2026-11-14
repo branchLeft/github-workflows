@@ -1567,6 +1567,26 @@ class PlanTests(unittest.TestCase):
         self.assertEqual(result.outputs["failed_hosts"], "1")
         self.assertIn("refused: rollback (1)", result.summary.splitlines()[0])
 
+    def test_the_apply_hosts_stay_ascending_past_99_hosts(self) -> None:
+        # The control case for workspace#3111: the plan's per-host files must sort in
+        # the hosts list's own order with 100 or more hosts, or the apply guard's
+        # strictly-ascending check refuses every apply past 99 hosts.
+        hosts = [f"deploy@host-{i:03d}" for i in range(1, 102)]
+        sandbox = Sandbox(self)
+        for index, dest in enumerate(hosts, start=1):
+            if index == 100:
+                sandbox.host(dest, 30, self.FAILED)
+            else:
+                sandbox.host(dest, 0, CLEAN)
+        checked = sandbox.run(action_step("check"), check_env(HOSTS="".join(f"{h}\n" for h in hosts)))
+        self.assertEqual(checked.code, 0, checked.log)
+        result = sandbox.run(action_step("report"), report_env(SKIP_FAILED_HOSTS="true"))
+        self.assertEqual(result.code, 0, result.log)
+        numbers = [int(n) for n in result.outputs["apply_hosts"].split()]
+        self.assertEqual(numbers, [n for n in range(1, 102) if n != 100])
+        self.assertEqual(numbers, sorted(set(numbers)))
+        self.assertEqual(result.outputs["failed_hosts"], "1")
+
     def test_skip_failed_hosts_never_passes_a_withheld_or_oversize_diff_or_any_other_failure_kind(self) -> None:
         oversize = ("+" + "a" * 99 + "\n") * 3200
         cases = {

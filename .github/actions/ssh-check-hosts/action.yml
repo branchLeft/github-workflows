@@ -612,7 +612,9 @@ runs:
         while IFS= read -r dest; do
           [ -n "$dest" ] || continue
           i=$((i + 1))
-          n=$(printf '%02d' "$i")
+          # Five digits, so the *.dest glob in the report step sorts in the hosts
+          # list's own order past 99 hosts (a lexical sort of 100 puts it before 11).
+          n=$(printf '%05d' "$i")
           printf '%s\n' "$dest" > "$plan_dir/$n.dest"
           route=pull
           if [ -n "$PUSH_HOSTS" ] && grep -qxF -- "$dest" <<< "$PUSH_HOSTS"; then
@@ -622,8 +624,11 @@ runs:
           # The key this host is called with: its own file when the host keys have an
           # entry for it, else the shared one.
           identity="$plan_dir/id"
-          if [ -e "$plan_dir/id.$n" ]; then
-            identity="$plan_dir/id.$n"
+          # The host key files keep the two-digit name of the block above, which is
+          # looked up by name and never sorted.
+          key_name=$(printf '%02d' "$i")
+          if [ -e "$plan_dir/id.$key_name" ]; then
+            identity="$plan_dir/id.$key_name"
           fi
           # Only a host the list names takes the second hop. The list was held to
           # lines of the hosts list and to the second hop being set, so a listed host

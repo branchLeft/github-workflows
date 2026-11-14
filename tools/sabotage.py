@@ -126,6 +126,11 @@ CASES: list[Case] = [
         [f"{DR}.test_a_host_that_would_change_is_red_in_a_drift_check_and_green_in_a_plan"],
     ),
     Case(
+        "the per-host plan files are numbered with two digits again, so past 99 hosts they sort out of order",
+        [Edit(ACTION, "n=$(printf '%05d' \"$i\")", "n=$(printf '%02d' \"$i\")")],
+        [f"{P}.test_the_apply_hosts_stay_ascending_past_99_hosts"],
+    ),
+    Case(
         "busy exit code changed",
         [Edit(ACTION, 'if [ "$rc" = 21 ] && [ "$f_verdict" = busy ]; then', 'if [ "$rc" = 22 ] && [ "$f_verdict" = busy ]; then')],
         [f"{DR}.test_a_refusal_is_not_drift_and_names_its_reason"],
