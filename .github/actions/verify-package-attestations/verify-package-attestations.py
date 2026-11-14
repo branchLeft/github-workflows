@@ -135,6 +135,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template=None,
+        grandfathered=("0.3.0",),
     ),
     Identity(
         package="@branchleft/tsconfig",
@@ -158,7 +159,7 @@ IDENTITIES: tuple[Identity, ...] = (
         workflow="publish.yml",
         ref_regex=r"refs/tags/v\d+\.\d+\.\d+",
         ref_template="refs/tags/v{version}",
-        grandfathered=("0.4.0", "0.6.0"),
+        grandfathered=("0.4.0", "0.6.0", "0.8.8"),
     ),
     Identity(
         package="@branchleft/eslint-config",

@@ -1,4 +1,5 @@
 @branchleft/brand-branchleft	0.3.0
+@branchleft/brand-publicpress	0.3.0
 @branchleft/components	0.3.0
 @branchleft/components	0.6.0
 @branchleft/ghost-platform-render-core	0.1.1
@@ -19,3 +20,4 @@
 @branchleft/tsconfig	0.8.8
 @branchleft/vitest-config	0.4.0
 @branchleft/vitest-config	0.6.0
+@branchleft/vitest-config	0.8.8
