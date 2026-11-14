@@ -226,14 +226,9 @@ def gateway_authorized_keys_line(
     forced_command: str | None = FORCED_COMMAND,
     also_permitted: Sequence[Endpoint] = (),
 ) -> str:
-    """Return the authorized_keys line of the jump key on the gateway: the allowed destinations, no command.
+    """Return the authorized_keys line of the jump key: permitted destinations, no command.
 
-    The destination is one. A first hop that also carries a second hop lists that gateway's address as well,
-    one more permitopen each, and nothing else.
-
-    Raises:
-        InvalidLineInput: an address is not a plain host name or address, a port is not 1 to 65535,
-            or the public key is not one "type base64" pair.
+    Raises InvalidLineInput on a bad address, port (1 to 65535) or public key. A second hop adds one permitopen.
     """
     destinations = [Endpoint(target_address, port), *also_permitted]
     for destination in destinations:

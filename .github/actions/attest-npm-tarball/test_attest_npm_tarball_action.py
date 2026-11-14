@@ -1,13 +1,5 @@
-"""Tests for the attest-npm-tarball composite action.
-
-The program the action runs is tested in ../verify-package-attestations. These run the
-action's own `run:` bodies, cut out of action.yml, under bash with a stub `gh` first on
-PATH, so what is asserted is the step CI runs and not a copy of it. The attest step itself
-is `actions/attest-build-provenance`; it cannot run here, and the structure tests pin how
-it is used.
-
-The Sabotage class breaks each control in a copy of the two directories and requires the
-named tests to go red there; the unmodified copy must be green.
+"""Tests for the attest-npm-tarball composite action: its run: bodies under a stub gh.
+Sabotage class and the attest-step boundary: test_attest_npm_tarball_action.md beside this file.
 """
 
 from __future__ import annotations

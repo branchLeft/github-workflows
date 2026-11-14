@@ -97,3 +97,9 @@ except `blocking`. The reusable workflow forwards `verdict`, `blocking`, `critic
 - A finding is only as good as Syft's catalogue of the image: a package Syft cannot see is not scanned.
 - Lockfile scanning (`SEC-7`), the nightly re-scan (`SEC-6`), licence checks, signing and attestation are other changes.
 - Syft reads the SBOM from the registry by digest, so the image must already be pushed: scan after the push and before the attest.
+
+## Commands (image-scan.py)
+
+`check-input` refuses an image reference that is not pinned by digest, `install`
+fetches a pinned, checksum-verified Syft or Grype, `evaluate` turns the Grype JSON into
+findings, severity counts and a verdict, and `list-images` reads the manual report's list.
