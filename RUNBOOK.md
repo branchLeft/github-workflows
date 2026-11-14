@@ -29,3 +29,8 @@ gh api -X PUT repos/branchLeft/<repo>/actions/permissions/workflow \
   -f default_workflow_permissions=write \
   -F can_approve_pull_request_reviews=false
 ```
+
+The `false` above applies unless the caller opens pull requests. A caller
+workflow that opens a pull request needs the repository setting
+`can_approve_pull_request_reviews=true` as well as the `pull-requests: write`
+permission.

@@ -1,0 +1,97 @@
+name: Check verify job hardened (self-test)
+
+# Tested with this repo's own working copy (the local path below), not a tagged
+# one. It runs on every pull request, with no path filter. The action reads a
+# caller's workflow file, so the callers here are the files under fixtures/.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  ACTION_DIR: .github/actions/check-verify-job-hardened
+
+jobs:
+  unit-tests:
+    name: Checker unit tests, with sabotage
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Includes the Sabotage class: each control is broken in a copy, its tests
+      # must go red there, and the unmodified copy must be green.
+      - name: Run the checker unit tests
+        run: python3 -m unittest discover -s "$ACTION_DIR" -p 'test_*.py' -v
+
+  action:
+    name: Checker action wiring
+    runs-on: ubuntu-latest
+    # No runs observed yet: a generous bound until the first twenty are in.
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: A dedicated workflow that keeps the contract passes
+        uses: ./.github/actions/check-verify-job-hardened
+        with:
+          workflow: .github/actions/check-verify-job-hardened/fixtures/verify-pass-dedicated.yml
+          job: verify
+
+      - name: A verify job among other jobs passes, named by its id
+        uses: ./.github/actions/check-verify-job-hardened
+        with:
+          workflow: .github/actions/check-verify-job-hardened/fixtures/verify-pass-in-ci.yml
+          job: verify-package-attestations
+
+      - name: A verify step that forgives a failure
+        id: forgiving
+        continue-on-error: true
+        uses: ./.github/actions/check-verify-job-hardened
+        with:
+          workflow: .github/actions/check-verify-job-hardened/fixtures/verify-fail-continue-on-error.yml
+
+      - name: A verify job that can be skipped
+        id: skippable
+        continue-on-error: true
+        uses: ./.github/actions/check-verify-job-hardened
+        with:
+          workflow: .github/actions/check-verify-job-hardened/fixtures/verify-fail-if.yml
+
+      - name: A job id that does not call the action
+        id: wrong_job
+        continue-on-error: true
+        uses: ./.github/actions/check-verify-job-hardened
+        with:
+          workflow: .github/actions/check-verify-job-hardened/fixtures/verify-pass-in-ci.yml
+          job: lint
+
+      - name: A workflow file that is not there
+        id: missing
+        continue-on-error: true
+        uses: ./.github/actions/check-verify-job-hardened
+        with:
+          workflow: .github/actions/check-verify-job-hardened/fixtures/no-such-file.yml
+
+      - name: Every broken caller fails the step, and none passes
+        env:
+          FORGIVING: ${{ steps.forgiving.outcome }}
+          SKIPPABLE: ${{ steps.skippable.outcome }}
+          WRONG_JOB: ${{ steps.wrong_job.outcome }}
+          MISSING: ${{ steps.missing.outcome }}
+        run: |
+          test "$FORGIVING" = failure
+          test "$SKIPPABLE" = failure
+          test "$WRONG_JOB" = failure
+          test "$MISSING" = failure
