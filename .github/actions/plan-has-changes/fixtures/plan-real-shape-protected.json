@@ -1,0 +1,139 @@
+{
+  "manifest": {
+    "time": "2026-11-16T00:00:00Z",
+    "magic": "2f2373b761f9f3a55eab124ae26178296bc40c50c33b18885cae828860d3b438",
+    "version": "v3.255.0"
+  },
+  "resourcePlans": {
+    "urn:pulumi:production::planprobe::pulumi:providers:random::default": {
+      "goal": {
+        "type": "pulumi:providers:random",
+        "name": "default",
+        "custom": true,
+        "inputDiff": {},
+        "outputDiff": {},
+        "protect": false,
+        "customTimeouts": {}
+      },
+      "steps": [
+        "same"
+      ],
+      "state": {},
+      "seed": "IQbmqHEedwccpCh/Ugn2sLfKAK9hM+Z1EhpOaSZ1jO0="
+    },
+    "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production": {
+      "goal": {
+        "type": "pulumi:pulumi:Stack",
+        "name": "planprobe-production",
+        "custom": false,
+        "inputDiff": {},
+        "outputDiff": {},
+        "protect": false,
+        "customTimeouts": {}
+      },
+      "steps": [
+        "same"
+      ],
+      "state": {
+        "netId": "stable-output-value"
+      },
+      "seed": "ALm5KLC7es0vra1titpThWx5sm+gClqLJAZdZu+pj4A="
+    },
+    "urn:pulumi:production::planprobe::random:index/randomPet:RandomPet::net": {
+      "goal": {
+        "type": "random:index/randomPet:RandomPet",
+        "name": "net",
+        "custom": true,
+        "inputDiff": {},
+        "outputDiff": {},
+        "parent": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+        "protect": true,
+        "provider": "urn:pulumi:production::planprobe::pulumi:providers:random::default::ID",
+        "propertyDependencies": {
+          "length": []
+        },
+        "customTimeouts": {}
+      },
+      "steps": [
+        "same"
+      ],
+      "state": {
+        "id": "ID",
+        "length": 2,
+        "separator": "-"
+      },
+      "seed": "IBgnphb+/jt33BsnmoNswCexNXYYbsBZ+GQwoktuBaA="
+    },
+    "urn:pulumi:production::planprobe::random:index/randomPet:RandomPet::other": {
+      "goal": {
+        "type": "random:index/randomPet:RandomPet",
+        "name": "other",
+        "custom": true,
+        "inputDiff": {},
+        "outputDiff": {},
+        "parent": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+        "protect": false,
+        "provider": "urn:pulumi:production::planprobe::pulumi:providers:random::default::ID",
+        "propertyDependencies": {
+          "length": []
+        },
+        "customTimeouts": {}
+      },
+      "steps": [
+        "same"
+      ],
+      "state": {
+        "id": "ID",
+        "length": 2,
+        "separator": "-"
+      },
+      "seed": "ZiXWrRoQubHa58DMPMFadqkEFDMfsCturjk8aIMI/Rw="
+    },
+    "urn:pulumi:production::planprobe::random:index/randomPet:RandomPet::sub": {
+      "goal": {
+        "type": "random:index/randomPet:RandomPet",
+        "name": "sub",
+        "custom": true,
+        "inputDiff": {},
+        "outputDiff": {},
+        "parent": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+        "protect": true,
+        "dependencies": [
+          "urn:pulumi:production::planprobe::random:index/randomPet:RandomPet::net"
+        ],
+        "provider": "urn:pulumi:production::planprobe::pulumi:providers:random::default::ID",
+        "propertyDependencies": {
+          "length": [],
+          "prefix": [
+            "urn:pulumi:production::planprobe::random:index/randomPet:RandomPet::net"
+          ]
+        },
+        "ignoreChanges": [
+          "separator"
+        ],
+        "structuredAliases": [
+          {
+            "URN": "",
+            "Name": "oldsub",
+            "Type": "",
+            "Project": "",
+            "Stack": "",
+            "Parent": "",
+            "NoParent": false
+          }
+        ],
+        "customTimeouts": {}
+      },
+      "steps": [
+        "same"
+      ],
+      "state": {
+        "id": "ID",
+        "length": 3,
+        "prefix": "ID",
+        "separator": "-"
+      },
+      "seed": "hwxJb3ONlC0JpB+VaigeWHWSNJ/+tfF5oYEA43PlQI0="
+    }
+  }
+}
