@@ -179,7 +179,7 @@ All of these hold:
   and `Parent` (strings) and `NoParent` (a boolean). Their contents are not
   otherwise read. Where the preview lists the resource, its goal and its new
   state agree on `custom`, `parent`, `provider`, `protect` and `dependencies`
-  (the list as a set of strings, order ignored; absent is empty), and the old
+  (compared as sorted lists of strings, so order is ignored; absent is empty), and the old
   and new state already agree on both, so a changed value on a listed resource
   reads `true`. The preview always lists the root, whose new state has no
   parent, so a root goal with a parent is refused by this agreement.
@@ -239,7 +239,10 @@ unpublished verdict into no approval.
   against the state; `protect` as above). For a resource the preview hides, a
   changed `dependencies`, `ignoreChanges` or `structuredAliases` cannot be seen:
   the plan's steps are all `same` and its diffs empty, so no cloud call follows,
-  and the apply would only rewrite those fields in the stack's state. The same
+  and the apply would only rewrite those fields in the stack's state (an alias
+  that matches an old state entry by URN also renames that entry in the state).
+  `ignoreChanges` and `structuredAliases` are compared with nothing, listed or
+  hidden. The same
   limit holds for `provider` and `propertyDependencies`, above.
 - Unprotecting a resource the preview hides: read from the engine source
   (`shouldShow`, above), not observed live. Pulumi lists a `same` step whose
