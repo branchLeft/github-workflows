@@ -82,7 +82,6 @@ SAMPLES: tuple[Sample, ...] = (
     _owned("tools/docs-lint.test.sh", "criterion 1, test of a required gate"),
     _owned("tools/docs-lint-workflow.test.sh", "criterion 1, test of a required gate"),
     _owned("tools/docs-lint.sh", "criterion 1"),
-    _owned("tools/merged-status.py", "criterion 1"),
     _owned("tools/sabotage.py", "criterion 1"),
     _owned("tools/resolve-pinned-ref.sh", "criterion 1"),
     _owned("tools/test_ansible_gated_apply.py", "criterion 1, test of a gate"),

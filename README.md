@@ -84,91 +84,19 @@ caller block works everywhere:
 Adopting the gate in a repo that has never run it is therefore a two-file
 change, and the ratchet means the first PR is green.
 
-### `merged-status.yml`
-
-Records on a GitHub Projects board that a pull request's work has landed,
-once **every** pull request naming the same issue has stopped being open. A
-merge is evidence about one edge: an issue routinely spans several pull
-requests in several repos, so the question is re-asked of all of them before
-anything is written. Logic and rationale:
-[`tools/merged-status.py`](tools/merged-status.py).
-
-Unlike the lint workflows this one holds a credential. `GITHUB_TOKEN` cannot
-read an organisation project at all — `projectV2` answers `NOT_FOUND` — so the
-caller passes a GitHub App id and private key, and the job mints a short-lived
-installation token with `openssl` and `curl`. No third-party action is used
-for it, so the job still passes under `allowed_actions: selected`.
-
-**Caller usage** — add to the target repo as
-`.github/workflows/merged-status.yml`:
-
-```yaml
-name: merged-status
-
-on:
-  pull_request:
-    types: [closed]
-
-jobs:
-  merged-status:
-    if: github.event.pull_request.merged == true
-    uses: branchLeft/github-workflows/.github/workflows/merged-status.yml@vX.Y.Z
-    with:
-      link-kinds: closing+refs
-      from-statuses: In progress,In review
-      projects-app-id: ${{ vars.BRANCHLEFT_PROJECTS_APP_ID }}
-    secrets:
-      projects_app_key: ${{ secrets.BRANCHLEFT_PROJECTS_APP_KEY }}
-```
-
-**`runs-on` is optional.** It is a JSON array of runner labels, passed as a string, and it defaults to `'["ubuntu-latest"]'`. A caller that needs its own runner for the job passes it, for example `runs-on: '["self-hosted","macOS","branchleft-workspace"]'`. A caller that passes nothing keeps GitHub-hosted `ubuntu-latest`.
-
-Organisation-level Actions secrets are **not** delivered to a private repo's
-runner on the free plan — measured, with `GITHUB_TOKEN` arriving beside an
-empty organisation secret in the same step. Set both at repository level.
-
-The App needs `issues: read` as well as write access to organisation projects:
-the job reaches each board item through its issue.
-
-**`link-kinds` and `from-statuses` are required and have no default here.**
-Together they are the only place this workflow answers what counts as
-delivery, and the reason both exist is that the first cannot answer it alone.
-A repo that delivers some paths by hand has every reason to require the
-**non-closing** `Refs` spelling on exactly the pull requests that did the
-delivering, so that the merge cannot close an issue whose work is not yet
-live; there, `link-kinds: closing` writes nothing, ever. `from-statuses`
-carries the discrimination instead — an unstarted item in a backlog column is
-not completed by a merge that mentioned it in passing, whatever keyword did
-the mentioning.
-
-An unrecognised or empty value for either is refused rather than narrowed,
-because a typo that quietly wrote nothing would look exactly like a board with
-nothing to write.
-
-**Both trailer spellings are read**: the plain `Refs org/repo#12` and the
-markdown hyperlink `Refs [ISSUE repo#12](https://github.com/org/repo/issues/12)`.
-The second is not decoration — a repo may mandate it so a reader can tell an
-issue from a pull request, which share a number space and redirect to each
-other. The target is taken from the **URL**, never the link text, because the
-text routinely omits the owner and reading it would resolve a cross-repo
-reference against the wrong repository. Fenced blocks and quoted lines are not
-read at all: a quoted `Closes #123` is a report of what something else said.
-
-An **open** cross-referencing pull request blocks the write even when this
-workflow cannot find a trailer in its body — an unparseable reference is the
-absence of evidence, not evidence of absence. A landed one is held to the
-trailer. Both rules fail towards not writing.
 
 ### Pinning, and the one thing that will bite an adopter
 
-The job resolves its own revision by grepping the **caller's** checked-out
-`.github/workflows/` for the pin, because nothing the runner exposes names it.
-It requires exactly one distinct match and refuses on none or two.
+A reusable workflow that runs tooling from this repo resolves its own revision
+by grepping the **caller's** checked-out `.github/workflows/` for the pin,
+because nothing the runner exposes names it. It requires exactly one distinct
+match and refuses on none or two.
 
-**That grep is textual. A second pin in a comment counts.** Pasting the caller
-block above into a repo that already has a real caller — or leaving an old pin
+**That grep is textual. A second pin in a comment counts.** Pasting a caller
+block into a repo that already has a real caller — or leaving an old pin
 commented out beside a new one — produces `found 2` and the job refuses. Keep
-exactly one occurrence of the string `merged-status.yml@` in that directory.
+exactly one occurrence of the called workflow's string (for example
+`image-scan.yml@`) in that directory.
 
 ### `opv-lint.yml`
 
@@ -1086,7 +1014,7 @@ that fails the scan is never attested. The scan uploads the SBOM as the artifact
 
 The caller's job must grant `packages: read` for a ghcr.io image, and the caller must keep
 exactly one occurrence of `image-scan.yml@` under `.github/workflows/`, for the same reason as
-[the pin of `merged-status.yml`](#pinning-and-the-one-thing-that-will-bite-an-adopter).
+[the pinning rule](#pinning-and-the-one-thing-that-will-bite-an-adopter).
 `image-scan-report.yml` is a manual, report-only run over `report-images.txt` that prints the
 counts without failing; it cannot be called from another repository.
 
@@ -1163,7 +1091,7 @@ name the same bytes. Read the commit with
 ecosystem moves both the SHA and the comment. Nothing greps the caller for the
 pin: the action runs its script from `github.action_path`, which is the revision
 the caller resolved, so there is no second-pin trap of the kind
-`merged-status.yml` has.
+`image-scan.yml` has.
 
 **Caller usage** — a step in the plan job, after the two Pulumi previews:
 

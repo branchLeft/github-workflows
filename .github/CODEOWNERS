@@ -33,7 +33,7 @@
 **/*BranchProtection*                          @branchLeft/branchleft-admin
 **/*BRANCHPROTECTION*                          @branchLeft/branchleft-admin
 
-# The gate code and its tests: the lint and merged-status tools every repo's CI
+# The gate code and its tests: the lint tools every repo's CI
 # calls, the apply-gate tests, the hook registry that runs them, and the
 # ignore files that switch checks off.
 /tools/                                        @branchLeft/branchleft-admin
