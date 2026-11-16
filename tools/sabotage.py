@@ -72,6 +72,7 @@ AJ2 = "ApplyJump2Tests"
 JAG = "Jump2ApplyGuardTests"
 JPar = "Jump2ParityTests"
 CC = "ConcurrencyTests"
+DS = "DeliveryDoesNotStarveTests"
 
 CASES: list[Case] = [
     Case(
@@ -1533,9 +1534,24 @@ CASES: list[Case] = [
         [f"{CC}.test_neither_workflow_has_a_workflow_level_group"],
     ),
     Case(
-        "lint stops cancelling a superseded run",
-        [Edit(GATED, "-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: true\n    defaults:", "-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: false\n    defaults:")],
-        [f"{CC}.test_only_discover_lint_and_shard_cancel_and_each_has_the_group_pinned_here"],
+        "lint cancels the delivery in flight (the setting before v1.2.4)",
+        [Edit(GATED, "-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: false\n    defaults:\n      run:\n        working-directory: ${{ inputs.working-directory }}\n    steps:\n      - name: Checkout", "-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: true\n    defaults:\n      run:\n        working-directory: ${{ inputs.working-directory }}\n    steps:\n      - name: Checkout")],
+        [f"{CC}.test_no_job_of_the_gated_workflow_cancels_in_progress_and_each_check_has_the_group_pinned_here", f"{DS}.test_a_second_push_to_main_cancels_nothing_that_has_started"],
+    ),
+    Case(
+        "discover cancels the delivery in flight (the setting before v1.2.4)",
+        [Edit(GATED, "format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: false\n    outputs:", "format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: true\n    outputs:")],
+        [f"{CC}.test_no_job_of_the_gated_workflow_cancels_in_progress_and_each_check_has_the_group_pinned_here", f"{DS}.test_a_second_push_to_main_cancels_nothing_that_has_started"],
+    ),
+    Case(
+        "a Molecule leg cancels the delivery in flight (the setting before v1.2.4)",
+        [Edit(GATED, "format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: false\n    defaults:\n      run:\n        working-directory: ${{ inputs.working-directory }}\n    env:", "format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: true\n    defaults:\n      run:\n        working-directory: ${{ inputs.working-directory }}\n    env:")],
+        [f"{CC}.test_no_job_of_the_gated_workflow_cancels_in_progress_and_each_check_has_the_group_pinned_here", f"{DS}.test_a_second_push_to_main_cancels_nothing_that_has_started"],
+    ),
+    Case(
+        "a cancel-in-progress written as a string is not read as false",
+        [Edit(GATED, "format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: false\n    outputs:", "format('run-{0}-{1}', github.run_id, github.run_attempt) }}\n      cancel-in-progress: 'true'\n    outputs:")],
+        [f"{CC}.test_no_job_of_the_gated_workflow_cancels_in_progress_and_each_check_has_the_group_pinned_here", f"{DS}.test_a_second_push_to_main_cancels_nothing_that_has_started"],
     ),
     Case(
         "a pull request run shares the delivery group of discover",
@@ -1546,7 +1562,7 @@ CASES: list[Case] = [
                 "ansible-ci-discover-${{ github.repository }}-${{ inputs.environment }}-delivery",
             )
         ],
-        [f"{CC}.test_only_discover_lint_and_shard_cancel_and_each_has_the_group_pinned_here"],
+        [f"{CC}.test_no_job_of_the_gated_workflow_cancels_in_progress_and_each_check_has_the_group_pinned_here", f"{DS}.test_a_run_that_is_not_a_delivery_is_in_a_group_of_its_own_so_the_checks_never_cancel_it"],
     ),
     Case(
         "plan runs for a superseded run (the old condition)",

@@ -7175,9 +7175,9 @@ class PushOffTests(unittest.TestCase):
 
 
 # The delivery suffix of the checks' groups: a push to the default branch of the
-# repository itself shares one suffix, so a newer push cancels an older one;
-# every other run gets a suffix of its own, so it cancels nothing and is
-# cancelled by nothing.
+# repository itself shares one suffix, so a newer push queues behind an older one
+# that has started and replaces one that is still pending; every other run gets
+# a suffix of its own, so it meets nothing here.
 DELIVERY_SUFFIX = (
     "${{ github.event_name == 'push' "
     "&& github.ref == format('refs/heads/{0}', github.event.repository.default_branch) "
@@ -7194,7 +7194,7 @@ CHECK_GROUPS = {
 
 
 class ConcurrencyTests(unittest.TestCase):
-    """A newer delivery run cancels the checks of an older one, and never an apply that has started."""
+    """A newer delivery run never cancels a check or an apply that has started, and replaces only a run still pending."""
 
     def test_the_apply_job_has_its_own_group_that_never_cancels(self) -> None:
         concurrency = JOBS["apply"]["concurrency"]
@@ -7215,14 +7215,17 @@ class ConcurrencyTests(unittest.TestCase):
                 text = json.dumps(job)
                 if "environment" in job or "ssh_apply_key" in text or "ssh_check_key" in text or "Apply on each host" in text:
                     with self.subTest(workflow=label, job=name):
-                        self.assertIsNot(job.get("concurrency", {}).get("cancel-in-progress", False), True)
+                        # Exactly False: an expression or a string such as "true" would pass `is not True`.
+                        self.assertIs(job.get("concurrency", {}).get("cancel-in-progress", False), False)
 
-    def test_only_discover_lint_and_shard_cancel_and_each_has_the_group_pinned_here(self) -> None:
-        cancelling = {name for name, job in JOBS.items() if job.get("concurrency", {}).get("cancel-in-progress") is True}
-        self.assertEqual(cancelling, set(CHECK_GROUPS))
+    def test_no_job_of_the_gated_workflow_cancels_in_progress_and_each_check_has_the_group_pinned_here(self) -> None:
+        for name, job in JOBS.items():
+            if "concurrency" in job:
+                with self.subTest(job=name):
+                    self.assertIs(job["concurrency"]["cancel-in-progress"], False)
         for name, group in CHECK_GROUPS.items():
             with self.subTest(job=name):
-                self.assertEqual(JOBS[name]["concurrency"], {"group": group, "cancel-in-progress": True})
+                self.assertEqual(JOBS[name]["concurrency"], {"group": group, "cancel-in-progress": False})
 
     def test_a_molecule_leg_has_a_group_of_its_own_so_the_legs_do_not_cancel_each_other(self) -> None:
         self.assertIn("${{ matrix.name }}", JOBS["shard"]["concurrency"]["group"])
@@ -7257,6 +7260,309 @@ class ConcurrencyTests(unittest.TestCase):
     def test_the_checks_job_has_no_group_and_is_not_conditional_on_one(self) -> None:
         self.assertNotIn("concurrency", JOBS["checks"])
         self.assertEqual(JOBS["checks"]["if"], "always()")
+
+
+# --- What GitHub does with a job's concurrency group, evaluated rather than read as text -------------------
+#
+# GitHub keeps at most one running job and one pending job per group. A job that arrives while another runs
+# in its group is pending, and replaces (cancels) a job that was already pending. With cancel-in-progress
+# true it also cancels the running job. The tests below evaluate the group and cancel-in-progress of the
+# real jobs for a given run (in the expression language GitHub uses, for the few operators the workflow
+# writes) and feed them to a model of that rule, so "a push to main does not cancel a delivery in flight"
+# is shown by running the rule, not by pinning a spelling.
+
+_TOKEN = re.compile(r"\s*(?:(?P<str>'(?:[^']|'')*')|(?P<num>\d+(?:\.\d+)?)|(?P<op>\|\||&&|==|!=|[!(),.])|(?P<name>[A-Za-z_][A-Za-z0-9_-]*))")
+
+
+def _tokens(text: str) -> list[tuple[str, str]]:
+    found: list[tuple[str, str]] = []
+    position = 0
+    while text[position:].strip():
+        match = _TOKEN.match(text, position)
+        if match is None:
+            raise ValueError(f"cannot read the expression at {text[position:]!r}")
+        kind = str(match.lastgroup)
+        found.append((kind, match.group(kind)))
+        position = match.end()
+    return found
+
+
+def _number(value: Any) -> float:
+    if value is None:
+        return 0.0
+    if isinstance(value, bool):
+        return 1.0 if value else 0.0
+    try:
+        return float(value)
+    except ValueError:
+        return float("nan")
+
+
+def _loose_equal(left: Any, right: Any) -> bool:
+    """GitHub's `==`: two strings compare without case, two of one other type directly, mixed types as numbers."""
+    if isinstance(left, str) and isinstance(right, str):
+        return left.lower() == right.lower()
+    if left is None and right is None:
+        return True
+    if type(left) is type(right):
+        return bool(left == right)
+    return _number(left) == _number(right)
+
+
+def _truthy(value: Any) -> bool:
+    return not (value is None or value is False or value == 0 or value == "")
+
+
+class _Parser:
+    """`||`, `&&`, `==`, `!=`, `!`, parentheses, string and number literals, true/false/null, `a.b.c` and format()."""
+
+    def __init__(self, text: str, contexts: dict[str, Any]) -> None:
+        self.tokens = _tokens(text)
+        self.at = 0
+        self.contexts = contexts
+
+    def peek(self) -> tuple[str, str]:
+        return self.tokens[self.at] if self.at < len(self.tokens) else ("end", "")
+
+    def take(self, expected: str | None = None) -> tuple[str, str]:
+        kind, value = self.peek()
+        if kind == "end" or (expected is not None and value != expected):
+            raise ValueError(f"expected {expected!r}, found {value!r}")
+        self.at += 1
+        return kind, value
+
+    def parse(self) -> Any:
+        value = self.either()
+        if self.peek()[0] != "end":
+            raise ValueError(f"unread tail {self.peek()[1]!r}")
+        return value
+
+    def either(self) -> Any:
+        value = self.both()
+        while self.peek()[1] == "||":
+            self.take()
+            right = self.both()
+            value = value if _truthy(value) else right
+        return value
+
+    def both(self) -> Any:
+        value = self.equal()
+        while self.peek()[1] == "&&":
+            self.take()
+            right = self.equal()
+            value = right if _truthy(value) else value
+        return value
+
+    def equal(self) -> Any:
+        value = self.unary()
+        while self.peek()[1] in ("==", "!="):
+            operator = self.take()[1]
+            same = _loose_equal(value, self.unary())
+            value = same if operator == "==" else not same
+        return value
+
+    def unary(self) -> Any:
+        if self.peek()[1] == "!":
+            self.take()
+            return not _truthy(self.unary())
+        return self.primary()
+
+    def primary(self) -> Any:
+        kind, value = self.take()
+        if kind == "str":
+            return value[1:-1].replace("''", "'")
+        if kind == "num":
+            return float(value)
+        if value == "(":
+            inner = self.either()
+            self.take(")")
+            return inner
+        if self.peek()[1] == "(":
+            return self.call(value)
+        if value in ("true", "false", "null"):
+            return {"true": True, "false": False, "null": None}[value]
+        found: Any = self.contexts
+        path = [value]
+        while self.peek()[1] == ".":
+            self.take()
+            path.append(self.take()[1])
+        for part in path:
+            found = found.get(part) if isinstance(found, dict) else None
+        return found
+
+    def call(self, name: str) -> Any:
+        if name != "format":
+            raise ValueError(f"the workflow's groups use format() only, not {name}()")
+        self.take("(")
+        arguments = [self.either()]
+        while self.peek()[1] == ",":
+            self.take()
+            arguments.append(self.either())
+        self.take(")")
+        return re.sub(r"\{(\d+)\}", lambda match: str(arguments[1 + int(match.group(1))]), str(arguments[0]))
+
+
+def evaluate(text: str, contexts: dict[str, Any]) -> Any:
+    """A value that is one `${{ ... }}`, or a string with such parts in it, as GitHub would read it."""
+    whole = re.fullmatch(r"\s*\$\{\{(.*)\}\}\s*", text, re.DOTALL)
+    if whole is not None:
+        return _Parser(whole.group(1), contexts).parse()
+    return re.sub(r"\$\{\{(.*?)\}\}", lambda match: str(_Parser(match.group(1), contexts).parse()), text, flags=re.DOTALL)
+
+
+def run_contexts(event_name: str, ref: str, run_id: int, *, matrix_name: str = "roles/example", fork: bool = False) -> dict[str, Any]:
+    return {
+        "github": {
+            "event_name": event_name,
+            "ref": ref,
+            "repository": "org/repo",
+            "run_id": run_id,
+            "run_attempt": 1,
+            "event": {"repository": {"default_branch": "main", "fork": fork}},
+        },
+        "inputs": {"environment": "ansible-hosts"},
+        "matrix": {"name": matrix_name},
+    }
+
+
+def main_push(run_id: int, *, matrix_name: str = "roles/example", fork: bool = False) -> dict[str, Any]:
+    return run_contexts("push", "refs/heads/main", run_id, matrix_name=matrix_name, fork=fork)
+
+
+def pull_request(run_id: int, number: int) -> dict[str, Any]:
+    return run_contexts("pull_request", f"refs/pull/{number}/merge", run_id)
+
+
+def group_of(concurrency: dict[str, Any], contexts: dict[str, Any]) -> tuple[str, bool]:
+    """The group name, and whether the group cancels a running job, for one run, from the job's `concurrency` block."""
+    cancel = concurrency["cancel-in-progress"]
+    cancels = cancel if isinstance(cancel, bool) else _truthy(evaluate(str(cancel), contexts))
+    return str(evaluate(concurrency["group"], contexts)), cancels
+
+
+class GroupScheduler:
+    """One running and one pending job per group, as GitHub holds them."""
+
+    def __init__(self) -> None:
+        self.running: dict[str, str] = {}
+        self.pending: dict[str, str] = {}
+        self.cancelled: list[str] = []
+
+    def submit(self, label: str, group: str, cancel_in_progress: bool) -> None:
+        if cancel_in_progress:
+            for held in (self.running.pop(group, None), self.pending.pop(group, None)):
+                if held is not None:
+                    self.cancelled.append(held)
+            self.running[group] = label
+        elif group not in self.running:
+            self.running[group] = label
+        else:
+            replaced = self.pending.get(group)
+            if replaced is not None:
+                self.cancelled.append(replaced)
+            self.pending[group] = label
+
+    def finish(self, group: str) -> None:
+        del self.running[group]
+        if group in self.pending:
+            self.running[group] = self.pending.pop(group)
+
+
+# The three check jobs as ansible-gated-apply.yml had them up to v1.2.3: the same group, cancelling.
+BEFORE_CHECKS_CANCELLED = {name: {**JOBS[name]["concurrency"], "cancel-in-progress": True} for name in CHECK_GROUPS}
+
+
+def submit_run(scheduler: GroupScheduler, label: str, name: str, contexts: dict[str, Any], concurrency: dict[str, Any]) -> str:
+    group, cancels = group_of(concurrency, contexts)
+    scheduler.submit(f"{name}:{label}", group, cancels)
+    return group
+
+
+class DeliveryDoesNotStarveTests(unittest.TestCase):
+    """A push to main never cancels the delivery of an earlier push to main that has started."""
+
+    def test_the_evaluator_reads_the_delivery_suffix_the_way_github_does(self) -> None:
+        group = JOBS["lint"]["concurrency"]["group"]
+        self.assertEqual(evaluate(group, main_push(11)), "ansible-ci-lint-org/repo-ansible-hosts-delivery")
+        self.assertEqual(evaluate(group, main_push(22)), "ansible-ci-lint-org/repo-ansible-hosts-delivery")
+        self.assertEqual(evaluate(group, pull_request(33, 7)), "ansible-ci-lint-org/repo-ansible-hosts-run-33-1")
+        self.assertEqual(evaluate(group, main_push(44, fork=True)), "ansible-ci-lint-org/repo-ansible-hosts-run-44-1")
+        self.assertEqual(evaluate(group, run_contexts("push", "refs/heads/feature", 55)), "ansible-ci-lint-org/repo-ansible-hosts-run-55-1")
+
+    def test_a_second_push_to_main_cancels_nothing_that_has_started(self) -> None:
+        for name in CHECK_GROUPS:
+            with self.subTest(job=name):
+                scheduler = GroupScheduler()
+                first = submit_run(scheduler, "run-1", name, main_push(1), JOBS[name]["concurrency"])
+                second = submit_run(scheduler, "run-2", name, main_push(2), JOBS[name]["concurrency"])
+                self.assertEqual(first, second)
+                self.assertEqual(scheduler.running[first], f"{name}:run-1")
+                self.assertEqual(scheduler.pending[first], f"{name}:run-2")
+                self.assertEqual(scheduler.cancelled, [])
+
+    def test_the_newest_push_replaces_an_older_one_that_is_still_pending_and_runs_after_the_one_in_flight(self) -> None:
+        for name in CHECK_GROUPS:
+            with self.subTest(job=name):
+                scheduler = GroupScheduler()
+                groups = {submit_run(scheduler, f"run-{number}", name, main_push(number), JOBS[name]["concurrency"]) for number in (1, 2, 3)}
+                (group,) = groups
+                self.assertEqual(scheduler.cancelled, [f"{name}:run-2"])
+                self.assertEqual(scheduler.running[group], f"{name}:run-1")
+                self.assertEqual(scheduler.pending[group], f"{name}:run-3")
+                scheduler.finish(group)
+                self.assertEqual(scheduler.running[group], f"{name}:run-3")
+                self.assertEqual(scheduler.cancelled, [f"{name}:run-2"])
+
+    def test_the_configuration_before_the_change_cancelled_the_delivery_in_flight(self) -> None:
+        # The same rule, run on the previous setting: this is the starvation. Each push cancelled the run
+        # before it, so with a push every few minutes no run lived to reach the plan.
+        for name in CHECK_GROUPS:
+            with self.subTest(job=name):
+                scheduler = GroupScheduler()
+                for number in (1, 2, 3):
+                    submit_run(scheduler, f"run-{number}", name, main_push(number), BEFORE_CHECKS_CANCELLED[name])
+                self.assertEqual(scheduler.cancelled, [f"{name}:run-1", f"{name}:run-2"])
+                self.assertEqual(list(scheduler.running.values()), [f"{name}:run-3"])
+
+    def test_a_run_that_is_not_a_delivery_is_in_a_group_of_its_own_so_the_checks_never_cancel_it(self) -> None:
+        for name in CHECK_GROUPS:
+            with self.subTest(job=name):
+                scheduler = GroupScheduler()
+                groups = [
+                    submit_run(scheduler, "main", name, main_push(1), JOBS[name]["concurrency"]),
+                    submit_run(scheduler, "pr-7-first", name, pull_request(2, 7), JOBS[name]["concurrency"]),
+                    submit_run(scheduler, "pr-7-second", name, pull_request(3, 7), JOBS[name]["concurrency"]),
+                    submit_run(scheduler, "fork", name, main_push(4, fork=True), JOBS[name]["concurrency"]),
+                ]
+                self.assertEqual(len(set(groups)), 4)
+                self.assertEqual(scheduler.cancelled, [])
+
+    def test_a_pull_request_run_was_never_cancelled_by_this_workflow_so_the_caller_owns_that(self) -> None:
+        # Even on the previous setting, two pull-request runs of one pull request met no group here: each
+        # had its own. A caller that wants the older one cancelled sets a workflow-level group of its own.
+        for name in CHECK_GROUPS:
+            with self.subTest(job=name):
+                scheduler = GroupScheduler()
+                for run_id in (2, 3):
+                    submit_run(scheduler, f"pr-7-{run_id}", name, pull_request(run_id, 7), BEFORE_CHECKS_CANCELLED[name])
+                self.assertEqual(scheduler.cancelled, [])
+
+    def test_the_molecule_legs_of_one_run_do_not_replace_each_other(self) -> None:
+        scheduler = GroupScheduler()
+        groups = {submit_run(scheduler, "run-1", "shard", main_push(1, matrix_name=leg), JOBS["shard"]["concurrency"]) for leg in ("roles/a", "roles/b", "patterns/c")}
+        self.assertEqual(len(groups), 3)
+        self.assertEqual(scheduler.cancelled, [])
+        self.assertEqual(len(scheduler.running), 3)
+
+    def test_the_plan_and_the_apply_never_cancel_a_job_that_has_started(self) -> None:
+        for name in ("plan", "apply"):
+            with self.subTest(job=name):
+                scheduler = GroupScheduler()
+                for number in (1, 2, 3):
+                    submit_run(scheduler, f"run-{number}", name, main_push(number), JOBS[name]["concurrency"])
+                (group,) = scheduler.running
+                self.assertEqual(scheduler.running[group], f"{name}:run-1")
+                self.assertEqual(scheduler.cancelled, [f"{name}:run-2"])
 
 
 if __name__ == "__main__":
