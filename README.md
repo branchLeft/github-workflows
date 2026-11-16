@@ -84,7 +84,6 @@ caller block works everywhere:
 Adopting the gate in a repo that has never run it is therefore a two-file
 change, and the ratchet means the first PR is green.
 
-
 ### Pinning, and the one thing that will bite an adopter
 
 A reusable workflow that runs tooling from this repo resolves its own revision
