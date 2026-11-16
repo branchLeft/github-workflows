@@ -1135,6 +1135,24 @@ class Sabotage(unittest.TestCase):
                 "TheTable.test_the_real_table_lists_exactly_the_versions_pinned_before_attestation",
             },
         ),
+        "the brand-publicpress version is removed from its list": (
+            SCRIPT_NAME,
+            '        workflow="publish.yml",\n        ref_regex=r"refs/tags/v\\d+\\.\\d+\\.\\d+",\n        ref_template=None,\n        grandfathered=("0.3.0",),\n    ),\n    Identity(\n        package="@branchleft/tsconfig",',
+            '        workflow="publish.yml",\n        ref_regex=r"refs/tags/v\\d+\\.\\d+\\.\\d+",\n        ref_template=None,\n    ),\n    Identity(\n        package="@branchleft/tsconfig",',
+            {
+                "TheRealTree.test_every_pinned_version_passes_with_no_download_and_no_lookup",
+                "TheTable.test_the_real_table_lists_exactly_the_versions_pinned_before_attestation",
+            },
+        ),
+        "a version added to the vitest-config list is removed": (
+            SCRIPT_NAME,
+            'grandfathered=("0.4.0", "0.6.0", "0.8.8"),',
+            'grandfathered=("0.4.0", "0.6.0"),',
+            {
+                "TheRealTree.test_every_pinned_version_passes_with_no_download_and_no_lookup",
+                "TheTable.test_the_real_table_lists_exactly_the_versions_pinned_before_attestation",
+            },
+        ),
         "grandfathering matches a version by its prefix": (
             SCRIPT_NAME,
             "    if entry.version in row.grandfathered:",
