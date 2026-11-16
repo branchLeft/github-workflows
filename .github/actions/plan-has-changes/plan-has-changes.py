@@ -296,6 +296,11 @@ def _same_step_differences(urn: Urn, step: dict[str, object]) -> set[str]:
     return found
 
 
+def _same_step_differs(urn: Urn, step: dict[str, object]) -> bool:
+    """Whether a `same` step carries its own evidence of a difference (the spend gate calls this)."""
+    return bool(_same_step_differences(urn, step))
+
+
 def _preview_steps(doc: dict[str, object]) -> list[tuple[str, Urn, dict[str, object]]]:
     steps = doc.get("steps")
     if not isinstance(steps, list) or not steps:
