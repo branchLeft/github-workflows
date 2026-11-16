@@ -622,22 +622,26 @@ Named limits of the push route:
   `stub/push-receiver.sh`, which verifies it with git and answers; it proves the
   sender's side only.
 
-#### Concurrency: a newer push replaces an older one
+#### Concurrency: a newer push never cancels a delivery that has started
 
 Only job-level groups are used. A workflow-level group would queue a newer run
 behind an older run that is waiting for approval.
 
-- `discover`, `lint` and each `Molecule: <role>` leg have a group each, with
-  `cancel-in-progress`. On a delivery run (a push to the default branch of the
-  repository itself) the group name ends in `delivery`, so a newer push cancels
-  the checks of an older one. Every other run (pull request, merge queue, fork)
-  gets a group named for its own run id and attempt, so it cancels nothing and
-  nothing cancels it. The leg's group holds its role name, so the legs do not
-  cancel one another.
-- The older run ends red, with the `Ansible checks passed` job saying that a job
-  reported `cancelled`. That is deliberate: the run never planned or applied.
-  The plan job starts only when `discover` succeeded and `lint` and `shard`
-  each succeeded or were skipped.
+- `discover`, `lint` and each `Molecule: <role>` leg have a group each, without
+  cancelling. On a delivery run (a push to the default branch of the
+  repository itself) the group name ends in `delivery`, so a check that has
+  started runs out, and a busy main still reaches the plan. GitHub keeps one
+  running and one pending job per group: a newer push replaces the pending job,
+  so only the newest waiting run goes on after the one in flight. Every other
+  run (pull request, merge queue, fork) gets a group named for its own run id
+  and attempt, so it meets nothing here. A caller that wants an older
+  pull-request run cancelled sets a workflow-level group of its own, as
+  shared-infra's `ansible.yml` does. The leg's group holds its role name, so the
+  legs do not replace one another.
+- A run replaced while pending ends red, with the `Ansible checks passed` job
+  saying that a job reported `cancelled`. That is deliberate: the run never
+  planned or applied. The plan job starts only when `discover` succeeded and
+  `lint` and `shard` each succeeded or were skipped.
 - `plan` has one group per repository, `ansible-plan-<repository>`, without
   cancelling. A plan that has started runs out. A plan waiting behind it is
   replaced by a newer one, so overlapping plans do not meet the host's lock

@@ -708,7 +708,7 @@
       },
       "discover": {
         "concurrency": {
-          "cancel-in-progress": true,
+          "cancel-in-progress": false,
           "group": "ansible-ci-discover-${{ github.repository }}-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}"
         },
         "name": "Discover the Ansible checks",
@@ -768,7 +768,7 @@
       },
       "lint": {
         "concurrency": {
-          "cancel-in-progress": true,
+          "cancel-in-progress": false,
           "group": "ansible-ci-lint-${{ github.repository }}-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}"
         },
         "defaults": {
@@ -969,7 +969,7 @@
       },
       "shard": {
         "concurrency": {
-          "cancel-in-progress": true,
+          "cancel-in-progress": false,
           "group": "ansible-ci-shard-${{ github.repository }}-${{ inputs.environment }}-${{ matrix.name }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}"
         },
         "defaults": {
