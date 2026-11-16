@@ -432,6 +432,22 @@ def preview_of(*steps, summary=None):
     return doc
 
 
+def listed_server(**state):
+    """The preview listing the server as a clean custom same step, as the plan describes it."""
+    step = same_step(_SERVER)
+    for key in ("oldState", "newState"):
+        step[key].update(
+            {
+                "custom": True,
+                "parent": _ROOT,
+                "provider": f"{_STACK}pulumi:providers:hcloud::default::ID",
+                "dependencies": [_ROOT],
+            }
+        )
+    step["newState"].update(state)
+    return preview_of(same_step(_ROOT), step)
+
+
 def plan_with(urn, entry):
     doc = plan()
     doc["resourcePlans"][urn] = entry
@@ -962,6 +978,9 @@ def observed_plan():
         "protect": False,
         "provider": f"{_STACK}pulumi:providers:hcloud::default::ID",
         "propertyDependencies": {"name": []},
+        "dependencies": [_ROOT],
+        "ignoreChanges": ["userData"],
+        "structuredAliases": [{"URN": "", "Name": "old-mx1", "Type": "", "Project": "", "Stack": "", "Parent": "", "NoParent": False}],
         "customTimeouts": {},
     }
     manifest = {"time": "T", "magic": "M", "version": "v"}
@@ -1016,7 +1035,8 @@ class NestedKeyTests(VerdictCase):
         self.assertAsks(self.verdict(no_op_preview(), doc), "plan-shape")
 
     def test_an_unknown_goal_key(self):
-        for key in ("properties", "dependencies", "replaceOn", "ignoreChanges", "aliases", "id"):
+        # `dependencies`, `ignoreChanges` and `structuredAliases` are the owner's three.
+        for key in ("properties", "replaceOn", "aliases", "id", "replaceOnChanges", "deleteBeforeReplace", "retainOnDelete"):
             self.assertNotIn(key, noop.GOAL_KEYS)
             for urn in (_ROOT, _SERVER):
                 with self.subTest(key=key, urn=urn):
@@ -1038,31 +1058,24 @@ class DetailTests(VerdictCase):
     def test_unknown_goal_keys_are_named_sorted_across_every_entry(self):
         def mutate(plans):
             plans[_ROOT]["goal"]["aliases"] = [MARKER]
-            plans[_SERVER]["goal"]["ignoreChanges"] = [MARKER]
+            plans[_SERVER]["goal"]["replaceOnChanges"] = [MARKER]
             plans[_SERVER]["goal"]["aliases"] = [MARKER]
 
-        self.assertEqual(self.refused(mutate), "unrecognised goal key(s): aliases, ignoreChanges")
+        self.assertEqual(self.refused(mutate), "unrecognised goal key(s): aliases, replaceOnChanges")
 
     def test_unknown_entry_keys_are_named(self):
         detail = self.refused(lambda plans: plans[_SERVER].update({"replaceOn": MARKER}))
         self.assertEqual(detail, "unrecognised plan entry key(s): replaceOn")
 
-    def test_protect_true_names_the_resource_types_and_no_resource_name(self):
-        def mutate(plans):
-            plans[_SERVER]["goal"]["protect"] = True
-
-        detail = self.refused(mutate)
-        self.assertEqual(detail, "protect is true on resource type(s): hcloud:index/server:Server")
-        self.assertNotIn("mx1", detail)
-
     def test_two_findings_are_joined_and_both_reported(self):
         def mutate(plans):
-            plans[_ROOT]["goal"]["protect"] = True
-            plans[_SERVER]["goal"]["ignoreChanges"] = []
+            plans[_ROOT]["goal"]["replaceOnChanges"] = [MARKER]
+            plans[_SERVER]["goal"]["plan_entry_finding"] = []
+            plans[_SERVER]["extra"] = 1
 
         detail = self.refused(mutate)
-        self.assertIn("protect is true on resource type(s): pulumi:pulumi:Stack", detail)
-        self.assertIn("unrecognised goal key(s): ignoreChanges", detail)
+        self.assertIn("unrecognised plan entry key(s): extra", detail)
+        self.assertIn("unrecognised goal key(s): plan_entry_finding, replaceOnChanges", detail)
         self.assertEqual(detail.count("; "), 1)
 
     def test_a_value_is_never_in_the_detail(self):
@@ -1135,9 +1148,9 @@ class PlanGoalTests(VerdictCase):
                     self.goal(urn, doc).pop(key, None)
                     self.assertFalse(self.verdict(no_op_preview(), doc).has_changes)
 
-    def test_protect_true_or_not_a_boolean_is_a_change(self):
+    def test_protect_that_is_not_a_boolean_is_a_change(self):
         for urn in (_ROOT, _SERVER):
-            for value in (True, "false", 0, None, []):
+            for value in ("false", "true", 0, 1, None, []):
                 with self.subTest(urn=urn, value=value):
                     doc = observed_plan()
                     self.goal(urn, doc)["protect"] = value
@@ -1227,12 +1240,7 @@ class PlanGoalTests(VerdictCase):
                 self.assertAsks(self.verdict(no_op_preview(), doc), "plan-shape")
 
     def listed_server(self, **state):
-        """The preview listing the server as a clean custom same step, as the plan describes it."""
-        step = same_step(_SERVER)
-        for key in ("oldState", "newState"):
-            step[key].update({"custom": True, "parent": _ROOT, "provider": f"{_STACK}pulumi:providers:hcloud::default::ID"})
-        step["newState"].update(state)
-        return preview_of(same_step(_ROOT), step)
+        return listed_server(**state)
 
     def test_a_listed_resource_the_goal_agrees_with_is_no_change(self):
         self.assertFalse(self.verdict(self.listed_server(), observed_plan()).has_changes)
@@ -1695,16 +1703,24 @@ class MainTests(unittest.TestCase):
 
     def test_a_plan_shape_detail_reaches_the_summary_and_stdout_and_no_value_does(self):
         doc = plan()
-        doc["resourcePlans"][_ROOT]["goal"]["ignoreChanges"] = [MARKER]
+        doc["resourcePlans"][_ROOT]["goal"]["replaceOnChanges"] = [MARKER]
         code, stdout, out, summary = self.run_main(no_op_preview(), doc)
         self.assertEqual(code, 0)
         self.assertEqual(out, "has_changes=true\n")
         lines = summary.splitlines()
         self.assertEqual(lines[0], "Plan not understood, treated as changes: approval required")
-        self.assertEqual(lines[1], "plan-shape: unrecognised goal key(s): ignoreChanges")
-        self.assertIn("plan-shape: unrecognised goal key(s): ignoreChanges", stdout.splitlines())
+        self.assertEqual(lines[1], "plan-shape: unrecognised goal key(s): replaceOnChanges")
+        self.assertIn("plan-shape: unrecognised goal key(s): replaceOnChanges", stdout.splitlines())
         for text in (stdout, out, summary):
             self.assertNotIn(MARKER, text)
+
+    def test_the_detail_reaches_the_summary_and_stdout(self):
+        doc = preview(("same", _ROOT), ("update", _SERVER), summary={"update": 1, "same": 1})
+        code, stdout, _, summary = self.run_main(doc, plan())
+        self.assertEqual(code, 0)
+        self.assertEqual(summary.splitlines()[0], "1 change: approval required")
+        self.assertEqual(summary.splitlines()[1], "steps-changed: step operation(s): update")
+        self.assertIn("steps-changed: step operation(s): update", stdout.splitlines())
 
     def test_a_clean_no_op_has_no_reason_line(self):
         _, stdout, _, summary = self.run_main(no_op_preview(), plan())
@@ -1811,6 +1827,230 @@ class ImportTests(unittest.TestCase):
         tree = ast.parse(path.read_text(encoding="utf-8"))
         names = [alias.name for node in tree.body if isinstance(node, ast.ImportFrom) and node.module == "__future__" for alias in node.names]
         self.assertIn("annotations", names)
+
+
+FIXTURES = pathlib.Path(__file__).resolve().parent / "fixtures"
+_DEP_NET = "urn:pulumi:production::planprobe::random:index/randomPet:RandomPet::net"
+_DEP_SUB = "urn:pulumi:production::planprobe::random:index/randomPet:RandomPet::sub"
+
+
+class OwnerRuledGoalKeyTests(VerdictCase):
+    """The owner's ruling of 26 Oct 2026: `dependencies`, `ignoreChanges`,
+    `structuredAliases` and `protect: true` read clean when unchanged, and a changed or
+    malformed one still reads as a change. Where the preview lists a resource its stored
+    state is the "before"; a resource it hides is read for its shape only (see the doc)."""
+
+    def real(self):
+        """The preview and plan of the real-shaped fixtures: Pulumi v3.255.0 goals with every
+        one of these keys, protect true on two resources, and only the root listed."""
+        preview_doc = json.loads((FIXTURES / "preview-real-shape-no-op.json").read_text(encoding="utf-8"))
+        plan_doc = json.loads((FIXTURES / "plan-real-shape-protected.json").read_text(encoding="utf-8"))
+        return preview_doc, plan_doc
+
+    def goal(self, doc, name):
+        urn = next(key for key in doc["resourcePlans"] if key.endswith(f"::{name}"))
+        return doc["resourcePlans"][urn]["goal"]
+
+    def test_the_real_shaped_fixtures_carry_all_four_keys_and_are_no_change(self):
+        preview_doc, plan_doc = self.real()
+        sub = self.goal(plan_doc, "sub")
+        self.assertTrue(sub["protect"])
+        for key in ("dependencies", "ignoreChanges", "structuredAliases"):
+            self.assertIn(key, sub)
+        self.assertEqual(self.verdict(preview_doc, plan_doc), noop.NO_CHANGES)
+
+    def test_protect_true_on_a_hidden_resource_is_no_change(self):
+        doc = observed_plan()
+        doc["resourcePlans"][_SERVER]["goal"]["protect"] = True
+        self.assertFalse(self.verdict(no_op_preview(), doc).has_changes)
+
+    def test_protect_true_on_the_root_is_no_change_only_if_the_listed_root_is_protected(self):
+        # The preview always lists the root, so its stored state is the "before".
+        doc = observed_plan()
+        doc["resourcePlans"][_ROOT]["goal"]["protect"] = True
+        self.assertAsks(self.verdict(no_op_preview(), doc), "plan-shape")
+        preview_doc = no_op_preview()
+        for side in ("oldState", "newState"):
+            preview_doc["steps"][0][side]["protect"] = True
+        self.assertFalse(self.verdict(preview_doc, doc).has_changes)
+
+    def test_protect_true_on_a_listed_resource_that_is_protected_before_and_after_is_no_change(self):
+        preview_doc = listed_server(protect=True)
+        preview_doc["steps"][1]["oldState"]["protect"] = True
+        doc = observed_plan()
+        doc["resourcePlans"][_SERVER]["goal"]["protect"] = True
+        self.assertFalse(self.verdict(preview_doc, doc).has_changes)
+
+    def test_protect_that_changed_is_a_change_in_either_direction(self):
+        # Pulumi lists a `same` step whose protect flag changed, and the reader reads its two states.
+        for old, new in ((True, False), (False, True), (True, None), (None, True)):
+            with self.subTest(old=old, new=new):
+                preview_doc = listed_server()
+                for side, value in (("oldState", old), ("newState", new)):
+                    if value is not None:
+                        preview_doc["steps"][1][side]["protect"] = value
+                doc = observed_plan()
+                doc["resourcePlans"][_SERVER]["goal"]["protect"] = bool(new)
+                self.assertAsks(self.verdict(preview_doc, doc), "steps-changed")
+
+    def test_a_goal_whose_protect_disagrees_with_the_listed_new_state_is_a_change(self):
+        for goal_value, state_value in ((True, False), (False, True)):
+            with self.subTest(goal=goal_value, state=state_value):
+                preview_doc = listed_server()
+                for side in ("oldState", "newState"):
+                    preview_doc["steps"][1][side]["protect"] = state_value
+                doc = observed_plan()
+                doc["resourcePlans"][_SERVER]["goal"]["protect"] = goal_value
+                self.assertAsks(self.verdict(preview_doc, doc), "plan-shape")
+
+    def test_each_key_absent_or_empty_is_no_change(self):
+        for key in ("dependencies", "ignoreChanges", "structuredAliases"):
+            for value in (None, []):
+                with self.subTest(key=key, value=value):
+                    doc = observed_plan()
+                    if value is None:
+                        doc["resourcePlans"][_SERVER]["goal"].pop(key)
+                    else:
+                        doc["resourcePlans"][_SERVER]["goal"][key] = value
+                    self.assertFalse(self.verdict(no_op_preview(), doc).has_changes)
+
+    def test_dependencies_of_the_wrong_shape_are_a_change(self):
+        other_stack = "urn:pulumi:other::branchleft-mail::hcloud:index/server:Server::x"
+        other_project = "urn:pulumi:production::another::hcloud:index/server:Server::x"
+        for value in (None, "x", {}, {"k": [_ROOT]}, [1], [None], [["u"]], ["not-a-urn"], [other_stack], [other_project], [f"{_ROOT}::x"]):
+            for name in (_ROOT, _SERVER):
+                with self.subTest(value=value, urn=name):
+                    doc = observed_plan()
+                    doc["resourcePlans"][name]["goal"]["dependencies"] = value
+                    self.assertAsks(self.verdict(no_op_preview(), doc), "plan-shape")
+
+    def test_ignore_changes_of_the_wrong_shape_are_a_change(self):
+        for value in (None, "userData", {}, {"k": "v"}, [1], [None], [""], [["a"]], [True]):
+            with self.subTest(value=value):
+                doc = observed_plan()
+                doc["resourcePlans"][_SERVER]["goal"]["ignoreChanges"] = value
+                self.assertAsks(self.verdict(no_op_preview(), doc), "plan-shape")
+
+    def test_structured_aliases_of_the_wrong_shape_are_a_change(self):
+        good = {"URN": "", "Name": "old", "NoParent": False}
+        values = (
+            None,
+            "alias",
+            {},
+            ["old"],
+            [None],
+            [{**good, "Extra": "x"}],
+            [{**good, "Name": 5}],
+            [{**good, "URN": None}],
+            [{**good, "NoParent": "false"}],
+            [{**good, "NoParent": 0}],
+            [good, 3],
+        )
+        for value in values:
+            with self.subTest(value=value):
+                doc = observed_plan()
+                doc["resourcePlans"][_SERVER]["goal"]["structuredAliases"] = value
+                self.assertAsks(self.verdict(no_op_preview(), doc), "plan-shape")
+
+    def test_a_listed_resource_whose_dependencies_differ_from_its_goal_is_a_change(self):
+        # The "before" is the preview's stored state: a goal that names other dependencies than it holds.
+        other = f"{_STACK}hcloud:index/firewall:Firewall::other"
+        for state in ([], [other], [_ROOT, other], None):
+            with self.subTest(state=state):
+                preview_doc = listed_server()
+                for side in ("oldState", "newState"):
+                    if state is None:
+                        preview_doc["steps"][1][side].pop("dependencies")
+                    else:
+                        preview_doc["steps"][1][side]["dependencies"] = state
+                self.assertAsks(self.verdict(preview_doc, observed_plan()), "plan-shape")
+
+    def test_a_listed_resource_whose_dependencies_changed_is_a_change(self):
+        preview_doc = listed_server()
+        preview_doc["steps"][1]["oldState"]["dependencies"] = []
+        self.assertAsks(self.verdict(preview_doc, observed_plan()), "steps-changed")
+
+    def test_dependencies_in_a_different_order_than_the_listed_state_are_no_change(self):
+        extra = f"{_STACK}hcloud:index/firewall:Firewall::mail-firewall"
+        preview_doc = listed_server()
+        for side in ("oldState", "newState"):
+            preview_doc["steps"][1][side]["dependencies"] = [_ROOT, extra]
+        doc = observed_plan()
+        doc["resourcePlans"][_SERVER]["goal"]["dependencies"] = [extra, _ROOT]
+        self.assertFalse(self.verdict(preview_doc, doc).has_changes)
+
+    def test_the_keys_do_not_hide_a_planned_change(self):
+        # A resource that carries all four keys and plans an update, a diff or a delete still asks.
+        for mutate in (
+            lambda e: e.update({"steps": ["update"]}),
+            lambda e: e["goal"].update({"inputDiff": {"updates": {"userData": "x"}}}),
+            lambda e: e["goal"].update({"inputDiff": {"deletes": ["userData"]}}),
+            lambda e: e["goal"].update({"outputDiff": {"adds": {"ip": "x"}}}),
+        ):
+            doc = observed_plan()
+            doc["resourcePlans"][_SERVER]["goal"]["protect"] = True
+            mutate(doc["resourcePlans"][_SERVER])
+            self.assertTrue(self.verdict(no_op_preview(), doc).has_changes)
+
+    def test_a_real_shaped_plan_with_a_planned_change_asks(self):
+        preview_doc, plan_doc = self.real()
+        sub = next(key for key in plan_doc["resourcePlans"] if key == _DEP_SUB)
+        plan_doc["resourcePlans"][sub]["steps"] = ["replace"]
+        self.assertAsks(self.verdict(preview_doc, plan_doc), "steps-changed")
+
+    def test_a_real_shaped_preview_with_a_listed_create_asks(self):
+        preview_doc, plan_doc = self.real()
+        preview_doc["steps"].append({"op": "create", "urn": _DEP_NET})
+        preview_doc["changeSummary"] = {"same": 3, "create": 1}
+        self.assertAsks(self.verdict(preview_doc, plan_doc), "steps-changed")
+
+    def test_the_other_keys_the_engine_can_write_are_still_refused(self):
+        for key in ("aliases", "replaceOnChanges", "deleteBeforeReplace", "retainOnDelete", "deletedWith", "id", "additionalSecretOutputs"):
+            with self.subTest(key=key):
+                preview_doc, plan_doc = self.real()
+                self.goal(plan_doc, "sub")[key] = []
+                verdict = self.verdict(preview_doc, plan_doc)
+                self.assertAsks(verdict, "plan-shape")
+                self.assertEqual(verdict.detail, f"unrecognised goal key(s): {key}")
+
+    def test_an_unknown_key_nested_inside_an_accepted_one_is_refused(self):
+        preview_doc, plan_doc = self.real()
+        self.goal(plan_doc, "sub")["structuredAliases"][0]["Hidden"] = "x"
+        self.assertAsks(self.verdict(preview_doc, plan_doc), "plan-shape")
+
+
+class StepsChangedDetailTests(VerdictCase):
+    """A `steps-changed` verdict names what changed, by operation, state key and resource type: names only."""
+
+    def test_a_listed_operation_is_named(self):
+        doc = preview(("same", _ROOT), ("update", _SERVER), ("create", _FIREWALL), summary={"update": 1, "create": 1, "same": 1})
+        verdict = self.verdict(doc, plan())
+        self.assertAsks(verdict, "steps-changed")
+        self.assertEqual(verdict.count, 2)
+        self.assertEqual(verdict.detail, "step operation(s): create, update")
+
+    def test_a_same_step_that_differs_names_its_keys_and_type_and_no_value_or_resource_name(self):
+        preview_doc = listed_server()
+        preview_doc["steps"][1]["oldState"]["protect"] = True
+        preview_doc["steps"][1]["newState"]["inputs"] = {"k": MARKER}
+        verdict = self.verdict(preview_doc, observed_plan())
+        self.assertAsks(verdict, "steps-changed")
+        self.assertEqual(verdict.count, 1)
+        self.assertEqual(
+            verdict.detail,
+            "unchanged-looking step(s) differ on: inputs, protect; resource type(s): hcloud:index/server:Server",
+        )
+        for text in (MARKER, "mx1"):
+            self.assertNotIn(text, verdict.detail)
+
+    def test_a_diff_a_missing_provider_and_an_unfit_state_are_named(self):
+        step = same_step(_SERVER, detailedDiff={"k": {"kind": "update"}})
+        for side in ("oldState", "newState"):
+            step[side]["custom"] = True
+        verdict = self.verdict(preview_of(same_step(_ROOT), step), plan())
+        self.assertAsks(verdict, "steps-changed")
+        self.assertIn("detailedDiff", verdict.detail)
+        self.assertIn("no-provider", verdict.detail)
 
 
 if __name__ == "__main__":

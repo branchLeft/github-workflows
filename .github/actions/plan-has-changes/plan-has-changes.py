@@ -24,8 +24,28 @@ PLAN_KEYS = frozenset({"manifest", "config", "resourcePlans"})
 STEP_KEYS = frozenset({"op", "urn", "provider", "oldState", "newState", "detailedDiff", "diffReasons", "replaceReasons"})
 ENTRY_KEYS = frozenset({"goal", "steps", "state", "seed"})
 GOAL_KEYS = frozenset(
-    {"type", "name", "custom", "inputDiff", "outputDiff", "parent", "protect", "provider", "propertyDependencies", "customTimeouts"}
+    {
+        "type",
+        "name",
+        "custom",
+        "inputDiff",
+        "outputDiff",
+        "parent",
+        "protect",
+        "provider",
+        "propertyDependencies",
+        "customTimeouts",
+        # Written by Pulumi v3.255.0 and later when a resource has them (the owner's
+        # ruling of 26 Oct 2026): each is read for its shape and, where the preview
+        # lists the resource, for agreement with it. See plan-has-changes.md.
+        "dependencies",
+        "ignoreChanges",
+        "structuredAliases",
+    }
 )
+# What one entry of a goal's `structuredAliases` may carry: the engine's alias fields, strings and one boolean.
+ALIAS_STRING_KEYS = frozenset({"URN", "Name", "Type", "Project", "Stack", "Parent"})
+ALIAS_KEYS = ALIAS_STRING_KEYS | {"NoParent"}
 
 # A `same` step that carries any of these, non-empty, is not a no-op.
 STEP_DIFF_KEYS = ("detailedDiff", "diffReasons", "replaceReasons")
@@ -229,14 +249,15 @@ def _same_value(first: object, second: object, secrets: bool = False) -> bool:
     return True
 
 
-def _states_differ(old: dict[str, object], new: dict[str, object]) -> bool:
-    """Whether a `same` step's old and new state disagree on any key."""
+def _differing_state_keys(old: dict[str, object], new: dict[str, object]) -> set[str]:
+    """The keys on which a `same` step's old and new state disagree."""
+    differing = set()
     for key in (old.keys() | new.keys()) - DIAGNOSTIC_STATE_KEYS:
         if key in OLD_SIDE_STATE_KEYS and not (key in old and key in new):
             continue
         if not _same_value(old.get(key), new.get(key)):
-            return True
-    return False
+            differing.add(key)
+    return differing
 
 
 def _is_provider_type(token: object) -> bool:
@@ -260,15 +281,19 @@ def _state_is_unfit(urn: Urn, state: dict[str, object]) -> bool:
     )
 
 
-def _same_step_differs(urn: Urn, step: dict[str, object]) -> bool:
-    """Whether a `same` step carries its own evidence of a difference."""
+def _same_step_differences(urn: Urn, step: dict[str, object]) -> set[str]:
+    """What a `same` step carries as its own evidence of a difference: names only, empty if none."""
     _check_keys(step, STEP_KEYS, "preview-shape", "preview step")
-    evidence = [_evidence(step.get(key)) for key in STEP_DIFF_KEYS]
+    found = {key for key in STEP_DIFF_KEYS if _evidence(step.get(key))}
     old, new = step.get("oldState"), step.get("newState")
     if not (isinstance(old, dict) and isinstance(new, dict)):
         raise Unclear("preview-shape")
-    unfit = _state_is_unfit(urn, old) or _state_is_unfit(urn, new)
-    return any(evidence) or unfit or _lacks_provider(new) or _states_differ(old, new)
+    if _state_is_unfit(urn, old) or _state_is_unfit(urn, new):
+        found.add("state-unfit")
+    if _lacks_provider(new):
+        found.add("no-provider")
+    found |= _differing_state_keys(old, new)
+    return found
 
 
 def _preview_steps(doc: dict[str, object]) -> list[tuple[str, Urn, dict[str, object]]]:
@@ -303,14 +328,18 @@ def _preview_verdict(path: str) -> tuple[Verdict | None, Preview | None]:
     doc = _as_dict(_load(path, "preview-unreadable"), "preview-shape")
     _check_keys(doc, PREVIEW_KEYS, "preview-shape", "preview")
     steps = _preview_steps(doc)
-    changed = sum(1 for op, _, _ in steps if op != SAME)
-    if changed:
-        return Verdict(True, changed, "steps-changed"), None
+    ops = [op for op, _, _ in steps if op != SAME]
+    if ops:
+        return Verdict(True, len(ops), "steps-changed", f"step operation(s): {_names(set(ops))}"), None
     # After the op check: a replace lists one URN in several steps, and that is a change.
     _require(len({urn for _, urn, _ in steps}) == len(steps), "preview-shape")
-    differing = sum(1 for _, urn, step in steps if _same_step_differs(urn, step))
+    differences = [(urn, _same_step_differences(urn, step)) for _, urn, step in steps]
+    differing = [(urn, found) for urn, found in differences if found]
     if differing:
-        return Verdict(True, differing, "steps-changed"), None
+        keys = set().union(*(found for _, found in differing))
+        types = {_leaf_type(urn) for urn, _ in differing}
+        detail = f"unchanged-looking step(s) differ on: {_names(keys)}; resource type(s): {_names(types)}"
+        return Verdict(True, len(differing), "steps-changed", detail), None
     urns = [urn for _, urn, _ in steps]
     if not _has_one_root(urns):
         return Verdict(True, 0, "no-root-stack"), None
@@ -374,6 +403,9 @@ def _goal_fields_are_clean(urn: Urn, goal: dict[str, object], plan_urns: dict[st
         and goal.get("customTimeouts", {}) == {}
         and _provider_is_clean(goal)
         and _property_dependencies_are_clean(goal)
+        and _dependencies_are_clean(urn, goal)
+        and _ignore_changes_are_clean(goal)
+        and _structured_aliases_are_clean(goal)
         and _parent_is_clean(urn, goal, plan_urns)
     )
 
@@ -390,14 +422,65 @@ def _property_dependencies_are_clean(goal: dict[str, object]) -> bool:
     return all(isinstance(v, list) and all(isinstance(u, str) for u in v) for v in deps.values())
 
 
+def _dependencies_are_clean(urn: Urn, goal: dict[str, object]) -> bool:
+    """`dependencies`: a list of URNs of the same stack and project, as the real plan writes it."""
+    deps = goal.get("dependencies", [])
+    if not isinstance(deps, list):
+        return False
+    for dep in deps:
+        try:
+            parsed = _parse_urn(dep, "plan-shape")
+        except Unclear:
+            return False
+        if (parsed.stack, parsed.project) != (urn.stack, urn.project):
+            return False
+    return True
+
+
+def _ignore_changes_are_clean(goal: dict[str, object]) -> bool:
+    """`ignoreChanges`: a list of property paths, each a non-empty string."""
+    paths = goal.get("ignoreChanges", [])
+    return isinstance(paths, list) and all(isinstance(path, str) and bool(path) for path in paths)
+
+
+def _structured_aliases_are_clean(goal: dict[str, object]) -> bool:
+    """`structuredAliases`: a list of objects carrying only the engine's alias fields."""
+    aliases = goal.get("structuredAliases", [])
+    if not isinstance(aliases, list):
+        return False
+    for alias in aliases:
+        if not isinstance(alias, dict) or not set(alias) <= ALIAS_KEYS:
+            return False
+        if not all(isinstance(alias[key], str) for key in alias.keys() & ALIAS_STRING_KEYS):
+            return False
+        if not isinstance(alias.get("NoParent", False), bool):
+            return False
+    return True
+
+
 def _goal_agrees_with_preview(goal: dict[str, object], state: dict[str, object]) -> bool:
-    """Where the preview lists the resource, the goal says what its new state says."""
+    """Where the preview lists the resource, the goal says what its new state says.
+
+    The preview's old and new state already agree (a `same` step that differs is a
+    change), so a goal that matches the new state matches the old one: `protect` and
+    `dependencies` are held to the stored values here, which is the owner's
+    "unchanged" test for the keys the preview can show."""
     return (
         bool(goal.get("custom", False)) == bool(state.get("custom", False))
         and goal.get("parent") == state.get("parent")
         and goal.get("provider") == state.get("provider")
-        and not state.get("protect")
+        and goal.get("protect", False) == bool(state.get("protect", False))
+        and _dependency_list(goal.get("dependencies", [])) == _dependency_list(state.get("dependencies"))
     )
+
+
+def _dependency_list(value: object) -> list[str] | None:
+    """A dependency list as a sorted list of strings; absent or null is empty, anything else None."""
+    if value is None:
+        return []
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return sorted(value)
+    return None
 
 
 def _note(findings: dict[str, set[str]], label: str, names: set[str]) -> None:
@@ -418,8 +501,6 @@ def _entry_changes(
     _note(findings, "unrecognised goal key(s)", set(goal) - GOAL_KEYS)
     _require("outputDiff" in goal and "inputDiff" in goal, "plan-shape")
     _require(_goal_fields_are_clean(urn, goal, plan_urns), "plan-shape")
-    if goal.get("protect"):
-        _note(findings, "protect is true on resource type(s)", {_leaf_type(urn)})
     listed = preview.new_states.get(_urn_text(urn))
     _require(listed is None or _goal_agrees_with_preview(goal, listed), "plan-shape")
     other += _diff_size(goal["inputDiff"])

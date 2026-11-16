@@ -62,18 +62,30 @@ exactly the observed keys plus the code-only ones named below.
   `custom`, `inputDiff`, `outputDiff`, `protect`, `customTimeouts`, and for a
   child `parent`, `provider` and `propertyDependencies`. Every entry seen had
   both diffs.
-- Keys the CLI can write that none of those runs showed, such as
-  `dependencies`, `ignoreChanges` or `aliases` on a goal, are not allowlisted.
-  A stack whose resources use them gets `true` until the allowlist is widened
-  from a real clean plan.
+- Three more goal keys are allowlisted on the owner's ruling of 26 Oct 2026:
+  `dependencies`, `ignoreChanges` and `structuredAliases`,
+  observed in a saved plan of Pulumi v3.255.0 and named by the plan job of a
+  real run on v3.276.0 (`dependencies`). Each is
+  checked for its shape, as the next sections say. Other keys the CLI can write,
+  such as `aliases`, `replaceOnChanges` or `deleteBeforeReplace`, are still not
+  allowlisted: a stack whose resources use them gets `true`, and the summary
+  names the key.
 - No `same` step was observed. By the CLI source a `same` step has both states:
   the old one holds the `id` and `outputs`, and the new one is read before it
   copies them. Every other state key is compared, as the next section says.
 
-A real clean plan, from the local run, shows these goal values: `protect`
-`false`, `customTimeouts` `{}`, `custom` a boolean, `name` and `type` those of
+A real clean plan, from the local run, shows these goal values: `protect` a
+boolean, `customTimeouts` `{}`, `custom` a boolean, `name` and `type` those of
 the resource, and for a child a `parent` that is the root stack and a `provider`
 string. A goal that holds anything else for those fields is a change.
+
+`fixtures/plan-real-shape-protected.json` and
+`fixtures/preview-real-shape-no-op.json` are those goals as Pulumi v3.255.0
+wrote them for a throwaway local stack (protect true on two resources,
+`dependencies`, `ignoreChanges` and `structuredAliases` on one), with every step
+set to `same` and the diffs emptied; the preview lists only the root, as a real
+no-op does. They are derived from a real create plan, not a real `same` plan:
+the local backend could not be given state without a state-writing command.
 
 Three plan fields are read for their type only, and their content is ignored on
 purpose: `manifest`, `config` and `seed`. They carry no statement of what
@@ -148,9 +160,12 @@ All of these hold:
   are empty objects of the expected collection types: `adds` and `updates` are
   objects and `deletes` is a list. A null collection is not an empty one.
 - Every goal field holds a clean value or is absent. `type` and `name` are the
-  resource's own. `protect` is `false`, so a plan with a protected resource
-  always reads `true`: the plan holds only the desired value, and a resource the
-  preview hides cannot be checked for a change to it. `customTimeouts` is empty.
+  resource's own. `protect` is a boolean, and `true` is clean (the owner's
+  ruling): the engine lists a `same` step in the preview whenever its protect
+  flag changed (`shouldShow` in `pkg/backend/display/display.go`, the same in
+  v3.255.0 and v3.276.0), so a resource the preview hides is protected, or not,
+  before and after, and a listed one has its old and new state compared like any
+  other. `customTimeouts` is empty.
   `custom` is a boolean. `parent`, when present, is another entry of the same
   plan, in the same stack and project, whose type builds this resource's type
   (a child of the root has a plain type, a child of a component has the
@@ -158,10 +173,16 @@ All of these hold:
   no parent is refused. `provider` is a
   non-empty string and `propertyDependencies` maps names to lists of strings,
   their contents unchecked. A change to those two on a resource the preview
-  hides cannot be seen. Where the preview lists the resource, its goal and its
-  new state agree on `custom`, `parent` and `provider`, and its new state does
-  not have `protect` set. The preview always lists the root, whose new state
-  has no parent, so a root goal with a parent is refused by this agreement.
+  hides cannot be seen. `dependencies` is a list of URNs of the same stack and
+  project; `ignoreChanges` is a list of non-empty strings; `structuredAliases`
+  is a list of objects carrying only `URN`, `Name`, `Type`, `Project`, `Stack`
+  and `Parent` (strings) and `NoParent` (a boolean). Their contents are not
+  otherwise read. Where the preview lists the resource, its goal and its new
+  state agree on `custom`, `parent`, `provider`, `protect` and `dependencies`
+  (the list as a set of strings, order ignored; absent is empty), and the old
+  and new state already agree on both, so a changed value on a listed resource
+  reads `true`. The preview always lists the root, whose new state has no
+  parent, so a root goal with a parent is refused by this agreement.
 - A non-root entry with a non-empty output diff is a change too, because
   registering outputs on a component sets its entry's output diff.
 
@@ -173,11 +194,14 @@ either file. The codes are `no-changes`, `steps-changed`, `summary-changed`,
 `preview-unreadable`, `preview-shape`, `preview-diagnostics`, `plan-unreadable`,
 `plan-shape` and `internal-error`.
 
-When a plan is refused because of keys it does not know or a protected
-resource, the summary's second line, and one stdout line, add the names after
-the code, for example `plan-shape: unrecognised goal key(s): aliases,
-ignoreChanges`. Only key names and, for `protect`, resource type tokens are
-printed, never a value, a resource name or a secret: a name that is not plain
+When a plan is refused because of keys it does not know, the summary's second
+line, and one stdout line, add the names after the code, for example
+`plan-shape: unrecognised goal key(s): aliases, replaceOnChanges`. A
+`steps-changed` verdict does the same: `step operation(s): update` for a listed
+operation, or `unchanged-looking step(s) differ on: protect; resource type(s):
+hcloud:index/server:Server` for a listed `same` step whose states disagree. Only
+key names, operation names and resource type tokens are printed, never a value,
+a resource name or a secret: a name that is not plain
 (letters, digits and `_.:/$-`, up to 80 long, no `::`) prints as `<odd name>`,
 and more than twenty are cut with a count. That line is how the allowlists get
 widened from a real plan: the first run on a stack names exactly what to add.
@@ -202,22 +226,28 @@ unpublished verdict into no approval.
   script existed.
 - The plan describes what the CLI would do given the state it reads. A change
   made outside Pulumi (drift) shows up only if a refresh is part of the preview.
-- The Pulumi CLI is not pinned. A version that changes the shape makes the
+- The Pulumi CLI is not pinned (the shapes here were observed on v3.255.0; the
+  plan jobs run v3.276.0). A version that changes the shape makes the
   script fall back to `true`.
 - Named gaps, left open. A hidden child's plan `state` is not compared with
   anything. A nested `null` against an absent key reads `true` (the safe side).
-  A resource whose goal uses a key not on the allowlist, and any protected
-  resource, reads `true` until the allowlist is widened from a real plan; the
-  summary names them.
-- Unprotecting a resource the preview hides is NOT verified as invisible. An
-  earlier copy of this text said it was; that claim is withdrawn. Pulumi is
-  expected to list a `same` step whose `protect` flag changed, and this check
-  compares each `same` step's old and new state, so such a step reads `true`.
-  Not observed live.
-- Widening the goal allowlist (`dependencies`, `ignoreChanges`, `aliases`,
-  `structuredAliases`) or accepting `protect: true` is a loosening, and is an
-  owner decision. Until then a stack that carries any of them always asks for
-  approval.
+  A resource whose goal uses a key not on the allowlist reads `true` until the
+  allowlist is widened from a real plan; the summary names it.
+- The owner's ruling reads `dependencies`, `ignoreChanges` and
+  `structuredAliases` clean "when unchanged". The preview shows only a listed
+  resource's stored state, so only there is "unchanged" checked (`dependencies`
+  against the state; `protect` as above). For a resource the preview hides, a
+  changed `dependencies`, `ignoreChanges` or `structuredAliases` cannot be seen:
+  the plan's steps are all `same` and its diffs empty, so no cloud call follows,
+  and the apply would only rewrite those fields in the stack's state. The same
+  limit holds for `provider` and `propertyDependencies`, above.
+- Unprotecting a resource the preview hides: read from the engine source
+  (`shouldShow`, above), not observed live. Pulumi lists a `same` step whose
+  `protect` flag changed, and this check compares each `same` step's old and new
+  state, so such a step reads `true`.
+- Widening the goal allowlist further (`aliases` and the rest) is a loosening,
+  and is an owner decision. The four of the 26 Oct ruling are done; a stack
+  that carries any other key always asks for approval.
 
 ## Tests
 

@@ -1,0 +1,28 @@
+{
+  "steps": [
+    {
+      "op": "same",
+      "urn": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+      "oldState": {
+        "urn": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "sourcePosition": "project:///Pulumi.yaml#1",
+        "id": "ID",
+        "outputs": {
+          "netId": "stable-output-value"
+        }
+      },
+      "newState": {
+        "urn": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "sourcePosition": "project:///Pulumi.yaml#9"
+      }
+    }
+  ],
+  "duration": 572,
+  "changeSummary": {
+    "same": 4
+  }
+}
