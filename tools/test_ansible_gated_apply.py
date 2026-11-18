@@ -4066,7 +4066,7 @@ class PerHostKeyTests(unittest.TestCase):
         self.assertIn("| host 1 | clean | - |", reported.summary)
         self.assertIn("| host 2 | failed | the SSH connection failed (exit 255) |", reported.summary)
         self.assertIn("::error::host 2: kind=unreachable", reported.log)
-        self.assertNotIn("host 1: kind", reported.log)
+        self.assertIn("::notice::host 1: kind=ok;", reported.log)
         everything = unmasked(checked.log + reported.log) + reported.summary + sandbox.output.read_text()
         for line in key_lines(WRONG_KEY, HOST_TWO_KEY, CHECK_KEY):
             self.assertNotIn(line, everything, line)
@@ -5408,7 +5408,10 @@ class DriftReportTests(unittest.TestCase):
 
 
 class ReportLogTests(unittest.TestCase):
-    """The report step prints, for each host that is not clean, one line with the reason (issue 73).
+    """The report step prints, for each host it asked, clean or not, one line with the reason (issue 73).
+
+    A clean host's line says `kind=ok` and names the playbook it answered for, because the apply
+    reaches a clean host too and the delivery's approver reads the hosts from those playbook lines.
 
     The log is public and the diff is not: a line carries the label, the kind, a fixed note, the
     NAMES of the scan hits and the playbook path, and never a host name or address, a diff line,
@@ -5417,7 +5420,7 @@ class ReportLogTests(unittest.TestCase):
 
     HOST_LINE = re.compile(r"^::(error|notice)::host [0-9]+: ")
     STRICT = re.compile(
-        r"^::(error|notice)::host [0-9]+: kind=(unreachable|no-answer|failed|refused: [a-z-]+|withheld|drift); "
+        r"^::(error|notice)::host [0-9]+: kind=(ok|unreachable|no-answer|failed|refused: [a-z-]+|withheld|drift); "
         r"note=[A-Za-z0-9 _./:;,()=-]+; scan-hits=(none|[a-z-]+(, [a-z-]+)*); playbook=([A-Za-z0-9_./-]+|-)$"
     )
     PLAYBOOK = "ansible/playbooks/host.yml"
@@ -5451,8 +5454,12 @@ class ReportLogTests(unittest.TestCase):
             action_step("report"), report_env(FAIL_ON_CHANGES=fail_on_changes, JUMP_HOST=jump_host, JUMP2_HOST=jump2_host)
         )
 
-    def host_lines(self, result: Result) -> list[str]:
+    def every_host_line(self, result: Result) -> list[str]:
         return [line for line in result.proc.stdout.splitlines() if self.HOST_LINE.match(line)]
+
+    def host_lines(self, result: Result) -> list[str]:
+        """The lines of the hosts that are not clean; a clean host's `kind=ok` line is left out."""
+        return [line for line in self.every_host_line(result) if " kind=ok; " not in line]
 
     def second_host_line(self, answer: tuple[int, str, str], fail_on_changes: str = "false") -> str:
         _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=answer), fail_on_changes)
@@ -5554,18 +5561,39 @@ class ReportLogTests(unittest.TestCase):
         )
         self.assertNotIn("line of changed text", result.log)
 
-    def test_a_clean_host_prints_no_line_and_each_other_host_prints_exactly_one(self) -> None:
+    def test_every_host_asked_prints_exactly_one_line_clean_or_not(self) -> None:
         answers = drift_answers(
             alpha=DRIFT_CLEAN, bravo=(255, "", ""), charlie=refused(21, "busy", "ok"), delta=DRIFT_CLEAN, echo=drifted(), foxtrot=(0, "", "")
         )
         for fail_on_changes in ("false", "true"):
             with self.subTest(fail_on_changes=fail_on_changes):
                 _, result = self.report(answers, fail_on_changes)
-                lines = self.host_lines(result)
+                lines = self.every_host_line(result)
                 labels = sorted(re.match(r"^::[a-z]+::(host [0-9]+):", line).group(1) for line in lines)  # type: ignore[union-attr]
-                self.assertEqual(labels, ["host 2", "host 3", "host 5", "host 6"], lines)
+                self.assertEqual(labels, ["host 1", "host 2", "host 3", "host 4", "host 5", "host 6"], lines)
                 for line in lines:
                     self.assertRegex(line, self.STRICT)
+
+    def test_a_clean_host_is_a_notice_that_names_its_playbook(self) -> None:
+        for fail_on_changes in ("false", "true"):
+            with self.subTest(fail_on_changes=fail_on_changes):
+                _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=DRIFT_CLEAN), fail_on_changes)
+                self.assertEqual(result.code, 0, result.log)
+                tail = f"kind=ok; note=-; scan-hits=none; playbook={self.PLAYBOOK}"
+                self.assertEqual(self.every_host_line(result), [f"::notice::host 1: {tail}", f"::notice::host 2: {tail}"])
+
+    def test_a_clean_host_line_is_the_shape_the_delivery_approver_reads(self) -> None:
+        # The approver (the workspace's ci_deploy_approve.py, condition m) reads `host N: kind=..; ..; playbook=<path>`
+        # from the plan job's log and refuses a host with no such line. Its pattern, with the runner's prefix swapped
+        # for the workflow command this test sees.
+        approver = re.compile(r"^::(?:notice|warning|error)::host ([0-9]+): kind=[A-Za-z-]+; .*; playbook=(\S+)$")
+        _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=drifted(), charlie=DRIFT_CLEAN))
+        found = {}
+        for line in self.every_host_line(result):
+            match = approver.match(line)
+            self.assertIsNotNone(match, line)
+            found[int(match.group(1))] = match.group(2)  # type: ignore[union-attr]
+        self.assertEqual(found, {1: self.PLAYBOOK, 2: self.PLAYBOOK, 3: self.PLAYBOOK})
 
     def test_a_host_that_would_change_is_a_notice_in_a_plan_and_an_error_in_a_drift_check(self) -> None:
         answers = drift_answers(alpha=DRIFT_CLEAN, bravo=drifted())

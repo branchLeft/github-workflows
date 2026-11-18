@@ -215,7 +215,7 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "d1c7298606d57b566518d60d6d2d6dbbc8b71885abcf8e6366423f01ee94a595",
+          "run-sha256": "126bc7b2c05f2745c963952adf2c170445b7119966190c9c6043a4ff2e92b4f9",
           "shell": "bash"
         }
       ],
@@ -1340,6 +1340,7 @@
           ".github/dependabot.yml",
           "tools/test_ansible_gated_apply.py",
           "tools/sabotage.py",
+          "tools/sabotage_proof/**",
           "tools/run_workflow_steps.py",
           "tools/ssh_jump_proof.py",
           "tools/ansible-gated-apply.structure.json"
@@ -1360,6 +1361,7 @@
           ".github/dependabot.yml",
           "tools/test_ansible_gated_apply.py",
           "tools/sabotage.py",
+          "tools/sabotage_proof/**",
           "tools/run_workflow_steps.py",
           "tools/ssh_jump_proof.py",
           "tools/ansible-gated-apply.structure.json"

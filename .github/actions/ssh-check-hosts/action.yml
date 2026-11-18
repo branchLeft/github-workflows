@@ -983,22 +983,24 @@ runs:
           note=$(plain "$note")
           printf '| %s | %s | %s |\n' "$label" "$result" "${note:--}" >> "$rows"
 
-          # One line in the log for each host that is not clean, with its reason.
-          # The playbook is read from the one answer line, and only when the
+          # One line in the log for each host asked, clean or not, with its reason.
+          # A clean host is applied too, so its line names its playbook like any
+          # other, and a reader can tell it from a host that was never named. The
+          # playbook is read from the one answer line, and only when the
           # pattern above accepted that line, which bounds it to a path.
-          if [ "$kind" != ok ]; then
-            playbook="-"
-            if [ "$matched" = yes ]; then
-              playbook="${line##* playbook=}"
-              playbook="${playbook%% *}"
-            fi
-            playbook=$(redact_jumps "$playbook")
-            level=error
-            if [ "$kind" = drift ] && [ "$FAIL_ON_CHANGES" != true ]; then
-              level=notice
-            fi
-            echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"
+          playbook="-"
+          if [ "$matched" = yes ]; then
+            playbook="${line##* playbook=}"
+            playbook="${playbook%% *}"
           fi
+          playbook=$(redact_jumps "$playbook")
+          level=error
+          if [ "$kind" = ok ]; then
+            level=notice
+          elif [ "$kind" = drift ] && [ "$FAIL_ON_CHANGES" != true ]; then
+            level=notice
+          fi
+          echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"
           if [ "$show" = true ] && [ -s "$cleaned" ]; then
             fence=$(awk 'BEGIN { m = 2 } { s = $0; while (match(s, /`+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } } END { f = ""; for (k = 0; k <= m; k++) f = f "`"; print f }' "$cleaned")
             {
