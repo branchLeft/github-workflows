@@ -437,10 +437,118 @@ class ScriptTests(unittest.TestCase):
             self.assertFalse(out.exists())
 
 
-class SabotageTests(unittest.TestCase):
-    """The control is the allowlist check. Break it in a copy and the PAID tests must go
-    red; the unmodified copy must be green. Skipped inside the broken copy's own run."""
+_REF = f"{_STACK}pulumi:pulumi:StackReference::estate"
+_PROVIDER = f"{_STACK}pulumi:providers:pulumi::default::ID"
 
+
+def stack_reference_read(**changes):
+    """The read step of a StackReference, in the shape a real preview wrote for a throwaway
+    local stack (fixtures/preview-stack-reference-read.json): no old state, `external` true,
+    `detailedDiff` null. A key given replaces the step's."""
+    entry = {
+        "op": "read",
+        "urn": _REF,
+        "provider": _PROVIDER,
+        "newState": {
+            "urn": _REF,
+            "custom": True,
+            "id": "organization/estate/production",
+            "type": "pulumi:pulumi:StackReference",
+            "inputs": {"name": "organization/estate/production"},
+            "parent": _ROOT,
+            "external": True,
+            "provider": _PROVIDER,
+        },
+        "detailedDiff": None,
+    }
+    entry.update(changes)
+    return entry
+
+
+class StackReferenceReadTests(GateCase):
+    """A plan whose only extra step is the read of a StackReference changes nothing and is
+    FREE. A read of anything else, or one not in the real shape, and any real change beside
+    it, keep their verdicts (the sabotage tests break each guard in a copy)."""
+
+    def test_the_real_shaped_fixture_is_free(self):
+        doc = json.loads((FIXTURES / "preview-stack-reference-read.json").read_text(encoding="utf-8"))
+        self.assertEqual([s["op"] for s in doc["steps"]], ["same", "read"])
+        result = gate.judge(str(FIXTURES / "preview-stack-reference-read.json"))
+        self.assertEqual(result.verdict, "FREE", result)
+
+    def test_a_no_op_with_a_read_is_free_whatever_the_summary_says_about_it(self):
+        for summary in ({"same": 2}, {"same": 2, "read": 1}):
+            with self.subTest(summary=summary):
+                self.assertFree(self.judge(preview(stack_reference_read(), summary=summary)))
+
+    def test_a_summary_counting_more_reads_than_are_listed_is_paid(self):
+        self.assertPaid(self.judge(preview(stack_reference_read(), summary={"same": 2, "read": 2})))
+
+    def test_a_read_of_any_other_type_is_paid_though_shaped_like_one(self):
+        for urn in (_SERVER, _FIREWALL, f"{_STACK}pulumi:pulumi:Stack::estate"):
+            with self.subTest(urn=urn):
+                entry = stack_reference_read(urn=urn)
+                entry["newState"]["urn"] = urn
+                self.assertPaid(self.judge(preview(entry, summary={"same": 2, "read": 1})))
+
+    def test_a_read_that_is_not_the_real_shape_is_paid(self):
+        cases = {
+            "a diff": lambda s: s.update(detailedDiff={"name": {"kind": "update"}}),
+            "not external": lambda s: s["newState"].update(external=False),
+            "another state type": lambda s: s["newState"].update(type=_SERVER),
+            "an unknown state key": lambda s: s["newState"].update(price=1),
+            "an old state of another type": lambda s: s.update(oldState={"type": _SERVER}),
+            "an unknown step key": lambda s: s.update(price=1),
+        }
+        for label, change in cases.items():
+            with self.subTest(label=label):
+                entry = stack_reference_read()
+                change(entry)
+                self.assertPaid(self.judge(preview(entry, summary={"same": 2, "read": 1})))
+
+    def test_a_paid_change_beside_a_clean_read_is_still_paid(self):
+        for op in ("create", "update", "replace", "delete"):
+            with self.subTest(op=op):
+                self.assertPaid(self.judge(preview(stack_reference_read(), step(op, _SERVER), summary={"same": 1, op: 1, "read": 1})))
+
+    def test_a_free_change_beside_a_clean_read_is_free(self):
+        self.assertFree(self.judge(preview(stack_reference_read(), step("update", _FIREWALL), summary={"same": 1, "update": 1})))
+
+
+class QuietDiagnosticTests(GateCase):
+    """Warnings and notices on a preview that lists no change cannot cost money; an error
+    diagnostic (a failed preview) and any diagnostic beside a listed change still read PAID."""
+
+    def test_warnings_and_notices_on_a_no_op_are_free(self):
+        for severity in ("warning", "info", "info#err"):
+            with self.subTest(severity=severity):
+                doc = preview(stack_reference_read(), summary={"same": 2}, diagnostics=[{"severity": severity, "message": "m"}])
+                self.assertFree(self.judge(doc))
+
+    def test_an_error_diagnostic_on_a_no_op_is_paid_and_names_its_severity(self):
+        doc = preview(stack_reference_read(), summary={"same": 2}, diagnostics=[{"severity": "error", "message": "boom"}])
+        result = self.judge(doc)
+        self.assertPaid(result)
+        self.assertIn("preview-diagnostics (severity: error)", result.reason)
+        self.assertNotIn("boom", result.reason)
+
+    def test_a_diagnostic_that_is_not_the_shape_of_one_is_paid(self):
+        for entry in ({"message": "m"}, {"severity": "warning"}, {"severity": "fatal", "message": "m"}, "warning", None):
+            with self.subTest(entry=entry):
+                self.assertPaid(self.judge(preview(stack_reference_read(), summary={"same": 2}, diagnostics=[entry])))
+
+    def test_a_warning_beside_a_listed_change_is_paid(self):
+        doc = preview(step("update", _FIREWALL), diagnostics=[{"severity": "warning", "message": "m"}])
+        self.assertPaid(self.judge(doc))
+
+
+class SabotageTests(unittest.TestCase):
+    """Each control is broken in a copy and the tests that hold it must go red; the
+    unmodified copy must be green. Skipped inside a broken copy's own run."""
+
+    GATE = "spend-gate"
+    SHARED = "plan-has-changes"
+    # The allowlist check, in the gate.
     CONTROL = "    return type_name in FREE_TYPES or shared._is_provider_type(type_name)\n"
     BROKEN = "    return True\n"
     MUST_FAIL = {
@@ -452,36 +560,81 @@ class SabotageTests(unittest.TestCase):
         "test_a_resource_under_an_unknown_component_is_paid",
         "test_the_paid_types_are_not_free",
     }
+    # The shape a read must have to be no change, in the shared parser: every read passes.
+    READ_CONTROL = "    if op != READ or urn.type != STACK_REFERENCE_TYPE:\n        return False\n"
+    READ_BROKEN = "    if op != READ:\n        return False\n    return True\n"
+    READ_MUST_FAIL = {
+        "test_a_read_of_any_other_type_is_paid_though_shaped_like_one",
+        "test_a_read_that_is_not_the_real_shape_is_paid",
+    }
+    # The loop that sets reads aside, in the gate: every step that is not `same` is set aside.
+    SKIP_CONTROL = "        if shared._is_clean_read(op, urn, step):\n"
+    SKIP_BROKEN = "        if op != shared.SAME:\n"
+    SKIP_MUST_FAIL = {"test_server_create_is_paid", "test_server_type_change_is_paid", "test_unknown_type_is_paid"}
+    # Diagnostics beside a listed change, in the gate: a warning no longer stops a change.
+    STRICT_CONTROL = "        if changing:\n            # A listed change is judged only on a preview that reported nothing.\n"
+    STRICT_BROKEN = "        if False:\n            # A listed change is judged only on a preview that reported nothing.\n"
+    STRICT_MUST_FAIL = {
+        "test_diagnostics_of_any_kind_are_paid",
+        "test_a_warning_beside_a_listed_change_is_paid",
+    }
+    # The severity check on a no-op, in the shared parser: an error no longer stops it.
+    SEVERITY_CONTROL = "    if _diagnostics_are_quiet(diagnostics):\n        return\n"
+    SEVERITY_BROKEN = "    return\n"
+    SEVERITY_MUST_FAIL = {
+        "test_an_error_diagnostic_on_a_no_op_is_paid_and_names_its_severity",
+        "test_a_diagnostic_that_is_not_the_shape_of_one_is_paid",
+    }
 
-    def run_copy(self, broken):
+    def run_copy(self, name="", control="", broken=""):
         with tempfile.TemporaryDirectory(prefix="spend-gate-sabotage-") as tmp:
             actions = pathlib.Path(tmp, ".github", "actions")
-            for name in ("spend-gate", "plan-has-changes"):
-                shutil.copytree(HERE.parent / name, actions / name, ignore=shutil.ignore_patterns("__pycache__"))
-            script = actions / "spend-gate" / "spend-gate.py"
-            if broken:
-                text = script.read_text(encoding="utf-8")
-                self.assertEqual(text.count(self.CONTROL), 1, "the allowlist check moved: update the sabotage")
-                script.write_text(text.replace(self.CONTROL, self.BROKEN), encoding="utf-8")
+            for each in (self.GATE, self.SHARED):
+                shutil.copytree(HERE.parent / each, actions / each, ignore=shutil.ignore_patterns("__pycache__"))
+            script = actions / self.GATE / "spend-gate.py"
+            if control:
+                target = actions / name / f"{name}.py"
+                text = target.read_text(encoding="utf-8")
+                self.assertEqual(text.count(control), 1, "the control moved: update the sabotage")
+                target.write_text(text.replace(control, broken), encoding="utf-8")
             env = {**os.environ, SCRIPT_ENV: str(script)}
             return subprocess.run(
-                [sys.executable, "-m", "unittest", "discover", "-s", str(actions / "spend-gate"), "-p", "test_spend_gate.py", "-v"],
+                [sys.executable, "-m", "unittest", "discover", "-s", str(actions / self.GATE), "-p", "test_spend_gate.py", "-v"],
                 capture_output=True,
                 text=True,
                 env=env,
                 check=False,
             )
 
-    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
-    def test_an_allowlist_that_always_passes_turns_the_paid_tests_red(self):
-        red = self.run_copy(broken=True)
+    def assert_red(self, name, control, broken, must_fail):
+        red = self.run_copy(name, control, broken)
         self.assertNotEqual(red.returncode, 0, red.stderr)
         failed = set(re.findall(r"^(?:FAIL|ERROR): (\w+) ", red.stderr, re.MULTILINE))
-        self.assertTrue(self.MUST_FAIL <= failed, f"expected red, got {sorted(failed)}")
+        self.assertTrue(must_fail <= failed, f"expected red, got {sorted(failed)}")
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_an_allowlist_that_always_passes_turns_the_paid_tests_red(self):
+        self.assert_red(self.GATE, self.CONTROL, self.BROKEN, self.MUST_FAIL)
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_a_read_guard_that_passes_every_read_turns_the_paid_tests_red(self):
+        self.assert_red(self.SHARED, self.READ_CONTROL, self.READ_BROKEN, self.READ_MUST_FAIL)
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_a_gate_that_sets_every_change_aside_as_a_read_turns_the_paid_tests_red(self):
+        self.assert_red(self.GATE, self.SKIP_CONTROL, self.SKIP_BROKEN, self.SKIP_MUST_FAIL)
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_a_gate_that_ignores_diagnostics_beside_a_change_turns_the_paid_tests_red(self):
+        self.assert_red(self.GATE, self.STRICT_CONTROL, self.STRICT_BROKEN, self.STRICT_MUST_FAIL)
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_a_severity_check_that_passes_every_diagnostic_turns_the_paid_tests_red(self):
+        self.assert_red(self.SHARED, self.SEVERITY_CONTROL, self.SEVERITY_BROKEN, self.SEVERITY_MUST_FAIL)
 
     @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
     def test_the_unmodified_copy_is_green(self):
-        green = self.run_copy(broken=False)
+        green = self.run_copy()
         self.assertEqual(green.returncode, 0, green.stderr)
 
 

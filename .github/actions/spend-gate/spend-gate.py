@@ -75,30 +75,40 @@ def _state_type_agrees(urn: object, step: dict[str, object]) -> bool:
     return True
 
 
-def _changing_steps(doc: dict[str, object]) -> list[tuple[str, object, dict[str, object]]]:
-    """The listed steps that change something, as (op, URN, step), each checked for shape.
+def _changing_steps(doc: dict[str, object]) -> tuple[list[tuple[str, object, dict[str, object]]], int]:
+    """The listed steps that change something, as (op, URN, step), each checked for shape, and how many clean reads were left out.
 
-    A `same` step that carries its own evidence of a difference is a changing step."""
+    A `same` step that carries its own evidence of a difference is a changing step. The read
+    of a StackReference (shared._is_clean_read) changes nothing and is not one."""
     changing = []
+    reads = 0
     for op, urn, step in shared._preview_steps(doc):
         shared._check_keys(step, shared.STEP_KEYS, "preview-shape", "preview step")
-        if op != shared.SAME:
+        if shared._is_clean_read(op, urn, step):
+            reads += 1
+        elif op != shared.SAME:
             changing.append((op, urn, step))
         elif shared._same_step_differs(urn, step):
             changing.append((op, urn, step))
-    return changing
+    return changing, reads
 
 
-def _check_summary(doc: dict[str, object], changing: list[tuple[str, object, dict[str, object]]]) -> str | None:
+def _check_summary(
+    doc: dict[str, object], changing: list[tuple[str, object, dict[str, object]]], reads: int = 0
+) -> str | None:
     """Why the change summary cannot be squared with the listed steps, or None.
 
     The summary may count fewer changes than are listed (a replace is several steps),
     never more (a change that is not listed cannot be judged) and never none while
-    a changing step is listed."""
+    a changing step is listed. A `read` count is the clean reads, which are not changes."""
     summary = shared._as_dict(doc.get("changeSummary"), "preview-shape")
     for value in summary.values():
         shared._require(shared._is_count(value), "preview-shape")
-    counted = sum(int(v) for k, v in summary.items() if k != shared.SAME)
+    counted = sum(
+        int(v)
+        for k, v in summary.items()
+        if k != shared.SAME and not (k == shared.READ and int(v) <= reads)
+    )
     listed = sum(1 for op, _, _ in changing if op != shared.SAME)
     if counted > listed:
         return "the summary counts changes the preview does not list"
@@ -108,12 +118,10 @@ def _check_summary(doc: dict[str, object], changing: list[tuple[str, object, dic
 
 
 def _check_envelope(doc: dict[str, object]) -> None:
-    """The top-level fields: known keys, no diagnostics, not corrupt."""
+    """The top-level fields: known keys, not corrupt. Diagnostics are read once the changing steps are known."""
     shared._check_keys(doc, shared.PREVIEW_KEYS, "preview-shape", "preview")
     shared._require("config" not in doc or isinstance(doc["config"], dict), "preview-shape")
     shared._require("duration" not in doc or shared._is_count(doc["duration"]), "preview-shape")
-    diagnostics = doc.get("diagnostics")
-    shared._require(diagnostics is None or (isinstance(diagnostics, list) and not diagnostics), "preview-diagnostics")
     corrupt = doc.get("maybeCorrupt")
     shared._require(corrupt is None or corrupt is False, "preview-shape")
 
@@ -123,8 +131,15 @@ def judge(path: str) -> Verdict:
     try:
         doc = shared._as_dict(shared._load(path, "preview-unreadable"), "preview-shape")
         _check_envelope(doc)
-        changing = _changing_steps(doc)
-        mismatch = _check_summary(doc, changing)
+        changing, reads = _changing_steps(doc)
+        diagnostics = doc.get("diagnostics")
+        if changing:
+            # A listed change is judged only on a preview that reported nothing.
+            shared._require(diagnostics is None or (isinstance(diagnostics, list) and not diagnostics), "preview-diagnostics")
+        else:
+            # Nothing changes whatever a warning says; a failed preview has an `error` one and still reads PAID.
+            shared._check_diagnostics(doc)
+        mismatch = _check_summary(doc, changing, reads)
         if mismatch:
             return Verdict(PAID, mismatch)
         if not all(_state_type_agrees(urn, step) for _, urn, step in changing):

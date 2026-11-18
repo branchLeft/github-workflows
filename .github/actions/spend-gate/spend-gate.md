@@ -35,7 +35,14 @@ FREE needs all of these:
 - `diagnostics` is null or empty and `maybeCorrupt` is absent or false. A preview
   that errors (a bad provider token, say) exits 1, carries one `error` diagnostic and
   lists only the `pulumi:pulumi:Stack` step, which is a free type: without this rule
-  that preview would read as FREE.
+  that preview would read as FREE. One exception, for a preview that lists no
+  changing step: diagnostics that are all `info`, `info#err` or `warning` (each with a
+  `message` string) cannot cost money and do not make it PAID; an `error` one, or
+  anything that is not that shape, still does, and the reason names the severities.
+  Beside a listed change every diagnostic still makes it PAID.
+- A `read` of a `pulumi:pulumi:StackReference`, in the shape plan-has-changes.md
+  describes, is not a change: it is left out of the changing steps, and a summary
+  `read` count up to the number of them is not counted. Any other `read` is below.
 - `changeSummary` is an object of non-negative counts. Its non-`same` total is no
   greater than the number of listed non-`same` steps (a change that is counted and
   not listed cannot be judged), and it is not zero while a changing step is listed.
@@ -43,7 +50,7 @@ FREE needs all of these:
   `create-replacement`, `delete`, `delete-replaced`, `import`,
   `import-replacement`, and its full type string is on the allowlist.
 
-Anything else is PAID: an unknown op (`refresh`, `read`, `discard`,
+Anything else is PAID: an unknown op (`refresh`, any other `read`, `discard`,
 `remove-pending-replace`), an unknown type, a step whose `oldState` or `newState`
 names a different type from its URN, a delete or replace of a paid type, and any
 error. A `same` step that carries its own evidence of a change (a non-empty
