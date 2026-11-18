@@ -891,23 +891,28 @@ change is **drift**; every other red is not drift and says what it is instead.
 
 The job log carries the reason too, so a red run can be read without opening the
 summary. The first line reads `N of M hosts not clean (` the count of each kind `)`.
-Each host that is not clean then gets one line, in the order of the list:
+Each host asked then gets one line, clean or not, in the order of the list:
 
 ```text
 ::error::host 2: kind=unreachable; note=the SSH connection failed (exit 255); scan-hits=none; playbook=-
+::notice::host 1: kind=ok; note=-; scan-hits=none; playbook=ansible/playbooks/web1.yml
 ```
 
 - `host N` is the label; the host name and address are never printed.
-- `kind` is one of `unreachable`, `no-answer`, `failed`, `refused: <reason>`,
-  `withheld` or `drift`. A call stopped at its limit (exit 124) is `no-answer`,
+- `kind` is one of `ok` (the host is clean), `unreachable`, `no-answer`, `failed`,
+  `refused: <reason>`, `withheld` or `drift`. A call stopped at its limit (exit 124) is `no-answer`,
   and its note says so.
 - `note` is the fixed text of the summary row.
 - `scan-hits` holds the **names** of the secret patterns the diff matched, or
   `none`. The text that matched, and the diff, are never printed.
 - `playbook` is the playbook named by the host's answer line, or `-` when the
-  host gave no line this workflow accepts.
-- A host that would change is a `::notice::` in a plan, where it is a result, and
-  an `::error::` in a drift check. GitHub shows at most ten annotations a step;
+  host gave no line this workflow accepts. A clean host names its playbook too,
+  because the apply reaches it and a reader of the log (the delivery's approver
+  reads the hosts from these lines) must be able to tell it from a host that
+  was never named.
+- A clean host is a `::notice::` in a plan and in a drift check. A host that
+  would change is a `::notice::` in a plan, where it is a result, and an
+  `::error::` in a drift check. GitHub shows at most ten annotations a step;
   the log carries every line.
 
 The summary table (label, result, note) is printed to the log as well. The diffs

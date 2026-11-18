@@ -1116,11 +1116,34 @@ CASES: list[Case] = [
     Case(
         "log line: the error line of a non-clean host is not printed",
         [Edit(ACTION, 'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"', ":")],
-        [f"{RL}.test_an_unreachable_host_prints_its_kind_and_not_its_name_or_its_error_text", f"{RL}.test_a_clean_host_prints_no_line_and_each_other_host_prints_exactly_one"],
+        [f"{RL}.test_an_unreachable_host_prints_its_kind_and_not_its_name_or_its_error_text", f"{RL}.test_every_host_asked_prints_exactly_one_line_clean_or_not"],
+    ),
+    Case(
+        "log line: a clean host prints no line",
+        [
+            Edit(
+                ACTION,
+                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"',
+                '[ "$kind" = ok ] || echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"',
+            )
+        ],
+        [
+            f"{RL}.test_every_host_asked_prints_exactly_one_line_clean_or_not",
+            f"{RL}.test_a_clean_host_is_a_notice_that_names_its_playbook",
+            f"{RL}.test_a_clean_host_line_is_the_shape_the_delivery_approver_reads",
+        ],
+    ),
+    Case(
+        "log line: a clean host's line does not name its playbook",
+        [Edit(ACTION, '          if [ "$matched" = yes ]; then\n            playbook="${line##* playbook=}"', '          if [ "$matched" = yes ] && [ "$kind" != ok ]; then\n            playbook="${line##* playbook=}"')],
+        [
+            f"{RL}.test_a_clean_host_is_a_notice_that_names_its_playbook",
+            f"{RL}.test_a_clean_host_line_is_the_shape_the_delivery_approver_reads",
+        ],
     ),
     Case(
         "log line: a host that would change is an error in a plan",
-        [Edit(ACTION, "              level=notice\n", "              level=error\n")],
+        [Edit(ACTION, '!= true ]; then\n            level=notice\n', '!= true ]; then\n            level=error\n')],
         [f"{RL}.test_a_host_that_would_change_is_a_notice_in_a_plan_and_an_error_in_a_drift_check"],
     ),
     Case(
@@ -1135,7 +1158,7 @@ CASES: list[Case] = [
     ),
     Case(
         "log line: the playbook is not read from the answer",
-        [Edit(ACTION, '              playbook="${line##* playbook=}"\n              playbook="${playbook%% *}"\n', '              playbook="-"\n')],
+        [Edit(ACTION, '            playbook="${line##* playbook=}"\n            playbook="${playbook%% *}"\n', '            playbook="-"\n')],
         [f"{RL}.test_an_answer_for_another_commit_shows_the_playbook_it_named"],
     ),
     Case(
@@ -1150,7 +1173,7 @@ CASES: list[Case] = [
     ),
     Case(
         "log line: the second hop's name is not redacted from a host's line",
-        [Edit(ACTION, '            playbook=$(redact_jumps "$playbook")\n', "")],
+        [Edit(ACTION, '          playbook=$(redact_jumps "$playbook")\n', "")],
         [f"{RL}.test_a_second_hop_name_in_a_host_line_is_redacted_as_it_is_from_the_diff"],
     ),
     Case(
