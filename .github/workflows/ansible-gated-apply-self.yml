@@ -24,6 +24,7 @@ on:
       - .github/dependabot.yml
       - tools/test_ansible_gated_apply.py
       - tools/sabotage.py
+      - tools/sabotage_proof/**
       - tools/run_workflow_steps.py
       - tools/ssh_jump_proof.py
       - tools/ansible-gated-apply.structure.json
@@ -40,6 +41,7 @@ on:
       - .github/dependabot.yml
       - tools/test_ansible_gated_apply.py
       - tools/sabotage.py
+      - tools/sabotage_proof/**
       - tools/run_workflow_steps.py
       - tools/ssh_jump_proof.py
       - tools/ansible-gated-apply.structure.json
