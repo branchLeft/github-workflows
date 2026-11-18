@@ -4066,7 +4066,7 @@ class PerHostKeyTests(unittest.TestCase):
         self.assertIn("| host 1 | clean | - |", reported.summary)
         self.assertIn("| host 2 | failed | the SSH connection failed (exit 255) |", reported.summary)
         self.assertIn("::error::host 2: kind=unreachable", reported.log)
-        self.assertNotIn("host 1: kind", reported.log)
+        self.assertIn("::notice::host 1: kind=ok;", reported.log)
         everything = unmasked(checked.log + reported.log) + reported.summary + sandbox.output.read_text()
         for line in key_lines(WRONG_KEY, HOST_TWO_KEY, CHECK_KEY):
             self.assertNotIn(line, everything, line)
