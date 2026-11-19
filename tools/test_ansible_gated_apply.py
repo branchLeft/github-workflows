@@ -7101,9 +7101,8 @@ class PushApplyTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# The release tags in the bundle (branchLeft/workspace#3860, T8 of shared-infra
-# docs/pull-signer-trust.md). A host told to require a release tag applies a
-# commit only if an annotated tag of the shape release/YYYYMMDD.N, whose own
+# The release tags in the bundle (T8 of shared-infra docs/pull-signer-trust.md).
+# A host told to require a release tag applies a commit only if an annotated tag of the shape release/YYYYMMDD.N, whose own
 # text names exactly that commit, is signed by a release key; the receiver reads
 # the tags from the bundle. The sender's half is that the bundle carries them.
 # ---------------------------------------------------------------------------
@@ -7151,7 +7150,7 @@ class ReceiverAdmission:
     """What the receiver does with the release tags of a bundle, written out from shared-infra's pull_trigger.
 
     The receiver (`ansible/roles/pull_trigger/files/pull_trigger.py`, `release_tags_naming` and
-    `ReleaseVerifier`, shared-infra#927) fetches `+refs/tags/release/*` from the bundle into a private
+    `ReleaseVerifier`) fetches `+refs/tags/release/*` from the bundle into a private
     namespace, keeps an annotated tag whose own `object` and `type` lines name exactly the commit and whose
     own `tag` line has the release shape, and requires its SSH signature, made under the namespace `git`,
     to be by a release key. This is that, so the sender is held to what the receiver reads. It is a mirror,
