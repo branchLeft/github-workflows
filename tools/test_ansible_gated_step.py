@@ -37,6 +37,10 @@ TRIGGERS: dict[str, Any] = DOC.get("on") or DOC[True]
 SHA = "a" * 40
 OTHER_SHA = "b" * 40
 OWNER = "test-owner"
+OWNER_ID = "311375434"
+OTHER_ID = "311375435"
+API_URL = "https://api.example.test"
+API_TOKEN = "stub-job-token"
 STEP = "migrate"
 WORD = "MIGRATE-OPS1"
 DEST = "stepper@ops1.example.test"
@@ -78,7 +82,11 @@ def base_context() -> dict[str, str]:
         "github.sha": SHA,
         "github.actor": OWNER,
         "github.triggering_actor": OWNER,
+        "github.actor_id": OWNER_ID,
+        "github.api_url": API_URL,
+        "github.token": API_TOKEN,
         "inputs.owner-login": OWNER,
+        "inputs.owner-id": OWNER_ID,
         "inputs.step": STEP,
         "inputs.confirm": WORD,
         "inputs.environment": "control-plane-step",
@@ -132,6 +140,17 @@ ls -l "$(dirname "$identity")" > "$STUB_DIR/ssh.workdir.$n"
 cat "$STUB_DIR/out.$n"
 cat "$STUB_DIR/err.$n" >&2
 exit "$(cat "$STUB_DIR/rc.$n")"
+"""
+
+# Stands for the users endpoint of the API: records the call, then prints
+# CURL_BODY and exits with CURL_RC (the sandbox defaults them to the owner's
+# account and 0). A non-zero status prints nothing, as `curl --fail` does for an
+# HTTP error.
+CURL_STUB = """#!/usr/bin/env bash
+set -u
+printf '%s\\n' "$*" >> "$STUB_DIR/curl.log"
+[ "${CURL_RC:-0}" = 0 ] || exit "$CURL_RC"
+printf '%s\\n' "$CURL_BODY"
 """
 
 TIMEOUT_STUB = """#!/usr/bin/env bash
@@ -204,7 +223,12 @@ class Sandbox:
         self.workspace = self.dir / "workspace"
         for path in (self.bin, self.stubs, self.temp, self.workspace):
             path.mkdir()
-        for name, text in (("ssh", SSH_STUB), ("timeout", TIMEOUT_STUB), ("yq", YQ_STUB)):
+        for name, text in (
+            ("ssh", SSH_STUB),
+            ("timeout", TIMEOUT_STUB),
+            ("yq", YQ_STUB),
+            ("curl", CURL_STUB),
+        ):
             target = self.bin / name
             target.write_text(text)
             target.chmod(0o755)
@@ -225,6 +249,10 @@ class Sandbox:
             self.stubs.joinpath(f"rc.{number}").write_text(f"{code}\n")
             self.stubs.joinpath(f"out.{number}").write_text(out)
             self.stubs.joinpath(f"err.{number}").write_text(err)
+
+    def curl_calls(self) -> list[str]:
+        path = self.stubs / "curl.log"
+        return path.read_text().splitlines() if path.exists() else []
 
     def ssh_calls(self) -> list[str]:
         path = self.stubs / "ssh.log"
@@ -250,6 +278,8 @@ class Sandbox:
             "GITHUB_STEP_SUMMARY": str(self.summary),
             "GITHUB_WORKSPACE": str(self.workspace),
             "STUB_DIR": str(self.stubs),
+            "CURL_BODY": json.dumps({"id": int(OWNER_ID)}),
+            "CURL_RC": "0",
             **(extra or {}),
             **values,
         }
@@ -335,6 +365,12 @@ class StructureTests(unittest.TestCase):
         for name, declared in secrets.items():
             self.assertIs(declared["required"], False, name)
 
+    def test_the_owner_id_is_an_optional_string_input_that_defaults_to_empty(self) -> None:
+        declared = TRIGGERS["workflow_call"]["inputs"]["owner-id"]
+        self.assertEqual(declared["type"], "string")
+        self.assertIs(declared["required"], False)
+        self.assertEqual(declared["default"], "")
+
     def test_no_comment_block_reaches_25_lines(self) -> None:
         run = 0
         for line in WORKFLOW.read_text().splitlines():
@@ -343,13 +379,17 @@ class StructureTests(unittest.TestCase):
 
 
 class RequestGuardTests(unittest.TestCase):
-    def guard(self, context: dict[str, str] | None = None) -> Result:
-        return Sandbox(self).run(step_named("guard", "Refuse unless the owner dispatched"), context)
+    def guard(
+        self, context: dict[str, str] | None = None, extra: dict[str, str] | None = None
+    ) -> Result:
+        return Sandbox(self).run(
+            step_named("guard", "Refuse unless the owner dispatched"), context, extra
+        )
 
-    def refuses(self, context: dict[str, str]) -> None:
-        result = self.guard(context)
-        self.assertNotEqual(result.code, 0, context)
-        self.assertEqual(result.outputs, {}, context)
+    def refuses(self, context: dict[str, str], extra: dict[str, str] | None = None) -> None:
+        result = self.guard(context, extra)
+        self.assertNotEqual(result.code, 0, (context, extra))
+        self.assertEqual(result.outputs, {}, (context, extra))
         self.assertIn("::error::", result.log)
 
     def test_the_owner_dispatching_a_shaped_step_passes_and_the_guard_publishes_it(self) -> None:
@@ -390,6 +430,45 @@ class RequestGuardTests(unittest.TestCase):
 
     def test_a_rerun_by_another_actor_is_refused(self) -> None:
         self.refuses({"github.triggering_actor": "someone-else"})
+
+    def test_an_actor_with_the_right_login_and_the_wrong_id_is_refused(self) -> None:
+        self.refuses({"github.actor_id": OTHER_ID})
+
+    def test_a_rerun_by_a_login_that_now_belongs_to_another_id_is_refused(self) -> None:
+        self.refuses({}, {"CURL_BODY": json.dumps({"id": int(OTHER_ID)})})
+
+    def test_an_owner_id_that_is_unset_or_not_a_plain_integer_refuses_every_dispatch(self) -> None:
+        for owner_id in ("", " ", "0", "031", "-5", "12a", "1.5", "1 2", "0x10", "9" * 20):
+            self.refuses({"inputs.owner-id": owner_id})
+            self.refuses(
+                {"inputs.owner-id": owner_id, "github.actor_id": owner_id},
+                {"CURL_BODY": json.dumps({"id": owner_id})},
+            )
+
+    def test_an_actor_id_that_is_not_a_plain_integer_is_refused(self) -> None:
+        for actor_id in ("", "x", "0", "031"):
+            self.refuses({"github.actor_id": actor_id})
+
+    def test_an_id_that_cannot_be_read_for_the_run_starter_is_refused(self) -> None:
+        self.refuses({}, {"CURL_RC": "22"})
+        for body in ("", "{}", "null", '{"id": null}', '{"id": "x"}', "not json", '{"id": 0}'):
+            self.refuses({}, {"CURL_BODY": body})
+
+    def test_the_run_starter_is_looked_up_by_login_with_the_job_token(self) -> None:
+        sandbox = Sandbox(self)
+        result = sandbox.run(step_named("guard", "Refuse unless the owner dispatched"))
+        self.assertEqual(result.code, 0, result.log)
+        calls = sandbox.curl_calls()
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn(f"{API_URL}/users/{OWNER}", calls[0])
+        self.assertIn(f"Authorization: Bearer {API_TOKEN}", calls[0])
+        self.assertIn("--fail", calls[0])
+
+    def test_the_owner_account_id_matches_when_the_login_differs_in_case(self) -> None:
+        result = self.guard(
+            {"github.actor": OWNER.upper(), "github.triggering_actor": OWNER.title()}
+        )
+        self.assertEqual(result.code, 0, result.log)
 
     def test_the_owner_account_is_compared_without_case(self) -> None:
         result = self.guard(
@@ -638,14 +717,16 @@ class PlanTests(unittest.TestCase):
 
 
 class SendGuardTests(unittest.TestCase):
-    def guard(self, context: dict[str, str] | None = None) -> Result:
+    def guard(
+        self, context: dict[str, str] | None = None, extra: dict[str, str] | None = None
+    ) -> Result:
         return Sandbox(self).run(
-            step_named("send", "Refuse unless this is the owner's guarded step"), context
+            step_named("send", "Refuse unless this is the owner's guarded step"), context, extra
         )
 
-    def refuses(self, context: dict[str, str]) -> None:
-        result = self.guard(context)
-        self.assertNotEqual(result.code, 0, context)
+    def refuses(self, context: dict[str, str], extra: dict[str, str] | None = None) -> None:
+        result = self.guard(context, extra)
+        self.assertNotEqual(result.code, 0, (context, extra))
         self.assertIn("::error::", result.log)
 
     def test_the_guarded_step_of_the_owner_passes(self) -> None:
@@ -671,6 +752,17 @@ class SendGuardTests(unittest.TestCase):
         self.refuses(
             {"inputs.owner-login": "-x", "github.actor": "-x", "github.triggering_actor": "-x"}
         )
+
+    def test_a_wrong_or_unset_owner_id_is_refused_by_the_send_job_too(self) -> None:
+        self.refuses({"github.actor_id": OTHER_ID})
+        self.refuses({}, {"CURL_BODY": json.dumps({"id": int(OTHER_ID)})})
+        self.refuses({}, {"CURL_RC": "22"})
+        for owner_id in ("", "0", "031", "12a", "9" * 20):
+            self.refuses({"inputs.owner-id": owner_id})
+            self.refuses(
+                {"inputs.owner-id": owner_id, "github.actor_id": owner_id},
+                {"CURL_BODY": json.dumps({"id": owner_id})},
+            )
 
     def test_a_malformed_step_or_word_is_refused(self) -> None:
         for step in ("", "Migrate", "a b", "x" * 33, "migrate;ls"):
@@ -1049,6 +1141,7 @@ class DocumentationTests(unittest.TestCase):
             "ssh_step_host",
             "ssh_known_hosts",
             "STEP_OWNER_LOGIN",
+            "STEP_OWNER_ID",
             "authorized_keys",
         ):
             self.assertIn(name, self.page, name)
