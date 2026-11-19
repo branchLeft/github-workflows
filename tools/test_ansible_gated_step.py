@@ -40,7 +40,7 @@ OWNER = "test-owner"
 OWNER_ID = "311375434"
 OTHER_ID = "311375435"
 API_URL = "https://api.example.test"
-API_TOKEN = "stub-job-token"
+JOB_AUTH = "stub-job-token"
 STEP = "migrate"
 WORD = "MIGRATE-OPS1"
 DEST = "stepper@ops1.example.test"
@@ -84,7 +84,7 @@ def base_context() -> dict[str, str]:
         "github.triggering_actor": OWNER,
         "github.actor_id": OWNER_ID,
         "github.api_url": API_URL,
-        "github.token": API_TOKEN,
+        "github.token": JOB_AUTH,
         "inputs.owner-login": OWNER,
         "inputs.owner-id": OWNER_ID,
         "inputs.step": STEP,
@@ -461,7 +461,7 @@ class RequestGuardTests(unittest.TestCase):
         calls = sandbox.curl_calls()
         self.assertEqual(len(calls), 1, calls)
         self.assertIn(f"{API_URL}/users/{OWNER}", calls[0])
-        self.assertIn(f"Authorization: Bearer {API_TOKEN}", calls[0])
+        self.assertIn(f"Authorization: Bearer {JOB_AUTH}", calls[0])
         self.assertIn("--fail", calls[0])
 
     def test_the_owner_account_id_matches_when_the_login_differs_in_case(self) -> None:
