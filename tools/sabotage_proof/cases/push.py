@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..files import ACTION, DRIFT_CHECK, GATED_APPLY
 from ..model import Case, Edit
-from ..suites import PUSH_APPLY, PUSH_APPLY_GUARD, PUSH_OFF, PUSH_PARITY, PUSH_PLAN, PUSH_VALIDATE, STRUCTURE
+from ..suites import PUSH_APPLY, PUSH_APPLY_GUARD, PUSH_OFF, PUSH_PARITY, PUSH_PLAN, PUSH_RELEASE_TAG, PUSH_VALIDATE, STRUCTURE
 from ..text import indented
 
 CASES: list[Case] = [
@@ -163,7 +163,7 @@ CASES: list[Case] = [
     ),
     Case(
         "push: the bundle drops the history",
-        [Edit(ACTION, 'bundle create "$file" HEAD', 'bundle create "$file" HEAD~1..HEAD')],
+        [Edit(ACTION, 'bundle create "$file" "${refs[@]}"', 'bundle create "$file" HEAD~1..HEAD')],
         [
             PUSH_PLAN(
                 "test_a_pushed_host_gets_check_the_commit_the_playbook_and_the_bundle_and_a_pulled_host_gets_the_commit_alone"
@@ -173,7 +173,7 @@ CASES: list[Case] = [
     ),
     Case(
         "push: the apply job's bundle drops the history",
-        [Edit(GATED_APPLY, 'bundle create "$file" HEAD', 'bundle create "$file" HEAD~1..HEAD')],
+        [Edit(GATED_APPLY, 'bundle create "$file" "${refs[@]}"', 'bundle create "$file" HEAD~1..HEAD')],
         [
             PUSH_APPLY("test_a_pushed_host_gets_apply_the_commit_the_playbook_and_a_fresh_whole_bundle_for_each_run"),
             PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
@@ -575,5 +575,61 @@ CASES: list[Case] = [
             ),
         ],
         [PUSH_OFF("test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it")],
+    ),
+    Case(
+        "push: the action leaves the release tags out of the bundle",
+        [Edit(ACTION, 'bundle create "$file" "${refs[@]}"', 'bundle create "$file" HEAD')],
+        [
+            PUSH_RELEASE_TAG("test_a_signed_release_tag_that_names_the_commit_is_in_the_bundle_and_the_receiver_admits_it"),
+            PUSH_RELEASE_TAG("test_a_tag_that_is_there_but_is_not_put_in_the_bundle_is_refused_by_the_receiver"),
+            PUSH_RELEASE_TAG("test_every_release_tag_that_names_the_commit_is_sent_and_only_those"),
+            PUSH_RELEASE_TAG("test_the_plan_step_sends_the_release_tag_in_the_bundle_to_a_pushed_host"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the action sends a release tag that names another commit",
+        [Edit(ACTION, ' && [ "$target" = "$sha" ]', "")],
+        [
+            PUSH_RELEASE_TAG("test_every_release_tag_that_names_the_commit_is_sent_and_only_those"),
+            PUSH_RELEASE_TAG("test_a_tag_for_another_commit_does_not_admit_this_one"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the action sends every tag, not only those under release/",
+        [Edit(ACTION, "%(refname)' refs/tags/release/)", "%(refname)' refs/tags/)")],
+        [
+            PUSH_RELEASE_TAG("test_every_release_tag_that_names_the_commit_is_sent_and_only_those"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the apply job leaves the release tags out of the bundle",
+        [Edit(GATED_APPLY, 'bundle create "$file" "${refs[@]}"', 'bundle create "$file" HEAD')],
+        [
+            PUSH_RELEASE_TAG("test_a_signed_release_tag_that_names_the_commit_is_in_the_bundle_and_the_receiver_admits_it"),
+            PUSH_RELEASE_TAG("test_a_tag_that_is_there_but_is_not_put_in_the_bundle_is_refused_by_the_receiver"),
+            PUSH_RELEASE_TAG("test_every_release_tag_that_names_the_commit_is_sent_and_only_those"),
+            PUSH_RELEASE_TAG("test_the_apply_step_sends_the_release_tag_in_the_bundle_to_a_pushed_host_on_both_runs"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the apply job sends a release tag that names another commit",
+        [Edit(GATED_APPLY, ' && [ "$target" = "$sha" ]', "")],
+        [
+            PUSH_RELEASE_TAG("test_every_release_tag_that_names_the_commit_is_sent_and_only_those"),
+            PUSH_RELEASE_TAG("test_a_tag_for_another_commit_does_not_admit_this_one"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the apply job sends every tag, not only those under release/",
+        [Edit(GATED_APPLY, "%(refname)' refs/tags/release/)", "%(refname)' refs/tags/)")],
+        [
+            PUSH_RELEASE_TAG("test_every_release_tag_that_names_the_commit_is_sent_and_only_those"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
     ),
 ]
