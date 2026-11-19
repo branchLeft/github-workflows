@@ -14,7 +14,9 @@ import sys
 from typing import NamedTuple
 
 ROOT_STACK_TYPE = "pulumi:pulumi:Stack"
+STACK_REFERENCE_TYPE = "pulumi:pulumi:StackReference"
 SAME = "same"
+READ = "read"
 MAX_DEPTH = 500
 
 # The keys each level of the two files may carry: those seen in a real plan and
@@ -46,6 +48,16 @@ GOAL_KEYS = frozenset(
 # What one entry of a goal's `structuredAliases` may carry: the engine's alias fields, strings and one boolean.
 ALIAS_STRING_KEYS = frozenset({"URN", "Name", "Type", "Project", "Stack", "Parent"})
 ALIAS_KEYS = ALIAS_STRING_KEYS | {"NoParent"}
+
+# What the new state of a StackReference `read` step may carry: the keys of a real preview of a
+# program that holds one (plan-has-changes.md), plus the `outputs` the engine copies in once the
+# referenced stack has been read. Anything else is not a read this script understands.
+READ_STATE_KEYS = frozenset(
+    {"urn", "custom", "id", "type", "inputs", "outputs", "parent", "provider", "external", "sourcePosition", "stackTrace"}
+)
+# The severities of a diagnostic that is not an error. A preview that failed carries an `error`
+# one, and its step list is then incomplete; the others report and change nothing.
+QUIET_SEVERITIES = frozenset({"info", "info#err", "warning"})
 
 # A `same` step that carries any of these, non-empty, is not a no-op.
 STEP_DIFF_KEYS = ("detailedDiff", "diffReasons", "replaceReasons")
@@ -90,6 +102,7 @@ class Preview(NamedTuple):
     root: Urn
     new_states: dict[str, dict[str, object]]
     root_outputs: dict[str, object]
+    reads: frozenset[str] = frozenset()
 
 
 NO_CHANGES = Verdict(False, 0, "no-changes")
@@ -301,6 +314,49 @@ def _same_step_differs(urn: Urn, step: dict[str, object]) -> bool:
     return bool(_same_step_differences(urn, step))
 
 
+def _is_clean_read(op: str, urn: Urn, step: dict[str, object]) -> bool:
+    """Whether a step is the read of a StackReference, which changes nothing.
+
+    A StackReference is read on every run to resolve another stack's outputs: it creates,
+    updates and deletes nothing, in this stack or the other. Only that type, and only the
+    shape a real preview gives it, counts: any other `read`, or a StackReference step that
+    carries a diff, a flag, an odd key or a type that is not its URN's, is a change."""
+    if op != READ or urn.type != STACK_REFERENCE_TYPE:
+        return False
+    _check_keys(step, STEP_KEYS, "preview-shape", "preview step")
+    if any(_evidence(step.get(key)) for key in STEP_DIFF_KEYS):
+        return False
+    new, old = step.get("newState"), step.get("oldState")
+    if not isinstance(new, dict) or not (old is None or isinstance(old, dict)):
+        return False
+    if set(new) - READ_STATE_KEYS or any(new.get(key) for key in FLAG_STATE_KEYS):
+        return False
+    if new.get("type") != STACK_REFERENCE_TYPE or new.get("custom") is not True or new.get("external") is not True:
+        return False
+    return old is None or old.get("type") == STACK_REFERENCE_TYPE
+
+
+def _diagnostics_are_quiet(diagnostics: object) -> bool:
+    """Whether the preview's diagnostics are absent or only warnings and notices.
+
+    Called only for a preview that lists no changing step: a failed preview has an `error`
+    diagnostic, and that never passes."""
+    if diagnostics is None:
+        return True
+    if not isinstance(diagnostics, list):
+        return False
+    return all(isinstance(d, dict) and d.get("severity") in QUIET_SEVERITIES and isinstance(d.get("message"), str) for d in diagnostics)
+
+
+def _check_diagnostics(doc: dict[str, object]) -> None:
+    """A preview with no changing step passes only with quiet diagnostics; the detail names severities, never messages."""
+    diagnostics = doc.get("diagnostics")
+    if _diagnostics_are_quiet(diagnostics):
+        return
+    found = {str(d["severity"]) for d in diagnostics if isinstance(d, dict) and isinstance(d.get("severity"), str)} if isinstance(diagnostics, list) else set()
+    raise Unclear("preview-diagnostics", f"severity: {_names(found)}" if found else "")
+
+
 def _preview_steps(doc: dict[str, object]) -> list[tuple[str, Urn, dict[str, object]]]:
     steps = doc.get("steps")
     if not isinstance(steps, list) or not steps:
@@ -314,12 +370,13 @@ def _preview_steps(doc: dict[str, object]) -> list[tuple[str, Urn, dict[str, obj
     return found
 
 
-def _summary_verdict(doc: dict[str, object], same_steps: int) -> Verdict | None:
-    """The change summary must count nothing but `same`, and at least the `same` steps listed."""
+def _summary_verdict(doc: dict[str, object], same_steps: int, reads: int = 0) -> Verdict | None:
+    """The change summary must count nothing but `same` (and no more `read` than the clean reads listed), and at least the `same` steps listed."""
     summary = _as_dict(doc.get("changeSummary"), "preview-shape")
     for value in summary.values():
         _require(_is_count(value), "preview-shape")
-    changed = max((int(v) for k, v in summary.items() if k != SAME and isinstance(v, int)), default=0)
+    counted = ((k, int(v)) for k, v in summary.items() if k != SAME and isinstance(v, int))
+    changed = max((v for k, v in counted if not (k == READ and v <= reads)), default=0)
     if changed:
         return Verdict(True, changed, "summary-changed")
     same_count = summary.get(SAME, 0)
@@ -332,7 +389,9 @@ def _preview_verdict(path: str) -> tuple[Verdict | None, Preview | None]:
     else (None, what the plan is checked against)."""
     doc = _as_dict(_load(path, "preview-unreadable"), "preview-shape")
     _check_keys(doc, PREVIEW_KEYS, "preview-shape", "preview")
-    steps = _preview_steps(doc)
+    listed = _preview_steps(doc)
+    reads = [(op, urn, entry) for op, urn, entry in listed if _is_clean_read(op, urn, entry)]
+    steps = [step for step in listed if step not in reads]
     ops = [op for op, _, _ in steps if op != SAME]
     if ops:
         return Verdict(True, len(ops), "steps-changed", f"step operation(s): {_names(set(ops))}"), None
@@ -345,13 +404,12 @@ def _preview_verdict(path: str) -> tuple[Verdict | None, Preview | None]:
         types = {_leaf_type(urn) for urn, _ in differing}
         detail = f"unchanged-looking step(s) differ on: {_names(keys)}; resource type(s): {_names(types)}"
         return Verdict(True, len(differing), "steps-changed", detail), None
-    urns = [urn for _, urn, _ in steps]
+    urns = [urn for _, urn, _ in listed]
     if not _has_one_root(urns):
         return Verdict(True, 0, "no-root-stack"), None
     _require("config" not in doc or isinstance(doc["config"], dict), "preview-shape")
     _require("duration" not in doc or _is_count(doc["duration"]), "preview-shape")
-    diagnostics = doc.get("diagnostics")
-    _require(diagnostics is None or (isinstance(diagnostics, list) and not diagnostics), "preview-diagnostics")
+    _check_diagnostics(doc)
     corrupt = doc.get("maybeCorrupt")
     _require(corrupt is None or corrupt is False, "preview-shape")
     states = {str(entry["urn"]): entry["newState"] for _, _, entry in steps}
@@ -359,7 +417,9 @@ def _preview_verdict(path: str) -> tuple[Verdict | None, Preview | None]:
     root_old = next(entry["oldState"] for _, urn, entry in steps if urn == root)
     outputs = root_old.get("outputs", {})  # type: ignore[union-attr]
     _require(isinstance(outputs, dict), "preview-shape")
-    return _summary_verdict(doc, len(steps)), Preview(root, states, outputs)
+    return _summary_verdict(doc, len(steps), len(reads)), Preview(
+        root, states, outputs, frozenset(str(entry["urn"]) for _, _, entry in reads)
+    )
 
 
 def _diff_size(diff: object) -> int:
@@ -375,12 +435,12 @@ def _diff_size(diff: object) -> int:
     return total
 
 
-def _planned_steps(entry: dict[str, object]) -> int:
-    """How many of an entry's planned steps are not `same`; absent or empty is Unclear."""
+def _planned_steps(entry: dict[str, object], quiet: frozenset[str] = frozenset({SAME})) -> int:
+    """How many of an entry's planned steps are not `same` (or another quiet op); absent or empty is Unclear."""
     steps = entry.get("steps")
     _require(isinstance(steps, list) and bool(steps), "plan-shape")
     _require(all(isinstance(op, str) for op in steps), "plan-shape")  # type: ignore[union-attr]
-    return sum(1 for op in steps if op != SAME)  # type: ignore[union-attr]
+    return sum(1 for op in steps if op not in quiet)  # type: ignore[union-attr]
 
 
 def _parent_is_clean(urn: Urn, goal: dict[str, object], plan_urns: dict[str, object]) -> bool:
@@ -499,6 +559,10 @@ def _entry_changes(
 ) -> tuple[int, int]:
     """(output changes, other changes) for one planned resource."""
     _note(findings, "unrecognised plan entry key(s)", set(entry) - ENTRY_KEYS)
+    if _urn_text(urn) in preview.reads:
+        # A StackReference the preview lists as a clean read: it has no goal to compare, and a
+        # step of it other than `same` or `read` is still a change.
+        return 0, _planned_steps(entry, frozenset({SAME, READ}))
     other = _planned_steps(entry)
     _require("seed" not in entry or isinstance(entry["seed"], str), "plan-shape")
     _require("state" not in entry or isinstance(entry["state"], dict), "plan-shape")
