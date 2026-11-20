@@ -323,6 +323,12 @@ no_npx_case "npx missing, markdown in scope, warn: still fails with fixed messag
 no_npx_case "npx missing, no markdown in scope: markdownlint off, passes" \
   "fixture.sh" enforce 0 no
 
+# HTML design files: DL001 scans every raw line of a .html file.
+case_file "html: a forbidden name in a .html design fails enforce with DL001" \
+  "fixture.html" "<!doctype html><p>Rob decides this design.</p>" DL001 yes 1
+case_file "html: a clean .html design passes enforce" \
+  "fixture.html" "<!doctype html><p>The platform owner decides.</p>" DL001 no 0
+
 echo
 echo "docs-lint.test.sh: $PASS passed, $FAIL failed"
 [ "$FAIL" = "0" ]
