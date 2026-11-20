@@ -224,6 +224,49 @@ def build_cases() -> list[Case]:
             [f"{RG}.test_a_rerun_by_another_actor_is_refused"],
             [f"{SG}.test_another_actor_or_a_rerun_by_another_actor_is_refused"],
         ),
+        # W5b the dispatcher has the owner's numeric id.
+        *both_sites(
+            '[ "$ACTOR_ID" = "$OWNER_ID" ] ||',
+            "W5b the dispatcher's id test is dropped",
+            [f"{RG}.test_an_actor_with_the_right_login_and_the_wrong_id_is_refused"],
+            [f"{SG}.test_a_wrong_or_unset_owner_id_is_refused_by_the_send_job_too"],
+        ),
+        *both_sites(
+            '[ "$triggering_id" = "$OWNER_ID" ] ||',
+            "W5b the run starter's id test is dropped",
+            [f"{RG}.test_a_rerun_by_a_login_that_now_belongs_to_another_id_is_refused"],
+            [f"{SG}.test_a_wrong_or_unset_owner_id_is_refused_by_the_send_job_too"],
+        ),
+        Case(
+            "W5b the integer test of the three ids is dropped, in the guard job",
+            [
+                Edit(STEP, '[[ "$OWNER_ID" =~ $id_re ]] ||', "true ||", 2, 1),
+                Edit(STEP, '[[ "$ACTOR_ID" =~ $id_re ]] ||', "true ||", 2, 1),
+                Edit(STEP, '[[ "$triggering_id" =~ $id_re ]] ||', "true ||", 2, 1),
+            ],
+            [f"{RG}.test_an_owner_id_that_is_unset_or_not_a_plain_integer_refuses_every_dispatch"],
+        ),
+        Case(
+            "W5b the integer test of the three ids is dropped, in the send job",
+            [
+                Edit(STEP, '[[ "$OWNER_ID" =~ $id_re ]] ||', "true ||", 2, 2),
+                Edit(STEP, '[[ "$ACTOR_ID" =~ $id_re ]] ||', "true ||", 2, 2),
+                Edit(STEP, '[[ "$triggering_id" =~ $id_re ]] ||', "true ||", 2, 2),
+            ],
+            [f"{SG}.test_a_wrong_or_unset_owner_id_is_refused_by_the_send_job_too"],
+        ),
+        *both_sites(
+            'triggering_id=$(curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API_URL/users/$TRIGGERING_ACTOR" | jq -r \'.id // empty\') || fail "The id of the account that started this run could not be read."',
+            "W5b the run starter's id is taken from the dispatcher, not read",
+            [f"{RG}.test_a_rerun_by_a_login_that_now_belongs_to_another_id_is_refused"],
+            [f"{SG}.test_a_wrong_or_unset_owner_id_is_refused_by_the_send_job_too"],
+        ),
+        step(
+            "          Unset, empty or not a plain integer, every dispatch is refused.\n        type: string\n        required: false\n        default: ''",
+            "          Unset, empty or not a plain integer, every dispatch is refused.\n        type: string\n        required: false\n        default: '1'",
+            [f"{STRUCT}.test_the_owner_id_is_an_optional_string_input_that_defaults_to_empty"],
+            "W5b the owner-id input has a default",
+        ),
         *both_sites(
             '[[ "$OWNER" =~ $owner_re ]] ||',
             "the owner-login pattern is dropped",

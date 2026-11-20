@@ -27,7 +27,8 @@ does the send job read the step key.
 The guard refuses unless all of these hold: the event is `workflow_dispatch`; the
 ref is the default branch; the repository is not a fork; the commit is 40
 lowercase hex digits; `github.actor` and `github.triggering_actor` both equal
-`owner-login` (case folded); the step is `[a-z][a-z0-9_]{0,31}`; the word is
+`owner-login` (case folded) and both have the numeric account id `owner-id`, which
+must be a plain integer or every dispatch is refused; the step is `[a-z][a-z0-9_]{0,31}`; the word is
 `[A-Z0-9-]{4,32}`; and the host's inventory file at that commit lists the step
 exactly once with that word. It then prints three lines to the log and to the job
 summary, which is the plan for a step: `commit SHA`, `step ID` and `input PATH
@@ -74,6 +75,7 @@ jobs:
       step: ${{ inputs.step }}
       confirm: ${{ inputs.confirm }}
       owner-login: ${{ vars.STEP_OWNER_LOGIN }}
+      owner-id: ${{ vars.STEP_OWNER_ID }}
       step-inventory: ansible/owner_vars/ops1.yml
       step-inputs: |
         migrate=ansible/owner_vars/ops1.yml
@@ -89,6 +91,7 @@ pull request.
 | `environment` | The deployment environment, default `control-plane-step` |
 | `step`, `confirm` | The typed step id and word |
 | `owner-login` | The one account that may dispatch |
+| `owner-id` | That account's numeric id, which a re-registered login cannot take; unset, empty or not a plain integer, every dispatch is refused |
 | `step-inventory` | The host's inventory file holding `pull_trigger_steps` |
 | `step-inputs` | Optional `id=path` lines: the committed input each step compares, hashed for the approver |
 | `host-timeout-minutes`, `send-timeout-minutes` | Limits, default 65 and 140 |
@@ -114,7 +117,9 @@ None of this is done by this workflow or by an agent. The host half is in the
 3. Create the environment `control-plane-step` with the owner as its only required
    reviewer and deployment limited to the default branch, and store
    `ssh_step_host` in it.
-4. Set the repository variable `STEP_OWNER_LOGIN` to the owner's GitHub account.
+4. Set the repository variable `STEP_OWNER_LOGIN` to the owner's GitHub account,
+   and `STEP_OWNER_ID` to its numeric id (`gh api users/LOGIN --jq .id`). Set both
+   before the caller is merged: with `STEP_OWNER_ID` unset the guard refuses.
 5. Merge the caller, pinned to a tag of this repository.
 
 ## Controls, and how each is shown to fail
@@ -130,6 +135,7 @@ green. The self-test workflow runs it on every pull request.
 | W3 only the default branch | dropping the ref test | `RequestGuardTests` |
 | W4 the step and the word are shaped | dropping either pattern | `RequestGuardTests`, `SendGuardTests` |
 | W5 the dispatcher is the owner | dropping the actor test | `RequestGuardTests`, `SendGuardTests` |
+| W5b the dispatcher has the owner's id | dropping either id comparison or the integer test | `RequestGuardTests`, `SendGuardTests` |
 | W6 the answer is a `mode=step` line for this step | accepting another mode, no `step=` or another id | `SendTests` |
 | W7 one host | accepting two lines in `ssh_step_host` | `SendTests` |
 | W8 the key is removed on every exit | deleting the trap | `SendTests` |
@@ -149,5 +155,8 @@ green. The self-test workflow runs it on every pull request.
   value inside it. For `migrate` that file holds the image digest the step uses.
 - A step that is not idempotent fails the second request. That is the intent: the
   first request's effect stays, and the run is red.
-- The actor check trusts the `owner-login` the caller passes, which is reviewed in
-  the caller's pull request.
+- The actor check trusts the `owner-login` and `owner-id` the caller passes, which
+  are reviewed in the caller's pull request.
+- The id of `github.triggering_actor` has no context of its own: the guard reads it
+  from the users endpoint of the API, by that login, with the job's token, and a
+  failed or empty read refuses. It is the id the login holds at that moment.
