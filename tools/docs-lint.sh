@@ -96,6 +96,14 @@ for scope in md code; do
     "$ext" "story, backlog or standards-gap id; describe the change, not the ticket"
 done
 
+# HTML design files get the name and gating rules only, over every line: an
+# HTML file has no fenced blocks to blank, and a person's name in a design is
+# the same leak whether it sits in prose, a comment or an attribute.
+run_rule DL002 "$HTML_FILES" "$GATE_MATCH" "" raw_scannable \
+  "process gating names a person; use a role (platform owner / repo admin / operator)"
+run_rule DL001 "$HTML_FILES" "$NAME_MATCH" "$GATE_MATCH" raw_scannable \
+  "names a person; state the decision itself, or use a role noun"
+
 run_rule DL004 "$MD_FILES" '^\*\*Status:\*\*' "" md_scannable \
   "status header; a committed document is the current description of the thing"
 run_rule DL005 "$MD_FILES" '~~|\b[Ss]upersed(ed|es|ing)\b|\bstruck through\b' "" md_scannable \
