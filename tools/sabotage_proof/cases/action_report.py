@@ -135,7 +135,7 @@ CASES: list[Case] = [
     ),
     Case(
         "ssh in the apply takes the host list from its own input",
-        [Edit(GATED_APPLY, '-- "$dest" "$SHA" < /dev/null 2> /dev/null)', '-- "$dest" "$SHA" 2> /dev/null)')],
+        [Edit(GATED_APPLY, '-- "$dest" "$SHA" < /dev/null 2> "$errfile")', '-- "$dest" "$SHA" 2> "$errfile")')],
         [APPLY("test_every_planned_host_is_applied_and_checked_again_when_the_call_reads_its_standard_input")],
     ),
     Case(
@@ -242,7 +242,7 @@ CASES: list[Case] = [
                 GATED_APPLY,
                 indented(
                     r"""
-                    trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.*' EXIT
+                    trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/host.err" "$work/keylines"' EXIT
                     """,
                     10,
                 ),
@@ -258,7 +258,7 @@ CASES: list[Case] = [
                 GATED_APPLY,
                 indented(
                     r"""
-                    trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.*' EXIT
+                    trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/host.err" "$work/keylines"' EXIT
                     """,
                     10,
                 ),
