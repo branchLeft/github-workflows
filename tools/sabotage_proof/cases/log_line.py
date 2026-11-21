@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ..files import ACTION
+from ..files import ACTION, SCAN
 from ..model import Case, Edit
 from ..suites import PLAN, REPORT_LOG
 from ..text import indented
@@ -24,9 +24,10 @@ CASES: list[Case] = [
         "log line: the text a pattern matched is printed with the pattern name",
         [
             Edit(
-                ACTION,
-                'hits="${hits:+$hits, }$name"\n',
-                'hits="${hits:+$hits, }$name $(grep -Eio -e "$regex" "$cleaned" | head -n 1)"\n',
+                SCAN,
+                "        if matches(compiled, scanned if name == ASSIGNMENT else lines):\n            hits.append(name)\n",
+                "        found = next((m for line in (scanned if name == ASSIGNMENT else lines) if (m := compiled.search(line))), None)\n"
+                '        if found:\n            hits.append(f"{name} {found.group(0)}")\n',
             ),
         ],
         [
@@ -231,7 +232,7 @@ CASES: list[Case] = [
     ),
     Case(
         "log line: the failed task's note prints the host's output line, not the TASK header",
-        [Edit(ACTION, 'if (t != "") print substr(t, 1, 160); exit', 'if (t != "") print $0; exit')],
+        [Edit(SCAN, "return task[:TASK_LIMIT]", "return line")],
         [PLAN("test_a_failed_host_log_line_names_the_task_that_failed_and_none_of_its_output")],
     ),
 ]
