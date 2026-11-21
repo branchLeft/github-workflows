@@ -29,8 +29,8 @@ Scope is `md` (markdown, fenced code blocks excluded), `code` (comment lines onl
 | ID | Scope | Catches | Fix |
 |---|---|---|---|
 | DL000 | both | A suppression comment with no rule id or no reason | Write `docs-lint-disable-next-line DL006 <why>` |
-| DL001 | both | `Rob`, `Rob's`, `Robert` | State the decision itself, or use a role noun |
-| DL002 | both | `Rob-only`, `Rob-gated` | Use the role: platform owner, repo admin, operator |
+| DL001 | both, plus `.html` design files (raw lines) | `Rob`, `Rob's`, `Robert` | State the decision itself, or use a role noun |
+| DL002 | both, plus `.html` design files (raw lines) | `Rob-only`, `Rob-gated` | Use the role: platform owner, repo admin, operator |
 | DL004 | md | `**Status:**` headers | Delete. A committed document is the current description of the thing |
 | DL005 | md | `~~`, `superseded/supersedes/superseding`, `struck through` | Delete the old thing, describe the new one |
 | DL006 | md | Bolded or parenthesised ISO dates, `verified live <date>`, `As of <date>`, `Applied <date>` | Delete. History lives in `git log` and the PR |

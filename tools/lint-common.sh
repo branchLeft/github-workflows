@@ -78,13 +78,20 @@ lint_resolve_mode() { # mode-file mode-override
 lint_classify_files() {
   grep -E '\.(md|mdx)$' "$ALL_FILES" > "$TMPDIR_LINT/md" 2>/dev/null
   grep -E '\.(ts|tsx|js|jsx|mjs|cjs|py|sh|bash|ya?ml|tf)$' "$ALL_FILES" > "$TMPDIR_LINT/code" 2>/dev/null
-  : > "$TMPDIR_LINT/md.exists"; : > "$TMPDIR_LINT/code.exists"
+  # HTML design files: a separate class, because markdownlint and the
+  # markdown-structure rules do not apply to them. Only the name and gating
+  # rules run over this class (docs-lint.sh).
+  grep -E '\.html$' "$ALL_FILES" > "$TMPDIR_LINT/html" 2>/dev/null
+  : > "$TMPDIR_LINT/md.exists"; : > "$TMPDIR_LINT/code.exists"; : > "$TMPDIR_LINT/html.exists"
   while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done < "$TMPDIR_LINT/md"   > "$TMPDIR_LINT/md.exists"
   while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done < "$TMPDIR_LINT/code" > "$TMPDIR_LINT/code.exists"
+  while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done < "$TMPDIR_LINT/html" > "$TMPDIR_LINT/html.exists"
   mv "$TMPDIR_LINT/md.exists" "$TMPDIR_LINT/md"
   mv "$TMPDIR_LINT/code.exists" "$TMPDIR_LINT/code"
+  mv "$TMPDIR_LINT/html.exists" "$TMPDIR_LINT/html"
   MD_FILES="$TMPDIR_LINT/md"
   CODE_FILES="$TMPDIR_LINT/code"
+  HTML_FILES="$TMPDIR_LINT/html"
 }
 
 # ---------------------------------------------------------------------------
