@@ -600,6 +600,8 @@ def run_action(
         "GITHUB_OUTPUT": str(output_file),
         "GITHUB_STEP_SUMMARY": str(summary_file),
         "GITHUB_WORKSPACE": str(REPO),
+        # Where the runner puts the action's own files: the report step reads its scan script from here.
+        "GITHUB_ACTION_PATH": str(ACTION.parent),
         "SSH_ARGV_LOG": str(fixture.argv_log),
     }
     fixture.argv_log.write_text("")
