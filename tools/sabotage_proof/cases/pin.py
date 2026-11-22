@@ -64,7 +64,7 @@ CASES: list[Case] = [
     Case(
         "verify step checks only that HEAD is non-empty",
         [
-            Edit(GATED_APPLY, '[ "$head" = "$PINNED_SHA" ] || fail', '[ -n "$head" ] || fail'),
+            Edit(GATED_APPLY, '[ "$head" = "$PINNED_SHA" ] || fail', '[ -n "$head" ] || fail', count=2),
             Edit(DRIFT_CHECK, '[ "$head" = "$PINNED_SHA" ] || fail', '[ -n "$head" ] || fail'),
         ],
         [PIN("test_the_checkout_must_be_exactly_the_pinned_commit_and_hold_the_action")],
@@ -72,7 +72,7 @@ CASES: list[Case] = [
     Case(
         "existence check pointed at another path",
         [
-            Edit(GATED_APPLY, '[ -e "$GITHUB_WORKSPACE/.gw" ]', '[ -e "$GITHUB_WORKSPACE/.gwx" ]'),
+            Edit(GATED_APPLY, '[ -e "$GITHUB_WORKSPACE/.gw" ]', '[ -e "$GITHUB_WORKSPACE/.gwx" ]', count=2),
             Edit(DRIFT_CHECK, '[ -e "$GITHUB_WORKSPACE/.gw" ]', '[ -e "$GITHUB_WORKSPACE/.gwx" ]'),
         ],
         [PIN("test_a_path_the_caller_already_holds_is_refused")],

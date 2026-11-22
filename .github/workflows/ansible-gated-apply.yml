@@ -701,6 +701,7 @@ jobs:
     outputs:
       has_changes: ${{ steps.ssh.outputs.has-changes }}
       sha: ${{ steps.guard.outputs.sha }}
+      shared_sha: ${{ steps.pin.outputs.sha }}
       hosts_digest: ${{ steps.ssh.outputs.hosts-digest }}
       push_hosts_digest: ${{ steps.ssh.outputs.push-hosts-digest }}
       jump2_hosts_digest: ${{ steps.ssh.outputs.jump2-hosts-digest }}
@@ -1037,6 +1038,50 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The shared actions are checked out for one file: the script that reads the output of a host
+      # whose playbook failed and names its failed task. The commit is the one the plan job resolved
+      # from the run record and verified, so this job takes no new trust and reads no run record. An
+      # empty or malformed value is refused here, because an empty ref would make the checkout take
+      # the default branch. It comes after the caller's own checkout, which would clean the path.
+      - name: Take the commit of the shared actions the plan resolved
+        id: shared
+        env:
+          PLANNED_SHARED_SHA: ${{ needs.plan.outputs.shared_sha }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          sha_re='^[0-9a-f]{40}$'
+          [[ "$PLANNED_SHARED_SHA" =~ $sha_re ]] || fail "The plan resolved no commit of the shared actions that is 40 lowercase hex digits. Refusing to fall back to the default branch."
+          if [ -e "$GITHUB_WORKSPACE/.gw" ] || [ -L "$GITHUB_WORKSPACE/.gw" ]; then
+            fail "The path .gw already exists in the workspace, so the shared actions cannot be checked out into a clean directory."
+          fi
+          echo "sha=$PLANNED_SHARED_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Check out the shared actions at that commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: branchLeft/github-workflows
+          ref: ${{ steps.shared.outputs.sha }}
+          path: .gw
+          persist-credentials: false
+
+      - name: Verify the checkout is that commit
+        env:
+          PINNED_SHA: ${{ steps.shared.outputs.sha }}
+        run: |
+          set -euo pipefail
+          fail() {
+            echo "::error::$1"
+            exit 1
+          }
+          head=$(git -C "$GITHUB_WORKSPACE/.gw" rev-parse HEAD)
+          [ "$head" = "$PINNED_SHA" ] || fail "The shared actions are at $head, not at the commit $PINNED_SHA this workflow was called at."
+          [ -f "$GITHUB_WORKSPACE/.gw/.github/actions/ssh-check-hosts/action.yml" ] || fail "The checkout holds no ssh-check-hosts action."
+          echo "The shared actions are at $head."
+
       - name: Apply on each host, then run it again to prove nothing is left to change
         env:
           HOSTS: ${{ secrets.ssh_hosts }}
@@ -1156,8 +1201,21 @@ jobs:
           work="$RUNNER_TEMP/ansible-apply"
           mkdir "$work"
           # The key copies go on every way out of the step, a refusal included.
-          trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.*' EXIT
+          trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/host.err" "$work/keylines"' EXIT
           (umask 077 && printf '%s\n' "$SSH_KEY" > "$work/id" && printf '%s\n' "$KNOWN_HOSTS" > "$work/known_hosts")
+          # What a host writes to standard error goes to this private file and nowhere else. It is
+          # read only by the scan script, and only for a host whose playbook failed; it is never
+          # printed, uploaded or kept. The lines of the keys are copied beside it so that output that
+          # quotes one is caught, as in the ssh-check-hosts action. Both go on every way out.
+          errfile="$work/host.err"
+          keylines="$work/keylines"
+          (umask 077 && : > "$errfile" && : > "$keylines")
+          if [ -n "$SSH_KEY" ]; then
+            printf '%s\n' "$SSH_KEY" | awk 'length($0) >= 16 && $0 !~ /^-----/' > "$keylines"
+          fi
+          if [ -n "$HOST_KEYS" ]; then
+            jq -n -r '($ENV.HOST_KEYS | fromjson) | .[] | gsub("\r"; "") | split("\n")[]' | awk 'length($0) >= 16 && $0 !~ /^-----/' >> "$keylines"
+          fi
           # A host with an entry in the host keys reads its key from id.NN, NN being
           # its place in the hosts list; every other host reads id. The files are
           # private, the trap above removes them, and each line of a key is masked.
@@ -1206,7 +1264,7 @@ jobs:
             # again, with the jump files, before either file exists. This stanza is
             # a copy of the one in the ssh-check-hosts action; a test holds the two
             # equal.
-            trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/jump_id" "$work/jump_config"' EXIT
+            trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/host.err" "$work/keylines" "$work/jump_id" "$work/jump_config"' EXIT
             (
               umask 077
               printf '%s\n' "$JUMP_KEY" > "$work/jump_id"
@@ -1230,7 +1288,7 @@ jobs:
             # The second hop. A copy of the block in the ssh-check-hosts action
             # (the key file is jump2_id there too); a test holds the two equal.
             if [ -n "$JUMP2_HOST" ]; then
-              trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/jump_id" "$work/jump_config" "$work/jump2_id"' EXIT
+              trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/host.err" "$work/keylines" "$work/jump_id" "$work/jump_config" "$work/jump2_id"' EXIT
               (
                 umask 077
                 printf '%s\n' "$JUMP2_KEY" > "$work/jump2_id"
@@ -1298,18 +1356,38 @@ jobs:
             make_bundle "$push_bundle" "$SHA"
           fi
 
+          scan_script="$GITHUB_WORKSPACE/.gw/.github/actions/ssh-check-hosts/host_output_scan.py"
+          # Only letters, digits, space and _ . / : ; , ( ) = - reach the log; any other
+          # character becomes a question mark, as in the ssh-check-hosts action.
+          plain() {
+            printf '%s' "$1" | tr -c 'A-Za-z0-9 _./:;,()=-' '?'
+          }
+          # A host name is a secret: the destination and both jump hosts are replaced in a value
+          # taken from a host before it is printed. Arguments: the text, then each name to hide.
+          redact() {
+            local text="$1" hidden
+            shift
+            for hidden in "$@"; do
+              if [ -n "$hidden" ]; then
+                text=${text//"$hidden"/a host name}
+              fi
+            done
+            printf '%s' "$text"
+          }
+
           # Run one request and require the answer to be one of the accepted
           # kinds. Arguments: host number, destination, label, then the accepted
-          # answers as "exit:verdict" words. The playbook output is dropped: it
-          # is on the host, and the job log is public. A pulled host's call takes
-          # its input from /dev/null: the host loop below reads the host list from
-          # its own standard input, and ssh would swallow the hosts after the
-          # first. A pushed host's call takes the bundle from its file, from the
-          # start, so the second run gets a fresh stream.
+          # answers as "exit:verdict" words. The playbook output is never printed: it
+          # is on the host, and the job log is public. It goes to a private file, which is
+          # read only when a playbook failed, and then only for the name of the task that
+          # failed. A pulled host's call takes its input from /dev/null: the host loop
+          # below reads the host list from its own standard input, and ssh would swallow
+          # the hosts after the first. A pushed host's call takes the bundle from its
+          # file, from the start, so the second run gets a fresh stream.
           ask() {
             local num="$1" dest="$2" label="$3" route=pull
             shift 3
-            local rc=0 out line accepted ok=1 matched=no f_verdict="" f_exit="" f_reason="" f_commit="" f_changed="" f_floor="" why=""
+            local rc=0 out line accepted ok=1 matched=no f_verdict="" f_exit="" f_reason="" f_commit="" f_changed="" f_floor="" why="" scan_out scan_hits scan_task playbook detail
             if [ -n "$PUSH_HOSTS" ] && grep -qxF -- "$dest" <<< "$PUSH_HOSTS"; then
               route=push
             fi
@@ -1325,9 +1403,9 @@ jobs:
               identity="$work/id.$(printf '%02d' "$num")"
             fi
             if [ "$route" = push ]; then
-              out=$(ssh_via "$chain" "${HOST_TIMEOUT_MINUTES}m" "$identity" -- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle" 2> /dev/null) || rc=$?
+              out=$(ssh_via "$chain" "${HOST_TIMEOUT_MINUTES}m" "$identity" -- "$dest" "apply $SHA $PUSH_PLAYBOOK" < "$push_bundle" 2> "$errfile") || rc=$?
             else
-              out=$(ssh_via "$chain" "${HOST_TIMEOUT_MINUTES}m" "$identity" -- "$dest" "$SHA" < /dev/null 2> /dev/null) || rc=$?
+              out=$(ssh_via "$chain" "${HOST_TIMEOUT_MINUTES}m" "$identity" -- "$dest" "$SHA" < /dev/null 2> "$errfile") || rc=$?
             fi
             line=$(printf '%s\n' "$out" | tr -d '\r' | head -n 1)
             if [ "$rc" = 255 ]; then
@@ -1366,7 +1444,31 @@ jobs:
               fi
             done
             if [ "$ok" -ne 0 ] || [ "$f_changed" = - ] || { [ "$f_verdict" = unchanged ] && [ "$f_changed" != 0 ]; }; then
-              why="verdict $f_verdict, reason $f_reason, exit $rc."
+              why="verdict $f_verdict, reason $f_reason, exit $rc"
+              # A failed playbook is named, with the task that failed. The task is the last TASK
+              # header before the first fatal line of the output, read by the script, and only when
+              # the script found no secret pattern in the output; a hit gives the pattern names and
+              # no task. Nothing else of the output is read. The playbook is the path the one
+              # accepted summary line holds, which its pattern bounds.
+              if [ "$f_reason" = playbook-failed ]; then
+                scan_out=""
+                if [ -s "$errfile" ]; then
+                  scan_out=$(python3 "$scan_script" "$errfile" --keylines "$keylines" 2> /dev/null) || scan_out=""
+                fi
+                scan_hits=$(printf '%s\n' "$scan_out" | sed -n 's/^hits=//p')
+                scan_task=$(printf '%s\n' "$scan_out" | sed -n 's/^task=//p')
+                playbook="${line##* playbook=}"
+                playbook="${playbook%% *}"
+                detail=""
+                if [ -n "$scan_hits" ] && [ "$scan_hits" != none ]; then
+                  detail="; scan-hits=$scan_hits"
+                elif [ -n "$scan_task" ]; then
+                  detail=", task $(redact "$scan_task" "$JUMP2_HOST" "${JUMP2_HOST#*@}" "$JUMP_HOST" "${JUMP_HOST#*@}" "$dest" "${dest#*@}")"
+                fi
+                why="$why$(plain "$detail; playbook=$(redact "$playbook" "$JUMP2_HOST" "${JUMP2_HOST#*@}" "$JUMP_HOST" "${JUMP_HOST#*@}" "$dest" "${dest#*@}")")"
+                : > "$errfile"
+              fi
+              why="$why."
               # A refusal of an older commit names both commits, so the log says what was
               # refused and what the host holds. Only a floor that matched 40 lowercase hex
               # digits is ever printed; the host's journal holds it when the line has none.
@@ -1380,6 +1482,7 @@ jobs:
               fi
               fail "Host $num, $label: $why"
             fi
+            : > "$errfile"
             REPLY_VERDICT="$f_verdict"
           }
 

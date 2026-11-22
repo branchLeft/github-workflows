@@ -301,6 +301,8 @@ class Sandbox:
             "GITHUB_OUTPUT": str(self.output),
             "GITHUB_STEP_SUMMARY": str(self.summary),
             "GITHUB_WORKSPACE": str(REPO),
+            # Where the runner puts the action's own files, the scan script among them.
+            "GITHUB_ACTION_PATH": str(ACTION.parent),
             "STUB_DIR": str(self.stubs),
             **(extra or {}),
             **values,
@@ -565,6 +567,7 @@ class StructureTests(unittest.TestCase):
             {
                 "has_changes": "${{ steps.ssh.outputs.has-changes }}",
                 "sha": "${{ steps.guard.outputs.sha }}",
+                "shared_sha": "${{ steps.pin.outputs.sha }}",
                 "hosts_digest": "${{ steps.ssh.outputs.hosts-digest }}",
                 "push_hosts_digest": "${{ steps.ssh.outputs.push-hosts-digest }}",
                 "jump2_hosts_digest": "${{ steps.ssh.outputs.jump2-hosts-digest }}",
@@ -848,14 +851,20 @@ class StructureTests(unittest.TestCase):
             [
                 "Refuse unless this is the approved, planned push",
                 "Check out the repository with its whole history, to push it",
+                "Take the commit of the shared actions the plan resolved",
+                "Check out the shared actions at that commit",
+                "Verify the checkout is that commit",
                 "Apply on each host, then run it again to prove nothing is left to change",
             ],
         )
         # The one conditional step is the checkout for a push, and it is conditional
         # on the guard's decision alone, so a job with no push list runs the guard
-        # and the apply exactly as before.
+        # and the apply exactly as before. The checkout of the shared actions, for the one script
+        # that names a failed task, is unconditional and is the only other `uses` step.
         for step in steps:
-            if step.get("uses"):
+            if step.get("uses") and step["with"].get("path") == ".gw":
+                self.assertNotIn("if", step)
+            elif step.get("uses"):
                 self.assertEqual(step["if"], "steps.guard.outputs.push == 'true'")
             else:
                 self.assertNotIn("if", step, step.get("name"))
@@ -1002,6 +1011,37 @@ class StructureTests(unittest.TestCase):
             find_step_named("plan", "Verify the checkout")["run"],
             drift_step_named("drift", "Verify the checkout")["run"],
         )
+
+    def test_the_apply_job_checks_out_the_shared_actions_at_the_plans_commit_after_the_callers_own_checkout(self) -> None:
+        steps = JOBS["apply"]["steps"]
+        names = [step.get("name") for step in steps]
+        push = names.index("Check out the repository with its whole history, to push it")
+        take = names.index("Take the commit of the shared actions the plan resolved")
+        shared = names.index("Check out the shared actions at that commit")
+        verify = names.index("Verify the checkout is that commit")
+        apply = names.index("Apply on each host, then run it again to prove nothing is left to change")
+        self.assertLess(push, take)
+        self.assertLess(take, shared)
+        self.assertLess(shared, verify)
+        self.assertLess(verify, apply)
+        self.assertEqual(steps[take]["env"], {"PLANNED_SHARED_SHA": "${{ needs.plan.outputs.shared_sha }}"})
+        self.assertEqual(
+            steps[shared]["with"],
+            {"repository": "branchLeft/github-workflows", "ref": "${{ steps.shared.outputs.sha }}", "path": ".gw", "persist-credentials": False},
+        )
+        self.assertEqual(steps[verify]["env"], {"PINNED_SHA": "${{ steps.shared.outputs.sha }}"})
+        self.assertEqual(steps[verify]["run"], find_step_named("plan", "Verify the checkout")["run"])
+        # The job reads no run record and holds no token for it: the commit is the plan's.
+        self.assertNotIn("permissions", JOBS["apply"])
+        self.assertNotIn("github.token", json.dumps(JOBS["apply"]))
+
+    def test_the_failed_task_is_read_by_one_script_and_no_step_text_carries_a_copy_of_its_reader(self) -> None:
+        for label, path in TEXT_FILES:
+            with self.subTest(file=label):
+                self.assertNotRegex(path.read_text(), r"TASK \\?\[")
+        self.assertIn("host_output_scan.py", ACTION.read_text())
+        self.assertIn("host_output_scan.py", find_step_named("apply", "Apply on each host")["run"])
+        self.assertTrue((ACTION.parent / "host_output_scan.py").is_file())
 
     def test_the_action_inputs_outputs_and_defaults_are_the_declared_ones(self) -> None:
         inputs = ACTION_DOC["inputs"]
@@ -2285,9 +2325,117 @@ APPLIED = summary_line("applied", 10, "apply", "@SHA@", 2)
 UNCHANGED = summary_line("unchanged", 0, "apply", "@SHA@", 0)
 
 
+def shared_actions_workspace(sandbox: Sandbox) -> dict[str, str]:
+    """A workspace whose `.gw` is this repository, as the apply job's checkout of the shared actions makes it."""
+    workspace = sandbox.dir / "apply-workspace"
+    workspace.mkdir(exist_ok=True)
+    if not (workspace / ".gw").exists():
+        (workspace / ".gw").symlink_to(REPO)
+    return {"GITHUB_WORKSPACE": str(workspace)}
+
+
+FAILED_TASK_ERROR = (
+    "PLAY [all]\n"
+    "TASK [Gather the facts] ****\n"
+    "ok: [host-one]\n"
+    "TASK [Install the package] ****\n"
+    'fatal: [host-one]: FAILED! => {"msg": "output-that-must-not-reach-the-log"}\n'
+)
+PLAYBOOK_FAILED = summary_line("failed", 30, "apply", "@SHA@", "-", "playbook-failed")
+
+
 class ApplyTests(unittest.TestCase):
     def apply(self, sandbox: Sandbox, **changes: str) -> Result:
-        return sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(**changes))
+        return sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(**changes), shared_actions_workspace(sandbox))
+
+    def test_a_playbook_failed_apply_names_the_playbook_and_the_failed_task(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, PLAYBOOK_FAILED.replace("host.yml", "stub.yml"), FAILED_TASK_ERROR)
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("Host 1, apply: verdict failed, reason playbook-failed, exit 30, task Install the package; playbook=ansible/playbooks/stub.yml.", result.log)
+        self.assertNotIn("Gather the facts", result.log + result.summary)
+        self.assertNotIn("output-that-must-not-reach-the-log", result.log + result.summary)
+        self.assertNotIn("fatal", result.log + result.summary)
+
+    def test_the_second_run_that_fails_names_its_task_too(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(30, PLAYBOOK_FAILED, FAILED_TASK_ERROR))
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("Host 1, the second run, which must change nothing: verdict failed, reason playbook-failed, exit 30, task Install the package; playbook=ansible/playbooks/host.yml.", result.log)
+
+    def test_a_credential_looking_line_in_the_output_withholds_the_task_and_prints_no_text(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, PLAYBOOK_FAILED, FAILED_TASK_ERROR + "password=hunter2hunter2\n")
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("exit 30; scan-hits=credential-assignment; playbook=ansible/playbooks/host.yml.", result.log)
+        self.assertNotIn("task", result.log.replace("Host 1, apply", ""))
+        self.assertNotIn("hunter2", result.log + result.summary)
+        self.assertNotIn("Install the package", result.log + result.summary)
+
+    def test_a_line_that_quotes_the_apply_key_withholds_the_task(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, PLAYBOOK_FAILED, FAILED_TASK_ERROR + "FAKE_PRIVATE_KEY_BODY_LINE_ONE_0123456789\n")
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertIn("scan-hits=ci-key-material; playbook=ansible/playbooks/host.yml.", result.log)
+        self.assertNotIn("Install the package", result.log)
+
+    def test_the_raw_output_is_never_printed_uploaded_or_kept(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, PLAYBOOK_FAILED, FAILED_TASK_ERROR)
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        work = sandbox.temp / "ansible-apply"
+        self.assertFalse((work / "host.err").exists())
+        self.assertEqual(list(work.iterdir()), [])
+        self.assertEqual(list(sandbox.temp.rglob("*.err")), [])
+        for text in ("Gather the facts", "ok: [host-one]", "PLAY [all]", "output-that-must-not-reach-the-log"):
+            self.assertNotIn(text, result.log + result.summary + sandbox.output.read_text())
+
+    def test_a_summary_line_that_is_not_playbook_failed_adds_no_task(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 20, real_refusal("refused", 20, "apply", "rollback"), FAILED_TASK_ERROR)
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("reason rollback, exit 20.", result.log)
+        self.assertNotIn("task", result.log)
+        self.assertNotIn("playbook=", result.log)
+
+    def test_the_host_and_jump_names_are_replaced_in_the_task_and_the_line_is_held_to_plain_characters(self) -> None:
+        sandbox = Sandbox(self)
+        error = "TASK [Copy to host-one via gateway.example $(id) \x1b[31m] ****\nfatal: [host-one]: FAILED!\n"
+        sandbox.host(HOST_ONE, 30, PLAYBOOK_FAILED, error)
+        result = self.apply(sandbox, HOSTS=f"{HOST_ONE}\n", JUMP_HOST="hop@gateway.example", JUMP_KEY="FAKE_JUMP_KEY_BODY_LINE_ONE_0123456789")
+        self.assertNotIn("host-one", result.log)
+        self.assertNotIn("gateway.example", result.log)
+        self.assertIn("task Copy to a host name via a host name ?(id) ?", result.log)
+        self.assertNotIn("\x1b", result.log)
+
+    def test_a_missing_script_leaves_the_failure_as_it_was_with_only_the_playbook_added(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, PLAYBOOK_FAILED, FAILED_TASK_ERROR)
+        result = sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(HOSTS=f"{HOST_ONE}\n"))
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("exit 30; playbook=ansible/playbooks/host.yml.", result.log)
+        self.assertNotIn("Install the package", result.log)
+
+    def test_the_shared_actions_are_taken_at_the_commit_the_plan_resolved_and_only_when_it_is_one(self) -> None:
+        step = find_step_named("apply", "Take the commit of the shared actions")
+        cases = {"a full commit": (SHA, True), "empty": ("", False), "short": ("abc1234", False), "upper case": (SHA.upper(), False), "a branch": ("main", False)}
+        for name, (value, accepted) in cases.items():
+            with self.subTest(case=name):
+                sandbox = Sandbox(self)
+                result = sandbox.run(step, {"PLANNED_SHARED_SHA": value}, {"GITHUB_WORKSPACE": str(sandbox.dir / "empty-workspace")})
+                self.assertEqual(result.code == 0, accepted, result.log)
+                self.assertEqual(result.outputs.get("sha"), value if accepted else None)
+        sandbox = Sandbox(self)
+        taken = sandbox.dir / "taken"
+        (taken / ".gw").mkdir(parents=True)
+        result = sandbox.run(step, {"PLANNED_SHARED_SHA": SHA}, {"GITHUB_WORKSPACE": str(taken)})
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn(".gw already exists", result.log)
 
     def test_apply_then_a_clean_second_run_succeeds_on_every_host(self) -> None:
         sandbox = Sandbox(self)
@@ -2425,9 +2573,9 @@ class ApplyTests(unittest.TestCase):
         result = self.apply(sandbox, HOSTS="".join(f"{h}\n" for h in hosts), CONTINUE_PAST_FAILED_APPLY="true")
         self.assertNotEqual(result.code, 0, result.log)
         self.assertEqual([sandbox.calls(h) for h in hosts], [1, 2, 2])
-        self.assertIn("::error::Host 1, apply: verdict failed, reason playbook-failed, exit 30.", result.log)
+        self.assertIn("::error::Host 1, apply: verdict failed, reason playbook-failed, exit 30", result.log)
         self.assertIn("1 host(s) failed their apply: 1.", result.log)
-        self.assertIn("Host 1: FAILED, apply: verdict failed, reason playbook-failed, exit 30.", result.summary)
+        self.assertIn("Host 1: FAILED, apply: verdict failed, reason playbook-failed, exit 30", result.summary)
         self.assertIn("Host 2: applied, then a second run that changed nothing.", result.summary)
         self.assertIn("Host 3: applied, then a second run that changed nothing.", result.summary)
         self.assertIn("Commit " + SHA + " applied on 2 of 3 host(s).", result.log)
@@ -2633,9 +2781,9 @@ class ApplyTests(unittest.TestCase):
                 result = self.apply(sandbox)
                 self.assertEqual(result.code, code, result.log)
                 log = sandbox.removals()
-                self.assertEqual(sorted(line.split("/")[-1] for line in log), ["id", "known_hosts"], log)
+                self.assertEqual(sorted(line.split("/")[-1] for line in log), ["host.err", "id", "keylines", "known_hosts"], log)
                 self.assertTrue(all(line.startswith("-rw-------") for line in log), log)
-                for leftover in ("id", "known_hosts"):
+                for leftover in ("id", "known_hosts", "host.err", "keylines"):
                     self.assertFalse((sandbox.temp / "ansible-apply" / leftover).exists(), name)
 
 
@@ -3217,7 +3365,7 @@ class ApplyJumpTests(unittest.TestCase):
                 modes = set(self.seen(sandbox, "files.log").splitlines())
                 self.assertEqual(modes, {f"-rw------- {file}" for file in JUMP_FILES})
                 removed = sandbox.removals()
-                self.assertEqual(sorted(line.split("/")[-1] for line in removed), ["id", "jump_config", "jump_id", "known_hosts"], removed)
+                self.assertEqual(sorted(line.split("/")[-1] for line in removed), ["host.err", "id", "jump_config", "jump_id", "keylines", "known_hosts"], removed)
                 self.assertTrue(all(line.startswith("-rw-------") for line in removed), removed)
                 for leftover in JUMP_FILES:
                     self.assertFalse((sandbox.temp / "ansible-apply" / leftover).exists(), f"{name}: {leftover}")
@@ -3282,7 +3430,7 @@ class ApplyJumpTests(unittest.TestCase):
         self.assertEqual(set(self.seen(sandbox, "files.log").splitlines()), {"-rw------- id", "-rw------- known_hosts"})
         self.assertFalse((sandbox.stubs / "config.copy").exists())
         self.assertFalse((sandbox.stubs / "jump_id.copy").exists())
-        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["id", "known_hosts"])
+        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["host.err", "id", "keylines", "known_hosts"])
         self.assertEqual(sorted(path.name for path in (sandbox.temp / "ansible-apply").iterdir()), [])
 
     def assert_silent(self, *texts: str) -> None:
@@ -3351,6 +3499,9 @@ class ApplyJumpTests(unittest.TestCase):
         apply_text = find_step_named("apply", "Apply on each host")["run"]
 
         def normal(text: str) -> str:
+            # The apply step's trap also removes the file the host's error output goes to and the
+            # lines of the keys; the action's plan step has neither in its trap.
+            text = text.replace(' "$work/host.err" "$work/keylines"', "")
             return text.replace("$plan_dir", "$DIR").replace("$work", "$DIR")
 
         def stanza(text: str) -> list[str]:
@@ -3842,7 +3993,7 @@ class ApplyJump2Tests(unittest.TestCase):
                 self.assertEqual(result.code, code, result.log)
                 self.assertEqual(set(self.seen(sandbox, "files.log").splitlines()), {f"-rw------- {file}" for file in JUMP2_FILES})
                 removed = sandbox.removals()
-                self.assertEqual(sorted(line.split("/")[-1] for line in removed), sorted(JUMP2_FILES), removed)
+                self.assertEqual(sorted(line.split("/")[-1] for line in removed), sorted([*JUMP2_FILES, "host.err", "keylines"]), removed)
                 self.assertTrue(all(line.startswith("-rw-------") for line in removed), removed)
                 for leftover in JUMP2_FILES:
                     self.assertFalse((sandbox.temp / "ansible-apply" / leftover).exists(), f"{name}: {leftover}")
@@ -3891,7 +4042,7 @@ class ApplyJump2Tests(unittest.TestCase):
         work = sandbox.temp / "ansible-apply"
         self.assertEqual(self.seen(sandbox, "config.copy"), jump_config(work))
         self.assertFalse((sandbox.stubs / "jump2_id.copy").exists())
-        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["id", "jump_config", "jump_id", "known_hosts"])
+        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["host.err", "id", "jump_config", "jump_id", "keylines", "known_hosts"])
         self.assertEqual(gateway2_calls(sandbox), [])
 
     def test_the_keys_and_the_second_hop_reach_neither_the_log_nor_the_summary_of_a_successful_apply(self) -> None:
@@ -4509,7 +4660,7 @@ class ApplyHostKeyTests(unittest.TestCase):
             self.assertEqual(ssh_call_with_paths_named(call), expected_ssh_call(dest, SHA))
             self.assertEqual(call.split(" ")[call.split(" ").index("-i") + 1], f"{sandbox.temp}/ansible-apply/id")
         self.assertEqual(set(logged(sandbox, "files.log")), {"-rw------- id", "-rw------- known_hosts"})
-        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["id", "known_hosts"])
+        self.assertEqual(sorted(line.split("/")[-1] for line in sandbox.removals()), ["host.err", "id", "keylines", "known_hosts"])
         self.assertEqual(masked(result.log), [])
 
     def test_the_key_files_are_private_while_ssh_runs_and_removed_on_every_way_out(self) -> None:
@@ -4528,7 +4679,7 @@ class ApplyHostKeyTests(unittest.TestCase):
                 self.assertEqual(result.code, code, result.log)
                 self.assertEqual(set(logged(sandbox, "files.log")), {"-rw------- id", "-rw------- id.02", "-rw------- known_hosts"})
                 removed = sandbox.removals()
-                self.assertEqual(sorted(line.split("/")[-1] for line in removed), ["id", "id.02", "known_hosts"], removed)
+                self.assertEqual(sorted(line.split("/")[-1] for line in removed), ["host.err", "id", "id.02", "keylines", "known_hosts"], removed)
                 self.assertTrue(all(line.startswith("-rw-------") for line in removed), removed)
                 self.assertEqual([path.name for path in (sandbox.temp / "ansible-apply").iterdir() if path.name.startswith("id")], [])
 
@@ -4536,8 +4687,8 @@ class ApplyHostKeyTests(unittest.TestCase):
         one_hop = {"JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}
         two_hops = {**one_hop, "JUMP2_HOST": JUMP2_HOST, "JUMP2_KEY": JUMP2_KEY, "JUMP2_HOSTS": f"{HOST_TWO}\n"}
         cases = {
-            "one hop": (one_hop, ["id", "id.02", "jump_config", "jump_id", "known_hosts"]),
-            "two hops": (two_hops, ["id", "id.02", "jump2_id", "jump_config", "jump_id", "known_hosts"]),
+            "one hop": (one_hop, ["host.err", "id", "id.02", "jump_config", "jump_id", "keylines", "known_hosts"]),
+            "two hops": (two_hops, ["host.err", "id", "id.02", "jump2_id", "jump_config", "jump_id", "keylines", "known_hosts"]),
         }
         for name, (changes, removed) in cases.items():
             with self.subTest(case=name):
@@ -6326,9 +6477,13 @@ class InstallStepTests(unittest.TestCase):
         self.assertNotIn("job_workflow_ref", text)
         for job_name, job in JOBS.items():
             pin_seen = False
+            # The plan job resolves the commit from the run record in a `pin` step. The apply job takes
+            # the commit the plan resolved, in a `shared` step that refuses an empty or malformed one.
+            pin_id = ""
             for step in job["steps"]:
-                if step.get("id") == "pin":
+                if step.get("id") in ("pin", "shared"):
                     pin_seen = True
+                    pin_id = str(step["id"])
                 if str(step.get("uses", "")).startswith("actions/checkout@"):
                     with_ = step.get("with", {})
                     if with_.get("repository") == "branchLeft/github-workflows":
@@ -6336,7 +6491,7 @@ class InstallStepTests(unittest.TestCase):
                         # The pair is allowed only where a `pin` step runs before this checkout;
                         # elsewhere `steps.pin.outputs.sha` is empty and checks out main.
                         self.assertTrue(pin_seen, f"{job_name}: {step.get('name')} checks out the shared actions with no pin step before it")
-                        self.assertEqual(with_.get("ref"), "${{ steps.pin.outputs.sha }}", f"{job_name}: {step.get('name')}")
+                        self.assertEqual(with_.get("ref"), f"${{{{ steps.{pin_id}.outputs.sha }}}}", f"{job_name}: {step.get('name')}")
                         continue
                     self.assertNotIn("repository", with_, f"{job_name}: {step.get('name')}")
                     self.assertNotIn("ref", with_, f"{job_name}: {step.get('name')}")
@@ -7273,6 +7428,9 @@ class PushOffTests(unittest.TestCase):
                     self.assertEqual(sorted(k for k in job if k != "steps"), FROZEN_JOB_KEYS[label][name])
                     steps = [step.get("name") for step in job["steps"]]
                     added = {PUSH_DECISION, PUSH_CHECKOUT}
+                    if label == "gated" and name == "apply":
+                        # The shared actions, checked out for the script that names a failed task.
+                        added |= {"Take the commit of the shared actions the plan resolved", "Check out the shared actions at that commit", "Verify the checkout is that commit"}
                     self.assertEqual([s for s in steps if s not in added], FROZEN_STEP_NAMES[(label, name)])
 
     def test_every_step_the_push_route_adds_is_conditional_on_the_push_decision_or_only_makes_it(self) -> None:

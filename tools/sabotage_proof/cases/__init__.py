@@ -6,6 +6,7 @@ from ..model import Case
 from . import (
     action_report,
     apply_gate,
+    apply_task,
     concurrency,
     continue_apply,
     delivery,
@@ -35,6 +36,7 @@ CASES: list[Case] = [
         jump_proof,
         push,
         log_line,
+        apply_task,
         second_hop,
         scan,
         concurrency,

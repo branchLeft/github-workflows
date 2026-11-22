@@ -473,7 +473,7 @@ CASES: list[Case] = [
                 GATED_APPLY,
                 indented(
                     r"""
-                    trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/jump_id" "$work/jump_config" "$work/jump2_id"' EXIT
+                    trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/host.err" "$work/keylines" "$work/jump_id" "$work/jump_config" "$work/jump2_id"' EXIT
                     """,
                     14,
                 ),
