@@ -146,10 +146,31 @@ All of these hold:
   Two costs follow: a resource carrying `importID` or `snippetID` in its old
   state is expected to read `true` always, because the new state is built from
   the program and does not carry them.
+- A `read` step of a `pulumi:pulumi:StackReference` is not a change (workspace
+  issue 3873). A program that holds a StackReference reads it on every run to
+  resolve another stack's outputs, and the preview lists that as a `read` step, so
+  every such stack waited at the apply gate with a no-op plan. The step is clean
+  only in the shape a real preview wrote for a throwaway local stack
+  (`fixtures/preview-real-shape-stack-reference-read.json`): its URN's type is
+  exactly `pulumi:pulumi:StackReference`, `detailedDiff`, `diffReasons` and
+  `replaceReasons` hold nothing, the new state has `custom` and `external` true,
+  that type, no flag (`taint`, `pendingReplacement`, `delete`, `initErrors`) and
+  no key beyond `urn`, `custom`, `id`, `type`, `inputs`, `outputs`, `parent`,
+  `provider`, `external`, `sourcePosition` and `stackTrace`; an old state, if
+  present (not observed: a run that already holds the reference may carry one), is
+  an object of the same type. Any other `read`, and any StackReference step that
+  is not this shape, is `steps-changed` as before. A saved plan's entry for the
+  reference has no goal to compare; its steps may be `same` or `read` and no other.
 - The change summary counts nothing but `same`: a zero count for another
-  operation is allowed. The summary's `same` is at least the `same` steps listed.
-- `diagnostics` is absent, null or an empty list, and `maybeCorrupt` is absent,
-  null or `false`; any other value is refused. The preview's `config` is
+  operation is allowed, and so is a `read` count no larger than the clean reads
+  listed. The summary's `same` is at least the `same` steps listed.
+- `diagnostics` is absent, null, an empty list, or a list of objects each with a
+  `message` string and a `severity` of `info`, `info#err` or `warning`, and
+  `maybeCorrupt` is absent, null or `false`; any other value is refused, and an
+  `error` one is `preview-diagnostics` naming the severities (never a message).
+  This is read only once no changing step is listed. The shape of a real warning
+  was not available (the preview JSON is in the job summary only, with no API),
+  so the severities are those of the engine's diagnostic event. The preview's `config` is
   absent or an object and its `duration` absent or a non-negative integer, as
   in the local run; the plan's `manifest` and `config` are absent or objects.
 - Source line numbers in this file are those of Pulumi v3.255.0, the version of

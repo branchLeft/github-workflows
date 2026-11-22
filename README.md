@@ -188,6 +188,22 @@ this job then fails with reason `rollback`, naming the planned commit. It also n
 last applied commit when the host's summary line ends with an optional ` floor=<40 hex digits>`
 field; a host that does not send it is read as before, and the floor is read from its journal.
 
+**A failed playbook names its task.** When a host answers `reason=playbook-failed`, the apply job
+reads what the host wrote to standard error, through the script
+`.github/actions/ssh-check-hosts/host_output_scan.py` (the same script the plan step scans each
+diff with, see "What the scan reads"), and the log line gains the playbook from the host's summary
+line and the task that failed: `Host 1, apply: verdict failed, reason playbook-failed, exit 30, task
+<role> : <task name>; playbook=ansible/playbooks/<host>.yml.` The task is the text between the
+brackets of the last `TASK` header before the first `fatal:` line, at most 160 characters; no other
+word of the output is printed. The output goes to a private file that is read only for this, never
+printed, uploaded or written to the job summary, and removed on every way out of the step. When the
+script finds a secret pattern in it (or a line of the apply key), the line carries
+`scan-hits=<pattern names>` and no task, as the plan's does. A host name or jump host name in the
+task is replaced, and the line holds only letters, digits and `_ . / : ; , ( ) = -`. The job checks
+out the shared actions at the commit the plan job resolved and verified (the plan job's output
+`shared_sha`), so it reads no run record and holds no new trust; if the script cannot run, the line
+is the one it was, with the playbook added.
+
 **A list of several hosts can partly apply.** The apply job runs host 1, then host 2. The plan
 job asks every host in check mode and the same floor check refuses there, but a host can move past
 the planned commit between the plan and the apply. Then host 1 takes the planned commit and host 2
@@ -842,6 +858,11 @@ check would fail for it. There is no apply-key secret (so no `ssh_host_apply_key
 either) and no dry run.
 
 #### What the scan reads
+
+The scan is one script, `.github/actions/ssh-check-hosts/host_output_scan.py`, which prints the
+names of the patterns that matched and the task that failed and never a matched string. The plan
+step reads each host's diff through it; the apply job reads the standard error of a host whose
+playbook failed through it (see "A failed playbook names its task").
 
 Each host's diff is read for seven patterns before it is shown. Six name a key or
 a token by its own form (a private key block, an AWS access key, a GitHub token, a

@@ -206,8 +206,8 @@ def host_key_cases() -> list[Case]:
     # The traps that remove the shared key remove the host key files too: each is taken out of one trap in turn.
     plan_trap = 'trap \'rm -f "$plan_dir/id" "$plan_dir/known_hosts" "$plan_dir"/id.*'
     plan_trap_without = 'trap \'rm -f "$plan_dir/id" "$plan_dir/known_hosts"'
-    apply_trap = 'trap \'rm -f "$work/id" "$work/known_hosts" "$work"/id.*'
-    apply_trap_without = 'trap \'rm -f "$work/id" "$work/known_hosts"'
+    apply_trap = 'trap \'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/host.err" "$work/keylines"'
+    apply_trap_without = 'trap \'rm -f "$work/id" "$work/known_hosts" "$work/host.err" "$work/keylines"'
     removed_after_hops = "test_the_key_files_are_removed_after_a_jump_and_after_a_second_hop"
     traps = (
         (

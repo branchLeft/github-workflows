@@ -239,7 +239,7 @@ CASES: list[Case] = [
                 GATED_APPLY,
                 indented(
                     r"""
-                    trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/jump_id" "$work/jump_config"' EXIT
+                    trap 'rm -f "$work/id" "$work/known_hosts" "$work"/id.* "$work/host.err" "$work/keylines" "$work/jump_id" "$work/jump_config"' EXIT
                     """,
                     12,
                 ),
@@ -396,7 +396,7 @@ CASES: list[Case] = [
     ),
     Case(
         "apply ssh error text reaches the job log",
-        [Edit(GATED_APPLY, '-- "$dest" "$SHA" < /dev/null 2> /dev/null)', '-- "$dest" "$SHA" < /dev/null)')],
+        [Edit(GATED_APPLY, '-- "$dest" "$SHA" < /dev/null 2> "$errfile")', '-- "$dest" "$SHA" < /dev/null)')],
         [APPLY_JUMP("test_the_jump_host_and_keys_reach_neither_the_log_nor_the_summary_of_a_successful_apply")],
     ),
     Case(

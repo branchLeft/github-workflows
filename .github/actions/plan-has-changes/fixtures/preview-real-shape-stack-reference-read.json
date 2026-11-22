@@ -1,0 +1,47 @@
+{
+  "steps": [
+    {
+      "op": "same",
+      "urn": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+      "oldState": {
+        "urn": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "sourcePosition": "project:///Pulumi.yaml#1",
+        "id": "ID",
+        "outputs": {
+          "netId": "stable-output-value"
+        }
+      },
+      "newState": {
+        "urn": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+        "custom": false,
+        "type": "pulumi:pulumi:Stack",
+        "sourcePosition": "project:///Pulumi.yaml#9"
+      }
+    },
+    {
+      "op": "read",
+      "urn": "urn:pulumi:production::planprobe::pulumi:pulumi:StackReference::ref",
+      "provider": "urn:pulumi:production::planprobe::pulumi:providers:pulumi::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+      "newState": {
+        "urn": "urn:pulumi:production::planprobe::pulumi:pulumi:StackReference::ref",
+        "custom": true,
+        "id": "organization/target/production",
+        "type": "pulumi:pulumi:StackReference",
+        "inputs": {
+          "name": "organization/target/production"
+        },
+        "parent": "urn:pulumi:production::planprobe::pulumi:pulumi:Stack::planprobe-production",
+        "external": true,
+        "provider": "urn:pulumi:production::planprobe::pulumi:providers:pulumi::default::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+        "sourcePosition": "project:///Pulumi.yaml#5"
+      },
+      "detailedDiff": null
+    }
+  ],
+  "duration": 572,
+  "changeSummary": {
+    "same": 1
+  }
+}

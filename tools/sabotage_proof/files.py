@@ -8,6 +8,7 @@ REPO = Path(__file__).resolve().parents[2]
 TESTS = "tools/test_ansible_gated_apply.py"
 
 ACTION = ".github/actions/ssh-check-hosts/action.yml"
+SCAN = ".github/actions/ssh-check-hosts/host_output_scan.py"
 GATED_APPLY = ".github/workflows/ansible-gated-apply.yml"
 DRIFT_CHECK = ".github/workflows/ansible-drift-check.yml"
 JUMP_PROOF = "tools/ssh_jump_proof.py"

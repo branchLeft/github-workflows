@@ -215,7 +215,7 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "126bc7b2c05f2745c963952adf2c170445b7119966190c9c6043a4ff2e92b4f9",
+          "run-sha256": "fdacf53d0102c8beb8bcfb982f96e71aa8430a8098453ff73ef2ad36a3806bc6",
           "shell": "bash"
         }
       ],
@@ -654,6 +654,31 @@
           },
           {
             "env": {
+              "PLANNED_SHARED_SHA": "${{ needs.plan.outputs.shared_sha }}"
+            },
+            "id": "shared",
+            "name": "Take the commit of the shared actions the plan resolved",
+            "run-sha256": "fc7d3616eac6bdccac3452484942fb9c2b00f504414c10cd6bf32be5f60e41cd"
+          },
+          {
+            "name": "Check out the shared actions at that commit",
+            "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+            "with": {
+              "path": ".gw",
+              "persist-credentials": false,
+              "ref": "${{ steps.shared.outputs.sha }}",
+              "repository": "branchLeft/github-workflows"
+            }
+          },
+          {
+            "env": {
+              "PINNED_SHA": "${{ steps.shared.outputs.sha }}"
+            },
+            "name": "Verify the checkout is that commit",
+            "run-sha256": "0925f1683a9852e14e42c4e4a80fee04aa9f0d3ff781361cabeae758f0cca9e6"
+          },
+          {
+            "env": {
               "APPLY_HOSTS": "${{ steps.guard.outputs.apply_hosts }}",
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "HOST_KEYS": "${{ secrets.ssh_host_apply_keys }}",
@@ -670,7 +695,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "53409eb78c9547afc076943787c41dfd85ce68819c7a0320e9d0e6f170710a8e"
+            "run-sha256": "02b7b4ef0263d38590c44dee83be13b6ff0fdfcfefcfbf7054cdb5454f8f01cf"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -861,7 +886,8 @@
           "hosts_digest": "${{ steps.ssh.outputs.hosts-digest }}",
           "jump2_hosts_digest": "${{ steps.ssh.outputs.jump2-hosts-digest }}",
           "push_hosts_digest": "${{ steps.ssh.outputs.push-hosts-digest }}",
-          "sha": "${{ steps.guard.outputs.sha }}"
+          "sha": "${{ steps.guard.outputs.sha }}",
+          "shared_sha": "${{ steps.pin.outputs.sha }}"
         },
         "permissions": {
           "actions": "read",
@@ -1321,6 +1347,10 @@
           {
             "name": "Run the tests of the workflow's steps",
             "run-sha256": "adcb33f6d78ee31ebb9c140491129a4b3b73aaf9efad2e7227202f6b9571eac6"
+          },
+          {
+            "name": "Run the tests of the script that scans a host's output",
+            "run-sha256": "616d72aec95dde46a63a864ab7470832b153ea2b6d67769cb14a2ec601ba05c7"
           }
         ],
         "timeout-minutes": 10
@@ -1339,6 +1369,7 @@
           ".github/fixtures/ansible-gated-apply/**",
           ".github/dependabot.yml",
           "tools/test_ansible_gated_apply.py",
+          "tools/test_host_output_scan.py",
           "tools/sabotage.py",
           "tools/sabotage_proof/**",
           "tools/run_workflow_steps.py",
@@ -1360,6 +1391,7 @@
           ".github/fixtures/ansible-gated-apply/**",
           ".github/dependabot.yml",
           "tools/test_ansible_gated_apply.py",
+          "tools/test_host_output_scan.py",
           "tools/sabotage.py",
           "tools/sabotage_proof/**",
           "tools/run_workflow_steps.py",

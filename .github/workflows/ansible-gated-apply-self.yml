@@ -23,6 +23,7 @@ on:
       - .github/fixtures/ansible-gated-apply/**
       - .github/dependabot.yml
       - tools/test_ansible_gated_apply.py
+      - tools/test_host_output_scan.py
       - tools/sabotage.py
       - tools/sabotage_proof/**
       - tools/run_workflow_steps.py
@@ -40,6 +41,7 @@ on:
       - .github/fixtures/ansible-gated-apply/**
       - .github/dependabot.yml
       - tools/test_ansible_gated_apply.py
+      - tools/test_host_output_scan.py
       - tools/sabotage.py
       - tools/sabotage_proof/**
       - tools/run_workflow_steps.py
@@ -71,6 +73,9 @@ jobs:
 
       - name: Run the tests of the workflow's steps
         run: python3 -m unittest discover -s tools -p 'test_ansible_gated_apply.py' -v
+
+      - name: Run the tests of the script that scans a host's output
+        run: python3 -m unittest discover -s tools -p 'test_host_output_scan.py' -v
 
   # The proof that those tests guard what they claim to: each control is broken
   # in a copy of the repository and the test that guards it must go red, after

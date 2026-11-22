@@ -9,14 +9,22 @@ import io
 import json
 import os
 import pathlib
+import re
+import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 
 
+SCRIPT_ENV = "PLAN_HAS_CHANGES_SCRIPT"
+
+
 def _load_module():
     """Import the script by path: its filename has hyphens, so it is not a
-    legal module name for a plain import."""
-    path = pathlib.Path(__file__).resolve().parent / "plan-has-changes.py"
+    legal module name for a plain import. PLAN_HAS_CHANGES_SCRIPT points the tests
+    at another copy, which is how the sabotage test breaks a copy and not this one."""
+    path = pathlib.Path(os.environ.get(SCRIPT_ENV) or pathlib.Path(__file__).resolve().parent / "plan-has-changes.py").resolve()
     spec = importlib.util.spec_from_file_location("plan_has_changes", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -2051,6 +2059,228 @@ class StepsChangedDetailTests(VerdictCase):
         self.assertAsks(verdict, "steps-changed")
         self.assertIn("detailedDiff", verdict.detail)
         self.assertIn("no-provider", verdict.detail)
+
+
+_REF = f"{_STACK}pulumi:pulumi:StackReference::estate"
+_PROVIDER = f"{_STACK}pulumi:providers:pulumi::default::{UNKNOWN}"
+
+
+def stack_reference_read(**changes):
+    """The read step of a StackReference, in the shape a real preview wrote for a throwaway
+    local stack (fixtures/preview-real-shape-stack-reference-read.json): no old state,
+    `external` true, `detailedDiff` null. A key given replaces the step's."""
+    step = {
+        "op": "read",
+        "urn": _REF,
+        "provider": _PROVIDER,
+        "newState": {
+            "urn": _REF,
+            "custom": True,
+            "id": "organization/estate/production",
+            "type": "pulumi:pulumi:StackReference",
+            "inputs": {"name": "organization/estate/production"},
+            "parent": _ROOT,
+            "external": True,
+            "provider": _PROVIDER,
+            "sourcePosition": "project:///a#5",
+        },
+        "detailedDiff": None,
+    }
+    step.update(changes)
+    return step
+
+
+def with_reads(*reads, summary=None):
+    """A no-op preview that also lists the given read steps."""
+    doc = preview(("same", _ROOT), summary=summary)
+    doc["steps"].extend(reads)
+    return doc
+
+
+class StackReferenceReadTests(VerdictCase):
+    """A StackReference is read on every run and changes nothing, so a plan whose only
+    other step is that read has no changes. Any other read, or one that is not the real
+    shape, still does (the sabotage test below breaks this guard and these go red)."""
+
+    def test_the_real_shaped_fixture_is_no_change(self):
+        preview_doc = json.loads((FIXTURES / "preview-real-shape-stack-reference-read.json").read_text(encoding="utf-8"))
+        self.assertEqual([s["op"] for s in preview_doc["steps"]], ["same", "read"])
+        plan_doc = json.loads((FIXTURES / "plan-real-shape-protected.json").read_text(encoding="utf-8"))
+        verdict = self.verdict(preview_doc, plan_doc)
+        self.assertFalse(verdict.has_changes, verdict)
+
+    def test_a_stack_reference_read_is_no_change(self):
+        self.assertFalse(self.verdict(with_reads(stack_reference_read()), plan()).has_changes)
+
+    def test_two_reads_and_one_listed_in_the_summary_are_no_change(self):
+        second = stack_reference_read(urn=f"{_STACK}pulumi:pulumi:StackReference::network")
+        second["newState"]["urn"] = second["urn"]
+        for summary in ({"same": 3}, {"same": 3, "read": 2}):
+            with self.subTest(summary=summary):
+                self.assertFalse(self.verdict(with_reads(stack_reference_read(), second, summary=summary), plan()).has_changes)
+
+    def test_a_read_that_carries_an_old_state_of_its_type_is_no_change(self):
+        step = stack_reference_read()
+        step["oldState"] = {**step["newState"], "outputs": {"edge1": "192.0.2.1"}, "created": "t", "modified": "t"}
+        self.assertFalse(self.verdict(with_reads(step), plan()).has_changes)
+
+    def test_the_plan_may_list_the_read_resource_with_no_goal(self):
+        saved = plan()
+        saved["resourcePlans"][_REF] = {"steps": ["read"]}
+        self.assertFalse(self.verdict(with_reads(stack_reference_read()), saved).has_changes)
+
+    def test_a_plan_step_on_the_read_resource_that_is_not_a_read_is_a_change(self):
+        saved = plan()
+        saved["resourcePlans"][_REF] = {"steps": ["read", "update"]}
+        self.assertAsks(self.verdict(with_reads(stack_reference_read()), saved), "steps-changed")
+
+    def test_a_read_of_any_other_type_is_a_change_though_shaped_like_one(self):
+        for urn in (_SERVER, _FIREWALL, f"{_STACK}pulumi:pulumi:Stack::estate", f"{_STACK}x:y:Component$pulumi:pulumi:StackReference::estate"):
+            with self.subTest(urn=urn):
+                step = stack_reference_read(urn=urn)
+                step["newState"]["urn"] = urn
+                verdict = self.verdict(with_reads(step), plan())
+                self.assertTrue(verdict.has_changes, verdict)
+
+    def test_a_read_that_is_not_the_real_shape_is_a_change(self):
+        def mutate(change):
+            step = stack_reference_read()
+            change(step)
+            return step
+
+        cases = {
+            "a diff": lambda s: s.update(detailedDiff={"name": {"kind": "update"}}),
+            "diff reasons": lambda s: s.update(diffReasons=["name"]),
+            "a replace reason": lambda s: s.update(replaceReasons=["name"]),
+            "not external": lambda s: s["newState"].update(external=False),
+            "not custom": lambda s: s["newState"].update(custom=False),
+            "another state type": lambda s: s["newState"].update(type="hcloud:index/server:Server"),
+            "an unknown state key": lambda s: s["newState"].update(price=1),
+            "a taint": lambda s: s["newState"].update(taint=True),
+            "a pending replacement": lambda s: s["newState"].update(pendingReplacement=True),
+            "an old state of another type": lambda s: s.update(oldState={"type": "hcloud:index/server:Server"}),
+            "an old state that is not an object": lambda s: s.update(oldState="x"),
+            "no new state": lambda s: s.pop("newState"),
+        }
+        for label, change in cases.items():
+            with self.subTest(label=label):
+                verdict = self.verdict(with_reads(mutate(change)), plan())
+                self.assertTrue(verdict.has_changes, verdict)
+
+    def test_a_read_with_an_unknown_step_key_is_not_understood(self):
+        self.assertAsks(self.verdict(with_reads(stack_reference_read(price=1)), plan()), "preview-shape")
+
+    def test_a_summary_counting_more_reads_than_are_listed_is_a_change(self):
+        doc = with_reads(stack_reference_read(), summary={"same": 3, "read": 2})
+        self.assertAsks(self.verdict(doc, plan()), "summary-changed")
+
+    def test_a_real_change_beside_a_clean_read_is_still_a_change(self):
+        for op in ("create", "update", "replace", "delete"):
+            with self.subTest(op=op):
+                doc = with_reads(stack_reference_read(), summary={"same": 2, op: 1})
+                doc["steps"].append(step_of(op, _SERVER))
+                self.assertAsks(self.verdict(doc, plan()), "steps-changed")
+
+    def test_a_listed_same_step_that_differs_beside_a_clean_read_is_still_a_change(self):
+        doc = with_reads(stack_reference_read())
+        doc["steps"][0]["newState"]["inputs"] = {"k": 1}
+        self.assertAsks(self.verdict(doc, plan()), "steps-changed")
+
+
+class QuietDiagnosticTests(VerdictCase):
+    """A no-op preview that carries only warnings or notices is still a no-op; an `error`
+    one (a preview that failed) and any diagnostic beside a listed change are not."""
+
+    def test_warnings_and_notices_on_a_no_op_are_no_change(self):
+        for severity in ("warning", "info", "info#err"):
+            with self.subTest(severity=severity):
+                doc = with_reads(stack_reference_read()) | {"diagnostics": [{"severity": severity, "message": "m"}]}
+                self.assertFalse(self.verdict(doc, plan()).has_changes)
+
+    def test_an_error_diagnostic_is_not_understood_and_names_its_severity(self):
+        doc = no_op_preview() | {"diagnostics": [{"severity": "warning", "message": "m"}, {"severity": "error", "message": "boom"}]}
+        verdict = self.verdict(doc, plan())
+        self.assertAsks(verdict, "preview-diagnostics")
+        self.assertEqual(verdict.detail, "severity: error, warning")
+        self.assertNotIn("boom", verdict.detail)
+
+    def test_a_diagnostic_that_is_not_the_shape_of_one_is_not_understood(self):
+        for entry in ({"message": "m"}, {"severity": "warning"}, {"severity": "fatal", "message": "m"}, "warning", None, ["warning"]):
+            with self.subTest(entry=entry):
+                self.assertAsks(self.verdict(no_op_preview() | {"diagnostics": [entry]}, plan()), "preview-diagnostics")
+
+    def test_a_warning_beside_a_listed_change_is_a_change(self):
+        doc = preview(("same", _ROOT), ("update", _FIREWALL), summary={"same": 1, "update": 1}) | {
+            "diagnostics": [{"severity": "warning", "message": "m"}]
+        }
+        self.assertAsks(self.verdict(doc, plan()), "steps-changed")
+
+
+class SabotageTests(unittest.TestCase):
+    """The controls are the StackReference read shape and the diagnostic severity check.
+    Break each in a copy and the tests that keep a real change waiting must go red; the
+    unmodified copy must be green. Skipped inside a broken copy's own run."""
+
+    READ_CONTROL = "    if op != READ or urn.type != STACK_REFERENCE_TYPE:\n        return False\n"
+    READ_BROKEN = "    if op != READ:\n        return False\n    return True\n"
+    READ_MUST_FAIL = {
+        "test_a_read_of_any_other_type_is_a_change_though_shaped_like_one",
+        "test_a_read_that_is_not_the_real_shape_is_a_change",
+        "test_a_read_with_an_unknown_step_key_is_not_understood",
+    }
+    # The loop that sets reads aside: every step that is not `same` is set aside.
+    SKIP_CONTROL = "    reads = [(op, urn, entry) for op, urn, entry in listed if _is_clean_read(op, urn, entry)]\n"
+    SKIP_BROKEN = "    reads = [(op, urn, entry) for op, urn, entry in listed if op != SAME]\n"
+    SKIP_MUST_FAIL = {"test_a_real_change_beside_a_clean_read_is_still_a_change", "test_every_changing_op_is_a_change"}
+    DIAGNOSTIC_CONTROL = "    if _diagnostics_are_quiet(diagnostics):\n        return\n"
+    DIAGNOSTIC_BROKEN = "    return\n"
+    DIAGNOSTIC_MUST_FAIL = {
+        "test_an_error_diagnostic_is_not_understood_and_names_its_severity",
+        "test_a_diagnostic_that_is_not_the_shape_of_one_is_not_understood",
+        "test_diagnostics_that_are_not_empty",
+    }
+
+    def run_copy(self, control, broken):
+        here = pathlib.Path(__file__).resolve().parent
+        with tempfile.TemporaryDirectory(prefix="plan-has-changes-sabotage-") as tmp:
+            copy = pathlib.Path(tmp, ".github", "actions", "plan-has-changes")
+            shutil.copytree(here, copy, ignore=shutil.ignore_patterns("__pycache__"))
+            script = copy / "plan-has-changes.py"
+            if control:
+                text = script.read_text(encoding="utf-8")
+                self.assertEqual(text.count(control), 1, "the control moved: update the sabotage")
+                script.write_text(text.replace(control, broken), encoding="utf-8")
+            env = {**os.environ, SCRIPT_ENV: str(script)}
+            return subprocess.run(
+                [sys.executable, "-m", "unittest", "discover", "-s", str(copy), "-p", "test_plan_has_changes.py", "-v"],
+                capture_output=True,
+                text=True,
+                env=env,
+                check=False,
+            )
+
+    def assert_red(self, control, broken, must_fail):
+        red = self.run_copy(control, broken)
+        self.assertNotEqual(red.returncode, 0, red.stderr)
+        failed = set(re.findall(r"^(?:FAIL|ERROR): (\w+) ", red.stderr, re.MULTILINE))
+        self.assertTrue(must_fail <= failed, f"expected red, got {sorted(failed)}")
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_a_read_guard_that_passes_every_read_turns_the_change_tests_red(self):
+        self.assert_red(self.READ_CONTROL, self.READ_BROKEN, self.READ_MUST_FAIL)
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_a_parser_that_sets_every_change_aside_as_a_read_turns_the_change_tests_red(self):
+        self.assert_red(self.SKIP_CONTROL, self.SKIP_BROKEN, self.SKIP_MUST_FAIL)
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_a_diagnostic_check_that_passes_every_diagnostic_turns_the_error_tests_red(self):
+        self.assert_red(self.DIAGNOSTIC_CONTROL, self.DIAGNOSTIC_BROKEN, self.DIAGNOSTIC_MUST_FAIL)
+
+    @unittest.skipIf(os.environ.get(SCRIPT_ENV), "running inside a sabotaged copy")
+    def test_the_unmodified_copy_is_green(self):
+        green = self.run_copy("", "")
+        self.assertEqual(green.returncode, 0, green.stderr)
 
 
 if __name__ == "__main__":
