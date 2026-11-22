@@ -680,6 +680,7 @@
           {
             "env": {
               "APPLY_HOSTS": "${{ steps.guard.outputs.apply_hosts }}",
+              "CONTINUE_PAST_FAILED_APPLY": "${{ inputs.continue-past-failed-apply }}",
               "HOSTS": "${{ secrets.ssh_hosts }}",
               "HOST_KEYS": "${{ secrets.ssh_host_apply_keys }}",
               "HOST_TIMEOUT_MINUTES": "${{ inputs.host-timeout-minutes }}",
@@ -695,7 +696,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "02b7b4ef0263d38590c44dee83be13b6ff0fdfcfefcfbf7054cdb5454f8f01cf"
+            "run-sha256": "67d490585aa815162ab35c07e1b141afb9437679a1e7f8c563cf3e9e67a4b1ac"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
@@ -1067,6 +1068,12 @@
             "description": "The apply job is stopped after this many minutes, not counting the wait for approval.",
             "required": false,
             "type": "number"
+          },
+          "continue-past-failed-apply": {
+            "default": false,
+            "description": "false (the default) stops the apply at the first host whose apply fails: the hosts after it get nothing in that run. true goes on to the hosts that remain after one host's apply fails (a failed first run, a second run that changed something, a lost connection, an answer that is not the expected line): each host's verdict is written to the step summary, the log and the summary name every host that failed and the reason, and the job still ends red. A host whose plan failed or was withheld is never applied either way. Leave it false when a commit can depend on an order across hosts, because a host after a failed one then runs without it.",
+            "required": false,
+            "type": "boolean"
           },
           "dry-run": {
             "default": false,

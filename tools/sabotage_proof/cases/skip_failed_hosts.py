@@ -158,8 +158,9 @@ CASES: list[Case] = [
         [
             Edit(
                 GATED_APPLY,
-                'ask "$i" "$dest" "apply" "10:applied" "0:unchanged"',
-                'ask "$applied" "$dest" "apply" "10:applied" "0:unchanged"',
+                'apply_host "$i" "$dest"',
+                'apply_host "$applied" "$dest"',
+                count=2,
             ),
         ],
         [APPLY_HOST_KEY("test_a_skipped_host_does_not_renumber_the_ones_after_it_so_each_keeps_its_own_key_file")],
