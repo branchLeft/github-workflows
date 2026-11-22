@@ -7,6 +7,7 @@ from . import (
     action_report,
     apply_gate,
     concurrency,
+    continue_apply,
     delivery,
     drift_check,
     host_keys,
@@ -38,6 +39,7 @@ CASES: list[Case] = [
         scan,
         concurrency,
         skip_failed_hosts,
+        continue_apply,
         host_keys,
     )
     for case in module.CASES

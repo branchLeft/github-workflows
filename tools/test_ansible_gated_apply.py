@@ -831,6 +831,7 @@ class StructureTests(unittest.TestCase):
                 "JUMP2_HOSTS": "${{ secrets.ssh_jump2_hosts }}",
                 "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
                 "PUSH_PLAYBOOK": "${{ inputs.push-playbook }}",
+                "CONTINUE_PAST_FAILED_APPLY": "${{ inputs.continue-past-failed-apply }}",
             }),
             ("plan", "Decide whether any host is pushed to", {
                 "PUSH_HOSTS": "${{ secrets.ssh_push_hosts }}",
@@ -2270,6 +2271,7 @@ def apply_env(**changes: str) -> dict[str, str]:
         "JUMP2_HOSTS": "",
         "PUSH_HOSTS": "",
         "PUSH_PLAYBOOK": "",
+        "CONTINUE_PAST_FAILED_APPLY": "false",
     }
     values.update(changes)
     if "APPLY_HOSTS" not in changes:
@@ -2387,6 +2389,117 @@ class ApplyTests(unittest.TestCase):
         result = self.apply(sandbox)
         self.assertNotEqual(result.code, 0)
         self.assertEqual(sandbox.calls(HOST_TWO), 0)
+
+    def test_the_continue_input_is_declared_boolean_and_off_by_default(self) -> None:
+        declared = DOC[True]["workflow_call"]["inputs"]["continue-past-failed-apply"]
+        self.assertEqual(declared["type"], "boolean")
+        self.assertIs(declared["required"], False)
+        self.assertIs(declared["default"], False)
+
+    def test_the_continue_input_must_be_true_or_false(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, CONTINUE_PAST_FAILED_APPLY="yes")
+        self.assertNotEqual(result.code, 0)
+        self.assertIn("continue-past-failed-apply must be true or false", result.log)
+        self.assertEqual(sandbox.ssh_log(), [])
+
+    def test_with_the_input_on_every_host_that_passes_is_applied_as_before(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        for dest in hosts:
+            sandbox.host(dest, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, HOSTS="".join(f"{h}\n" for h in hosts), CONTINUE_PAST_FAILED_APPLY="true")
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual([sandbox.calls(h) for h in hosts], [2, 2, 2])
+        self.assertIn("Applied commit", result.log)
+        self.assertIn("on 3 host(s)", result.log)
+        self.assertNotIn("FAILED", result.summary)
+
+    def test_with_the_input_on_a_failed_apply_goes_on_to_the_remaining_hosts_names_the_failed_host_and_ends_red(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"))
+        for dest in hosts[1:]:
+            sandbox.host(dest, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, HOSTS="".join(f"{h}\n" for h in hosts), CONTINUE_PAST_FAILED_APPLY="true")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertEqual([sandbox.calls(h) for h in hosts], [1, 2, 2])
+        self.assertIn("::error::Host 1, apply: verdict failed, reason playbook-failed, exit 30.", result.log)
+        self.assertIn("1 host(s) failed their apply: 1.", result.log)
+        self.assertIn("Host 1: FAILED, apply: verdict failed, reason playbook-failed, exit 30.", result.summary)
+        self.assertIn("Host 2: applied, then a second run that changed nothing.", result.summary)
+        self.assertIn("Host 3: applied, then a second run that changed nothing.", result.summary)
+        self.assertIn("Commit " + SHA + " applied on 2 of 3 host(s).", result.log)
+        self.assertNotIn("Applied commit", result.log)
+        self.assertNotIn(HOST_ONE, result.log + result.summary)
+
+    def test_with_the_input_off_a_failed_apply_still_stops_before_the_next_host(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"))
+        sandbox.host(HOST_TWO, 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, CONTINUE_PAST_FAILED_APPLY="false")
+        self.assertNotEqual(result.code, 0)
+        self.assertEqual(sandbox.calls(HOST_TWO), 0)
+        self.assertNotIn("FAILED", result.summary)
+
+    def test_with_the_input_on_every_kind_of_host_failure_is_recorded_and_the_next_host_is_asked(self) -> None:
+        cases = {
+            "a lost connection": (255, "", None),
+            "an answer that is not the summary line": (0, "nothing\n", None),
+            "an answer for another commit": (10, summary_line("applied", 10, "apply", OTHER_SHA, 2), None),
+            "a refusal": (20, summary_line("refused", 20, "apply", "@SHA@", 0, "rollback"), None),
+            "a second run that changed something": (10, APPLIED, (10, APPLIED, "")),
+        }
+        for name, (code, out, second) in cases.items():
+            with self.subTest(name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, code, out, second=second)
+                sandbox.host(HOST_TWO, 10, APPLIED, second=(0, UNCHANGED, ""))
+                result = self.apply(sandbox, CONTINUE_PAST_FAILED_APPLY="true")
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertEqual(sandbox.calls(HOST_TWO), 2, result.log)
+                self.assertIn("Host 1: FAILED, ", result.summary)
+                self.assertIn("Host 2: applied, then a second run that changed nothing.", result.summary)
+                self.assertIn("1 host(s) failed their apply: 1.", result.log)
+
+    def test_with_the_input_on_two_failed_hosts_are_both_named(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"))
+        sandbox.host(HOST_TWO, 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"))
+        sandbox.host("deploy@host-three", 10, APPLIED, second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, HOSTS="".join(f"{h}\n" for h in hosts), CONTINUE_PAST_FAILED_APPLY="true")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertIn("2 host(s) failed their apply: 1, 2.", result.log)
+        self.assertIn("Host 1: FAILED, ", result.summary)
+        self.assertIn("Host 2: FAILED, ", result.summary)
+        self.assertEqual(sandbox.calls("deploy@host-three"), 2)
+
+    def test_with_the_input_on_a_host_whose_plan_failed_is_still_never_asked(self) -> None:
+        hosts = [HOST_ONE, HOST_TWO, "deploy@host-three"]
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
+        sandbox.host(HOST_TWO, 10, APPLIED, second=(0, UNCHANGED, ""))
+        sandbox.host("deploy@host-three", 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"))
+        result = self.apply(
+            sandbox, HOSTS="".join(f"{h}\n" for h in hosts), APPLY_HOSTS="1 3", CONTINUE_PAST_FAILED_APPLY="true"
+        )
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertEqual([sandbox.calls(h) for h in hosts], [2, 0, 1])
+        self.assertIn("Host 2: skipped, its plan failed.", result.summary)
+        self.assertIn("Host 3: FAILED, ", result.summary)
+
+    def test_with_the_input_on_the_host_output_and_the_key_stay_out_of_the_log(self) -> None:
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 30, summary_line("failed", 30, "apply", "@SHA@", 0, "playbook-failed"), err="TASK [boom]\nfatal: leak\n")
+        sandbox.host(HOST_TWO, 10, APPLIED, "playbook output\n", second=(0, UNCHANGED, ""))
+        result = self.apply(sandbox, CONTINUE_PAST_FAILED_APPLY="true")
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertNotIn("leak", result.log + result.summary)
+        self.assertNotIn("playbook output", result.log + result.summary)
+        self.assertNotIn("FAKE_PRIVATE_KEY_BODY_LINE_ONE", result.log + result.summary)
+        self.assertFalse((sandbox.temp / "ansible-apply" / "id").exists())
 
     def test_an_answer_for_another_mode_or_commit_is_refused(self) -> None:
         for answer in (summary_line("applied", 10, "check", "@SHA@", 2), summary_line("applied", 10, "apply", OTHER_SHA, 2), "nothing\n"):

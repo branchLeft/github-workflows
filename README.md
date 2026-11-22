@@ -288,6 +288,22 @@ With `skip-failed-hosts: true`:
   applied one, so skipping a host never makes it move backwards.
 - The drift check (`fail-on-changes`) ignores the input and judges every host as before.
 
+#### When one host fails its apply (`continue-past-failed-apply`)
+
+By default the apply step stops at the first host whose apply fails (the call, or the
+second run that must change nothing), and the hosts after it get nothing in that run.
+With `continue-past-failed-apply: true` the step records that host and goes on to the
+hosts that remain:
+
+- Each host's verdict goes to the step summary: `Host N: applied, then a second run that
+  changed nothing.` or `Host N: FAILED, <the reason the step prints>`. The same reason is
+  an error line in the job log, and the closing error names every failed host by number.
+- The step still ends red when any host failed, so the `Ansible checks passed` job is red.
+- A host that was not listed by the plan (its plan failed or was withheld) is never asked,
+  whatever this input says. This input and `skip-failed-hosts` are independent.
+- Leave it `false` when a commit can depend on an order across hosts: a host after a
+  failed one then runs without what the failed one should have done.
+
 **The risk, and why it is off by default.** Skipping a failed host while applying the
 others breaks any order across hosts that a commit assumes: a role on one host that
 another host depends on. A caller whose commits can have such a dependency should leave
@@ -344,6 +360,7 @@ Any failure stops the job before the key is read.
 | `push-playbook` | empty | With `ssh_push_hosts`, the playbook a pushed host's receiver is asked to run: a relative path of letters, digits, dot, underscore, dash and slash, with no `..`. See "Pushed hosts". |
 | `push-dry-run-stub` | empty | With `dry-run` and `ssh_push_hosts`, the executable, relative to `working-directory`, that stands in for the receiver of a pushed host. It receives the destination, the mode, the commit and the playbook, and the bundle on standard input. |
 | `skip-failed-hosts` | `false` | `false`: one host that fails its plan fails the plan and nothing is applied. `true`: the hosts that failed are left out, the apply (after approval) covers the hosts that passed, and the run ends red while any host was skipped. Leave it `false` when a commit can depend on an order across hosts. See "When one host fails its plan (`skip-failed-hosts`)". |
+| `continue-past-failed-apply` | `false` | `false`: the apply stops at the first host whose apply fails. `true`: it records that host in the step summary, goes on to the remaining planned hosts, names every failed host, and still ends red. A host whose plan failed is never applied either way. See "When one host fails its apply (`continue-past-failed-apply`)". |
 | `host-timeout-minutes` | 65 | One host call is stopped after this long (the host's own limit is one hour by default). |
 | `plan-timeout-minutes` | 90 | Bound of the plan job. |
 | `apply-timeout-minutes` | 180 | Bound of the apply job, not counting the wait for approval. |

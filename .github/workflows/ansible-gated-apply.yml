@@ -179,6 +179,20 @@ on:
         type: boolean
         required: false
         default: false
+      continue-past-failed-apply:
+        description: >-
+          false (the default) stops the apply at the first host whose apply fails:
+          the hosts after it get nothing in that run. true goes on to the hosts
+          that remain after one host's apply fails (a failed first run, a second
+          run that changed something, a lost connection, an answer that is not the
+          expected line): each host's verdict is written to the step summary, the
+          log and the summary name every host that failed and the reason, and the
+          job still ends red. A host whose plan failed or was withheld is never
+          applied either way. Leave it false when a commit can depend on an order
+          across hosts, because a host after a failed one then runs without it.
+        type: boolean
+        required: false
+        default: false
     secrets:
       ssh_hosts:
         description: >-
@@ -1039,12 +1053,14 @@ jobs:
           JUMP2_HOSTS: ${{ secrets.ssh_jump2_hosts }}
           PUSH_HOSTS: ${{ secrets.ssh_push_hosts }}
           PUSH_PLAYBOOK: ${{ inputs.push-playbook }}
+          CONTINUE_PAST_FAILED_APPLY: ${{ inputs.continue-past-failed-apply }}
         run: |
           set -euo pipefail
           fail() {
             echo "::error::$1"
             exit 1
           }
+          case "$CONTINUE_PAST_FAILED_APPLY" in true | false) ;; *) fail "continue-past-failed-apply must be true or false." ;; esac
           destination_pattern='^[a-z_][a-z0-9_-]{0,31}@[A-Za-z0-9]([A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$'
           [ -n "$APPLY_HOSTS" ] || fail "The guard published no host to apply."
           [ -n "$SSH_KEY" ] || [ -n "$HOST_KEYS" ] || fail "The ssh_apply_key secret is empty. It is a secret of the deployment environment."
@@ -1374,12 +1390,28 @@ jobs:
           if [ -n "$JUMP2_HOSTS" ] && [ "${#ssh_args_two[@]}" -eq 0 ]; then
             fail "ssh_jump2_hosts is set but no second hop is configured."
           fi
+          # One host: the apply, then the second run, which must change nothing. Any
+          # refusal ends it through fail.
+          apply_host() {
+            local first
+            ask "$1" "$2" "apply" "10:applied" "0:unchanged"
+            first="$REPLY_VERDICT"
+            ask "$1" "$2" "the second run, which must change nothing" "0:unchanged"
+            printf 'Host %s: %s, then a second run that changed nothing.\n' "$1" "$first" >> "$GITHUB_STEP_SUMMARY"
+          }
           # i counts every host of the list, so a host's number, its key file id.NN and
           # its route keep their meaning whether or not the hosts before it are
           # skipped. A host the guard did not list failed its plan: it is not asked at
           # all, and a later plan will find it clean before it receives this commit.
+          # By default the first host that fails ends the step (fail exits it). With
+          # continue-past-failed-apply the host runs in a command substitution, where
+          # fail ends only that host: its message is printed, its verdict goes to the
+          # step summary, the next host is asked, and the step ends red at the end.
+          # set -e is set again inside the substitution, which bash clears there.
           i=0
           applied=0
+          failed=0
+          failed_hosts=""
           while IFS= read -r dest; do
             [ -n "$dest" ] || continue
             i=$((i + 1))
@@ -1391,14 +1423,34 @@ jobs:
                 ;;
             esac
             applied=$((applied + 1))
-            ask "$i" "$dest" "apply" "10:applied" "0:unchanged"
-            first="$REPLY_VERDICT"
-            ask "$i" "$dest" "the second run, which must change nothing" "0:unchanged"
-            printf 'Host %s: %s, then a second run that changed nothing.\n' "$i" "$first" >> "$GITHUB_STEP_SUMMARY"
+            if [ "$CONTINUE_PAST_FAILED_APPLY" != true ]; then
+              apply_host "$i" "$dest"
+              continue
+            fi
+            host_rc=0
+            host_out=$(set -e; apply_host "$i" "$dest" 2>&1 < /dev/null) || host_rc=$?
+            [ -z "$host_out" ] || printf '%s\n' "$host_out"
+            if [ "$host_rc" -ne 0 ]; then
+              failed=$((failed + 1))
+              failed_hosts="${failed_hosts:+$failed_hosts, }$i"
+              host_why=$(printf '%s\n' "$host_out" | grep -m 1 '^::error::' || true)
+              host_why="${host_why#::error::}"
+              host_why="${host_why#Host "$i", }"
+              [ -n "$host_why" ] || host_why="the apply stopped (exit $host_rc)."
+              printf 'Host %s: FAILED, %s\n' "$i" "$host_why" >> "$GITHUB_STEP_SUMMARY"
+            fi
           done <<< "$HOSTS"
-          echo "Applied commit $SHA on $applied host(s)."
+          if [ "$failed" -eq 0 ]; then
+            echo "Applied commit $SHA on $applied host(s)."
+          else
+            echo "Commit $SHA applied on $((applied - failed)) of $applied host(s)."
+          fi
           if [ "$applied" -lt "$i" ]; then
             echo "$((i - applied)) host(s) were skipped because their plan failed."
+          fi
+          if [ "$failed" -gt 0 ]; then
+            printf 'Failed: host(s) %s. Each host after a failed one was still asked.\n' "$failed_hosts" >> "$GITHUB_STEP_SUMMARY"
+            fail "$failed host(s) failed their apply: $failed_hosts. The other planned hosts were still applied; the run is red."
           fi
 
   # The check a caller requires. It runs even when a needed job failed or was
