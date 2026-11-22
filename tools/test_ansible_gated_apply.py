@@ -7368,13 +7368,241 @@ class PushApplyTests(unittest.TestCase):
                 self.assertEqual(sandbox.ssh_log(), [], name)
 
 
+# ---------------------------------------------------------------------------
+# The release tags in the bundle (T8 of shared-infra docs/pull-signer-trust.md).
+# A host told to require a release tag applies a commit only if an annotated tag of the shape release/YYYYMMDD.N, whose own
+# text names exactly that commit, is signed by a release key; the receiver reads
+# the tags from the bundle. The sender's half is that the bundle carries them.
+# ---------------------------------------------------------------------------
+
+RELEASE_NAME = re.compile(r"release/[0-9]{8}\.[0-9]{1,4}")
+SSH_SIGNATURE_START = b"-----BEGIN SSH SIGNATURE-----"
+SSH_GOOD = re.compile(r'Good "git" signature with [A-Z0-9-]+ key (SHA256:[A-Za-z0-9+/]+)')
+
+
+class ReleaseKey:
+    """An SSH key pair made for one test: the private key signs, the fingerprint is what a host would trust."""
+
+    def __init__(self, test: unittest.TestCase, directory: Path, name: str) -> None:
+        self.private = directory / name
+        subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-C", name, "-f", str(self.private)], check=True)
+        listed = subprocess.run(["ssh-keygen", "-l", "-f", f"{self.private}.pub"], capture_output=True, text=True, check=True).stdout
+        self.fingerprint = listed.split()[1]
+
+
+class ReleaseWorkspace(Workspace):
+    """The scratch checkout, with the means to make tags in it as the owner's release would be made."""
+
+    def sign_tag(self, name: str, key: ReleaseKey, target: str | None = None, message: str | None = None) -> str:
+        """An annotated tag `name` signed with `key`, on `target` (a commit, or another tag), and its ref."""
+        git("-c", "gpg.format=ssh", "-c", f"user.signingkey={key.private}", "tag", "-s", "-m", message or name, name, target or self.head, cwd=self.path)
+        return f"refs/tags/{name}"
+
+    def lightweight_tag(self, name: str) -> str:
+        git("-c", "tag.gpgsign=false", "tag", name, self.head, cwd=self.path)
+        return f"refs/tags/{name}"
+
+    def parent(self) -> str:
+        return git("rev-parse", "HEAD~1", cwd=self.path)
+
+
+def bundle_heads(bundle: bytes, scratch: Path) -> list[str]:
+    """The ref names the bundle carries, which are what a receiver can fetch."""
+    file = scratch / "heads.bundle"
+    file.write_bytes(bundle)
+    listing = git("bundle", "list-heads", str(file), cwd=scratch)
+    return sorted(line.split(" ", 1)[1] for line in listing.splitlines())
+
+
+class ReceiverAdmission:
+    """What the receiver does with the release tags of a bundle, written out from shared-infra's pull_trigger.
+
+    The receiver (`ansible/roles/pull_trigger/files/pull_trigger.py`, `release_tags_naming` and
+    `ReleaseVerifier`) fetches `+refs/tags/release/*` from the bundle into a private
+    namespace, keeps an annotated tag whose own `object` and `type` lines name exactly the commit and whose
+    own `tag` line has the release shape, and requires its SSH signature, made under the namespace `git`,
+    to be by a release key. This is that, so the sender is held to what the receiver reads. It is a mirror,
+    not the receiver: the receiver's own tests are the proof of its half.
+    """
+
+    def __init__(self, test: unittest.TestCase, directory: Path, key: ReleaseKey) -> None:
+        self.directory = directory
+        self.key = key
+        self.test = test
+
+    def verdict(self, bundle: bytes, commit: str) -> str:
+        """`admitted`, or the receiver's reason `release-tag-missing`."""
+        repo = self.directory / "receiver-admission"
+        shutil.rmtree(repo, True)
+        repo.mkdir()
+        file = repo / "in.bundle"
+        file.write_bytes(bundle)
+        git("init", "-q", "--bare", ".", cwd=repo)
+        git("fetch", "-q", "--no-tags", str(file), "+HEAD:refs/quarantine", "+refs/tags/release/*:refs/pull-trigger/release/*", cwd=repo)
+        fields = "%(objectname) %(objecttype) %(tag) %(*objecttype) %(*objectname)"
+        for line in git("for-each-ref", f"--format={fields}", "refs/pull-trigger/release/", cwd=repo).splitlines():
+            parts = line.split(" ")
+            if len(parts) != 5:
+                continue
+            tag_id, kind, name, target_kind, target = parts
+            if kind != "tag" or target_kind != "commit" or target != commit or not RELEASE_NAME.fullmatch(name):
+                continue
+            raw = subprocess.run(["git", "--git-dir", str(repo), "cat-file", "tag", tag_id], capture_output=True, check=True).stdout
+            if raw.split(b"\n", 2)[:2] != [f"object {commit}".encode(), b"type commit"]:
+                continue
+            if self.signed_by_release_key(raw, repo):
+                return "admitted"
+        return "release-tag-missing"
+
+    def signed_by_release_key(self, raw: bytes, scratch: Path) -> bool:
+        starts = raw.rfind(SSH_SIGNATURE_START)
+        if starts < 0:
+            return False
+        (scratch / "tag.sig").write_bytes(raw[starts:])
+        done = subprocess.run(
+            ["ssh-keygen", "-Y", "check-novalidate", "-n", "git", "-s", str(scratch / "tag.sig")],
+            input=raw[:starts],
+            capture_output=True,
+            check=False,
+        )
+        if done.returncode != 0:
+            return False
+        found = (SSH_GOOD.fullmatch(line.strip()) for line in done.stdout.decode().splitlines())
+        return any(good is not None and good.group(1) == self.key.fingerprint for good in found)
+
+
+def bundle_snippet_sources() -> dict[str, str]:
+    """The two copies of the bundle snippet: the action's, and the apply job's."""
+    return {
+        "the action": snippet(action_step("check")["run"], "# --- bundle begin", "# --- bundle end"),
+        "the apply job": snippet(find_step_named("apply", "Apply on each host")["run"], "# --- bundle begin", "# --- bundle end"),
+    }
+
+
+def made_bundle(text: str, ws: Workspace, sha: str | None = None) -> bytes:
+    """Run the snippet's make_bundle in the scratch checkout, as the step does, and return the bundle."""
+    out = ws.dir / "made.bundle"
+    out.unlink(missing_ok=True)
+    script = 'set -euo pipefail\nfail() { echo "::error::$1" >&2; exit 1; }\n' + text + '\nmake_bundle "$1" "$2"\n'
+    done = subprocess.run(
+        ["bash", "-c", script, "bash", str(out), sha or ws.head],
+        env={**os.environ, "GITHUB_WORKSPACE": str(ws.path)},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if done.returncode != 0:
+        raise AssertionError(done.stderr)
+    return out.read_bytes()
+
+
+class PushReleaseTagTests(unittest.TestCase):
+    """The bundle carries the release tags that name the commit, so a host that requires one can read them."""
+
+    def setUp(self) -> None:
+        self.ws = ReleaseWorkspace(self)
+        self.release = ReleaseKey(self, self.ws.dir, "release-key")
+        self.other = ReleaseKey(self, self.ws.dir, "other-key")
+        self.receiver = ReceiverAdmission(self, self.ws.dir, self.release)
+
+    def each_source(self) -> Any:
+        for label, text in bundle_snippet_sources().items():
+            with self.subTest(source=label):
+                yield text
+
+    def test_a_signed_release_tag_that_names_the_commit_is_in_the_bundle_and_the_receiver_admits_it(self) -> None:
+        ref = self.ws.sign_tag("release/20261119.1", self.release)
+        for text in self.each_source():
+            bundle = made_bundle(text, self.ws)
+            self.assertEqual(bundle_heads(bundle, self.ws.dir), sorted(["HEAD", ref]))
+            self.assertEqual(self.ws.read_bundle(bundle, self), 3)
+            self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "admitted")
+
+    def test_with_no_release_tag_the_bundle_is_the_commit_alone_and_a_receiver_that_requires_a_tag_refuses_it(self) -> None:
+        for text in self.each_source():
+            bundle = made_bundle(text, self.ws)
+            self.assertEqual(bundle_heads(bundle, self.ws.dir), ["HEAD"])
+            self.assertEqual(self.ws.read_bundle(bundle, self), 3)
+            self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "release-tag-missing")
+
+    def test_a_tag_that_is_there_but_is_not_put_in_the_bundle_is_refused_by_the_receiver(self) -> None:
+        # The failure this change closes: the owner signed a release, the checkout holds it, and a bundle
+        # made without it is the same commit that no host which requires a tag will apply.
+        self.ws.sign_tag("release/20261119.1", self.release)
+        for text in self.each_source():
+            bare = subprocess.run(
+                ["git", "-C", str(self.ws.path), "bundle", "create", str(self.ws.dir / "bare.bundle"), "HEAD"],
+                capture_output=True,
+                check=True,
+            )
+            self.assertEqual(bare.returncode, 0)
+            self.assertEqual(self.receiver.verdict((self.ws.dir / "bare.bundle").read_bytes(), self.ws.head), "release-tag-missing")
+            self.assertEqual(self.receiver.verdict(made_bundle(text, self.ws), self.ws.head), "admitted")
+
+    def test_every_release_tag_that_names_the_commit_is_sent_and_only_those(self) -> None:
+        first = self.ws.sign_tag("release/20261119.1", self.release)
+        second = self.ws.sign_tag("release/20261119.2", self.release)
+        # Not sent: a tag on another commit, a lightweight tag, a tag of a tag, a tag outside release/.
+        self.ws.sign_tag("release/20261118.1", self.release, target=self.ws.parent())
+        self.ws.lightweight_tag("release/20261119.3")
+        self.ws.sign_tag("release/20261119.4", self.release, target="refs/tags/release/20261119.1")
+        self.ws.sign_tag("v1.0.0", self.release)
+        for text in self.each_source():
+            bundle = made_bundle(text, self.ws)
+            self.assertEqual(bundle_heads(bundle, self.ws.dir), sorted(["HEAD", first, second]))
+            self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "admitted")
+
+    def test_the_sender_carries_a_tag_it_cannot_vouch_for_and_the_receiver_alone_judges_its_signature(self) -> None:
+        ref = self.ws.sign_tag("release/20261119.1", self.other)
+        for text in self.each_source():
+            bundle = made_bundle(text, self.ws)
+            self.assertIn(ref, bundle_heads(bundle, self.ws.dir))
+            self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "release-tag-missing")
+
+    def test_a_tag_for_another_commit_does_not_admit_this_one(self) -> None:
+        self.ws.sign_tag("release/20261119.1", self.release, target=self.ws.parent())
+        for text in self.each_source():
+            bundle = made_bundle(text, self.ws)
+            self.assertEqual(bundle_heads(bundle, self.ws.dir), ["HEAD"])
+            self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "release-tag-missing")
+
+    def test_the_checks_of_the_checkout_come_before_any_tag_is_read(self) -> None:
+        self.ws.sign_tag("release/20261119.1", self.release)
+        for text in self.each_source():
+            with self.assertRaises(AssertionError) as raised:
+                made_bundle(text, self.ws, sha=OTHER_SHA)
+            self.assertIn("not at the commit being delivered", str(raised.exception))
+
+    def test_the_plan_step_sends_the_release_tag_in_the_bundle_to_a_pushed_host(self) -> None:
+        self.ws.sign_tag("release/20261119.1", self.release)
+        sandbox = push_sandbox(self)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        sandbox.host(HOST_TWO, 0, PUSH_CLEAN)
+        values = {"SHA": self.ws.head, "PUSH_HOSTS": f"{HOST_TWO}\n", "PUSH_PLAYBOOK": PUSH_PLAYBOOK, "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}
+        result = sandbox.run(action_step("check"), check_env(**values), self.ws.extra())
+        self.assertEqual(result.code, 0, result.log)
+        bundle = stdin_of(sandbox, HOST_TWO)
+        self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "admitted")
+
+    def test_the_apply_step_sends_the_release_tag_in_the_bundle_to_a_pushed_host_on_both_runs(self) -> None:
+        self.ws.sign_tag("release/20261119.1", self.release)
+        sandbox = push_sandbox(self)
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
+        sandbox.host(HOST_TWO, 10, PUSH_APPLIED, second=(0, PUSH_UNCHANGED, ""))
+        values = {"SHA": self.ws.head, "PUSH_HOSTS": f"{HOST_TWO}\n", "PUSH_PLAYBOOK": PUSH_PLAYBOOK, "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}
+        result = sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(**values), self.ws.extra())
+        self.assertEqual(result.code, 0, result.log)
+        for run in (1, 2):
+            self.assertEqual(self.receiver.verdict(stdin_of(sandbox, HOST_TWO, run), self.ws.head), "admitted", run)
+
+
 class PushParityTests(unittest.TestCase):
     """The apply job cannot call the action, so it holds copies; each pair is held equal here."""
 
     def test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job(self) -> None:
         action = snippet(action_step("check")["run"], "# --- bundle begin", "# --- bundle end")
         applied = snippet(find_step_named("apply", "Apply on each host")["run"], "# --- bundle begin", "# --- bundle end")
-        self.assertIn("git -C \"$GITHUB_WORKSPACE\" bundle create \"$file\" HEAD", action)
+        self.assertIn("git -C \"$GITHUB_WORKSPACE\" bundle create \"$file\" \"${refs[@]}\"", action)
         self.assertEqual(action, applied)
 
     def test_the_push_line_is_the_contract_and_the_same_in_the_action_and_in_the_apply_job(self) -> None:

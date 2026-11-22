@@ -713,6 +713,7 @@ class TheTable(unittest.TestCase):
                     "@branchleft/eslint-config",
                     "@branchleft/ghost-platform-broker-api",
                     "@branchleft/ghost-platform-render-core",
+                    "@branchleft/ghost-platform-ring-controller",
                     "@branchleft/ghost-platform-tenant",
                     "@branchleft/hetzner-host",
                     "@branchleft/prettier-config",
