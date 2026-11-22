@@ -106,6 +106,13 @@ IDENTITIES: tuple[Identity, ...] = (
         ref_template="refs/heads/main",
     ),
     Identity(
+        package="@branchleft/ghost-platform-ring-controller",
+        repo="branchLeft/ghost-platform",
+        workflow="publish-ring-controller.yml",
+        ref_regex=r"refs/tags/ring-controller-v\d+\.\d+\.\d+",
+        ref_template="refs/tags/ring-controller-v{version}",
+    ),
+    Identity(
         package="@branchleft/hetzner-host",
         repo="branchLeft/shared-infra",
         workflow="publish-hetzner-host.yml",
