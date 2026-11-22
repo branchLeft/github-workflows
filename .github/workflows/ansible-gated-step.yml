@@ -39,6 +39,15 @@ on:
           dispatched and the account that started this run must be it.
         type: string
         required: true
+      owner-id:
+        description: >-
+          The numeric id of that account, which a re-registered login cannot
+          take. Pass the repository variable STEP_OWNER_ID. Both the account
+          that dispatched and the account that started this run must have it.
+          Unset, empty or not a plain integer, every dispatch is refused.
+        type: string
+        required: false
+        default: ''
       step-inventory:
         description: >-
           The host's inventory file, relative to the repository root, whose
@@ -117,7 +126,11 @@ jobs:
           SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ACTOR_ID: ${{ github.actor_id }}
           OWNER: ${{ inputs.owner-login }}
+          OWNER_ID: ${{ inputs.owner-id }}
+          API_URL: ${{ github.api_url }}
+          GH_TOKEN: ${{ github.token }}
           STEP: ${{ inputs.step }}
           CONFIRM: ${{ inputs.confirm }}
           ENVIRONMENT: ${{ inputs.environment }}
@@ -141,6 +154,13 @@ jobs:
           triggering=$(printf '%s' "$TRIGGERING_ACTOR" | tr '[:upper:]' '[:lower:]')
           [ "$actor" = "$owner" ] || fail "The dispatch was not made by the owner's account."
           [ "$triggering" = "$owner" ] || fail "This run was not started by the owner's account."
+          id_re='^[1-9][0-9]{0,18}$'
+          [[ "$OWNER_ID" =~ $id_re ]] || fail "owner-id (the variable STEP_OWNER_ID) is unset or not a plain integer."
+          [[ "$ACTOR_ID" =~ $id_re ]] || fail "The dispatching account has no numeric id."
+          [ "$ACTOR_ID" = "$OWNER_ID" ] || fail "The dispatch was not made by the owner's account id."
+          triggering_id=$(curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API_URL/users/$TRIGGERING_ACTOR" | jq -r '.id // empty') || fail "The id of the account that started this run could not be read."
+          [[ "$triggering_id" =~ $id_re ]] || fail "The account that started this run has no numeric id."
+          [ "$triggering_id" = "$OWNER_ID" ] || fail "This run was not started by the owner's account id."
           step_re='^[a-z][a-z0-9_]{0,31}$'
           [[ "$STEP" =~ $step_re ]] || fail "The step must be lowercase letters, digits and underscore, starting with a letter, at most 32 characters."
           confirm_re='^[A-Z0-9-]{4,32}$'
@@ -267,7 +287,11 @@ jobs:
           GUARDED_STEP: ${{ needs.guard.outputs.step }}
           ACTOR: ${{ github.actor }}
           TRIGGERING_ACTOR: ${{ github.triggering_actor }}
+          ACTOR_ID: ${{ github.actor_id }}
           OWNER: ${{ inputs.owner-login }}
+          OWNER_ID: ${{ inputs.owner-id }}
+          API_URL: ${{ github.api_url }}
+          GH_TOKEN: ${{ github.token }}
           STEP: ${{ inputs.step }}
           CONFIRM: ${{ inputs.confirm }}
         run: |
@@ -290,6 +314,13 @@ jobs:
           triggering=$(printf '%s' "$TRIGGERING_ACTOR" | tr '[:upper:]' '[:lower:]')
           [ "$actor" = "$owner" ] || fail "The dispatch was not made by the owner's account."
           [ "$triggering" = "$owner" ] || fail "This run was not started by the owner's account."
+          id_re='^[1-9][0-9]{0,18}$'
+          [[ "$OWNER_ID" =~ $id_re ]] || fail "owner-id (the variable STEP_OWNER_ID) is unset or not a plain integer."
+          [[ "$ACTOR_ID" =~ $id_re ]] || fail "The dispatching account has no numeric id."
+          [ "$ACTOR_ID" = "$OWNER_ID" ] || fail "The dispatch was not made by the owner's account id."
+          triggering_id=$(curl --fail --silent --show-error --max-time 20 -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "$API_URL/users/$TRIGGERING_ACTOR" | jq -r '.id // empty') || fail "The id of the account that started this run could not be read."
+          [[ "$triggering_id" =~ $id_re ]] || fail "The account that started this run has no numeric id."
+          [ "$triggering_id" = "$OWNER_ID" ] || fail "This run was not started by the owner's account id."
           step_re='^[a-z][a-z0-9_]{0,31}$'
           [[ "$STEP" =~ $step_re ]] || fail "The step must be lowercase letters, digits and underscore, starting with a letter, at most 32 characters."
           confirm_re='^[A-Z0-9-]{4,32}$'
