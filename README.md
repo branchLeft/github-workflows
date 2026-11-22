@@ -527,6 +527,22 @@ its start for each push host, and again for the apply job's second run, so each 
 gets the whole bundle. The apply job cannot call the action, so it holds a copy of
 the snippet; a test holds the two equal.
 
+**The release tags in the bundle.** A host that the receiver tells to require a
+release tag (`require_release_tag`, shared-infra `docs/pull-signer-trust.md`, T8)
+applies a commit only if an annotated tag `release/YYYYMMDD.N` that names it is
+signed by a release key, and it reads that tag from the bundle, with no route to
+GitHub. So the bundle is made with `HEAD` and every ref under `refs/tags/release/`
+that is an annotated tag whose own `object` line is the commit being delivered and
+whose `type` is `commit`. A lightweight tag, a tag of a tag, a tag on another commit
+and a tag outside `release/` are left out. The sender judges no signature, name or
+count: the receiver does, and refuses with `release-tag-missing` when no tag it
+accepts is there. With no such tag the bundle is the commit alone, as before, so a
+host that does not require a tag is unaffected. The tag must already be in the
+checkout (`fetch-depth: 0` fetches every tag), so a release is signed and pushed
+before the delivery that is to carry it. The tag trigger of the delivery, the
+release keys and the flag on a host are separate items; until the owner has signed a
+release, nothing sets the flag.
+
 **How a pushed host's answer is judged.** Each host is judged by its route and by the
 one line its route speaks. A push host is accepted only with the `push-receiver`
 line, whose `mode` is the one asked for; a `pull-trigger` line from a push host is

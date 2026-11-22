@@ -1328,12 +1328,26 @@ jobs:
           if [ -n "$PUSH_HOSTS" ]; then
             # --- bundle begin (this text is the same in ssh-check-hosts and in ansible-gated-apply.yml; a test holds the two equal)
             make_bundle() {
-              local file="$1" sha="$2" head
+              local file="$1" sha="$2" head listing kind target target_kind ref
+              local -a refs=(HEAD)
               [ "$(git -C "$GITHUB_WORKSPACE" rev-parse --is-shallow-repository)" = false ] \
                 || fail "The checkout of the repository is shallow, so its bundle would not carry the history the host needs."
               head=$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD) || fail "The checkout of the repository could not be read."
               [ "$head" = "$sha" ] || fail "The checkout of the repository is not at the commit being delivered."
-              git -C "$GITHUB_WORKSPACE" bundle create "$file" HEAD > /dev/null 2>&1 || fail "The bundle of the commit could not be made."
+              # The release tags that name this commit travel with it. A host told to require one
+              # takes its trust from the owner's signature on the tag, which it can check with no
+              # route to GitHub. Only an annotated tag under refs/tags/release/ whose own object
+              # line is this commit is sent (a lightweight tag and a tag of a tag are not). The
+              # receiver judges the signature, the name and the count; the sender judges none.
+              # With no such tag the bundle is the commit alone, as it was.
+              listing=$(git -C "$GITHUB_WORKSPACE" for-each-ref --format='%(objecttype) %(object) %(type) %(refname)' refs/tags/release/) \
+                || fail "The release tags of the repository could not be read."
+              while read -r kind target target_kind ref; do
+                if [ "$kind" = tag ] && [ "$target" = "$sha" ] && [ "$target_kind" = commit ]; then
+                  refs+=("$ref")
+                fi
+              done <<< "$listing"
+              git -C "$GITHUB_WORKSPACE" bundle create "$file" "${refs[@]}" > /dev/null 2>&1 || fail "The bundle of the commit could not be made."
             }
             # --- bundle end
             push_bundle="$work/push.bundle"

@@ -198,7 +198,7 @@
           },
           "id": "check",
           "name": "Check every host in check mode",
-          "run-sha256": "5f36d70e2c30ee208d3c37a6a767beb743d18068425313754046269aa07ebe08",
+          "run-sha256": "845b960bb03948ba7b27516852c344e6aae7c787fb70f7e7f11cb862605feeae",
           "shell": "bash"
         },
         {
@@ -695,7 +695,7 @@
               "SSH_KEY": "${{ secrets.ssh_apply_key }}"
             },
             "name": "Apply on each host, then run it again to prove nothing is left to change",
-            "run-sha256": "ef26ceacb58036257867d2975b1fea5127ce6316dc78543103e8cdd4520c7edb"
+            "run-sha256": "02b7b4ef0263d38590c44dee83be13b6ff0fdfcfefcfbf7054cdb5454f8f01cf"
           }
         ],
         "timeout-minutes": "${{ inputs.apply-timeout-minutes }}"
