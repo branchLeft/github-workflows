@@ -6850,8 +6850,13 @@ PUSH_APPLIED = push_line("applied", 10, "apply", "@SHA@", 2)
 PUSH_UNCHANGED = push_line("unchanged", 0, "apply", "@SHA@", 0)
 
 
+MAIN_REF = "refs/remotes/origin/main"
+
+
 class Workspace:
-    """A scratch git repository standing in for the caller's checkout: three commits, so the bundle carries history."""
+    """A scratch git repository standing in for the caller's checkout: three commits, so the bundle carries history.
+
+    The tip of main is `refs/remotes/origin/main`, at the head, as a full-history checkout of a push to main has it."""
 
     def __init__(self, test: unittest.TestCase, shallow: bool = False) -> None:
         self.dir = Path(tempfile.mkdtemp(prefix="gated-apply-workspace-"))
@@ -6864,6 +6869,8 @@ class Workspace:
             git("add", "file.txt", cwd=source)
             git("commit", "-q", "-m", f"commit {number}", cwd=source)
         self.head = git("rev-parse", "HEAD", cwd=source)
+        # A delivery's checkout (fetch-depth 0) holds the tip of main as a remote-tracking ref.
+        git("update-ref", MAIN_REF, self.head, cwd=source)
         self.path = source
         if shallow:
             clone = self.dir / "shallow"
@@ -7514,14 +7521,14 @@ class PushReleaseTagTests(unittest.TestCase):
         ref = self.ws.sign_tag("release/20261119.1", self.release)
         for text in self.each_source():
             bundle = made_bundle(text, self.ws)
-            self.assertEqual(bundle_heads(bundle, self.ws.dir), sorted(["HEAD", ref]))
+            self.assertEqual(bundle_heads(bundle, self.ws.dir), sorted(["HEAD", MAIN_REF, ref]))
             self.assertEqual(self.ws.read_bundle(bundle, self), 3)
             self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "admitted")
 
-    def test_with_no_release_tag_the_bundle_is_the_commit_alone_and_a_receiver_that_requires_a_tag_refuses_it(self) -> None:
+    def test_with_no_release_tag_the_bundle_is_the_commit_and_the_tip_of_main_and_a_receiver_that_requires_a_tag_refuses_it(self) -> None:
         for text in self.each_source():
             bundle = made_bundle(text, self.ws)
-            self.assertEqual(bundle_heads(bundle, self.ws.dir), ["HEAD"])
+            self.assertEqual(bundle_heads(bundle, self.ws.dir), sorted(["HEAD", MAIN_REF]))
             self.assertEqual(self.ws.read_bundle(bundle, self), 3)
             self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "release-tag-missing")
 
@@ -7549,7 +7556,7 @@ class PushReleaseTagTests(unittest.TestCase):
         self.ws.sign_tag("v1.0.0", self.release)
         for text in self.each_source():
             bundle = made_bundle(text, self.ws)
-            self.assertEqual(bundle_heads(bundle, self.ws.dir), sorted(["HEAD", first, second]))
+            self.assertEqual(bundle_heads(bundle, self.ws.dir), sorted(["HEAD", MAIN_REF, first, second]))
             self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "admitted")
 
     def test_the_sender_carries_a_tag_it_cannot_vouch_for_and_the_receiver_alone_judges_its_signature(self) -> None:
@@ -7563,7 +7570,7 @@ class PushReleaseTagTests(unittest.TestCase):
         self.ws.sign_tag("release/20261119.1", self.release, target=self.ws.parent())
         for text in self.each_source():
             bundle = made_bundle(text, self.ws)
-            self.assertEqual(bundle_heads(bundle, self.ws.dir), ["HEAD"])
+            self.assertEqual(bundle_heads(bundle, self.ws.dir), sorted(["HEAD", MAIN_REF]))
             self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "release-tag-missing")
 
     def test_the_checks_of_the_checkout_come_before_any_tag_is_read(self) -> None:
@@ -7594,6 +7601,135 @@ class PushReleaseTagTests(unittest.TestCase):
         self.assertEqual(result.code, 0, result.log)
         for run in (1, 2):
             self.assertEqual(self.receiver.verdict(stdin_of(sandbox, HOST_TWO, run), self.ws.head), "admitted", run)
+
+
+# ---------------------------------------------------------------------------
+# The tip of main in the bundle (shared-infra pull_trigger.py `require_ancestor_of_main`).
+# A host with no route to GitHub has no main of its own. Its receiver unpacks `refs/remotes/origin/main` from the
+# bundle and refuses a commit that is not an ancestor of it, and a bundle that carries none, as `not-on-main`.
+# The sender's half is that the bundle carries the tip.
+# ---------------------------------------------------------------------------
+
+
+class MainWorkspace(Workspace):
+    """The scratch checkout, with the means to move the tip of main it holds."""
+
+    def set_main(self, commit: str) -> None:
+        git("update-ref", MAIN_REF, commit, cwd=self.path)
+
+    def drop_main(self) -> None:
+        git("update-ref", "-d", MAIN_REF, cwd=self.path)
+
+    def parent(self) -> str:
+        return git("rev-parse", "HEAD~1", cwd=self.path)
+
+    def next_commit(self) -> str:
+        """A commit on top of the head, which main can have moved on to."""
+        return git("commit-tree", "-p", self.head, "-m", "next", f"{self.head}^{{tree}}", cwd=self.path)
+
+
+class MainAdmission:
+    """What the receiver asks of the tip of main in a bundle, written out from shared-infra's pull_trigger.
+
+    The receiver (`ansible/roles/pull_trigger/files/pull_trigger.py`, `Quarantine.carries_main`, `Quarantine.admit`
+    and `Repository.require_ancestor_of_main`) lists the bundle's heads for `refs/remotes/origin/main`, fetches it
+    into a private ref when it is there, and then refuses the commit if there is no such ref or the commit is not an
+    ancestor of it. This is that, so the sender is held to what the receiver reads. It is a mirror, not the
+    receiver: the receiver's own tests are the proof of its half.
+    """
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+
+    def verdict(self, bundle: bytes, commit: str) -> str:
+        """`on-main`, or the receiver's reason `not-on-main`."""
+        repo = self.directory / "receiver-main"
+        shutil.rmtree(repo, True)
+        repo.mkdir()
+        file = repo / "in.bundle"
+        file.write_bytes(bundle)
+        git("init", "-q", "--bare", ".", cwd=repo)
+        git("fetch", "-q", "--no-tags", str(file), "+HEAD:refs/quarantine", cwd=repo)
+        if not git("bundle", "list-heads", str(file), MAIN_REF, cwd=repo):
+            return "not-on-main"
+        git("fetch", "-q", "--no-tags", str(file), f"+{MAIN_REF}:refs/pull-trigger/main", cwd=repo)
+        behind = subprocess.run(["git", "--git-dir", str(repo), "merge-base", "--is-ancestor", commit, "refs/pull-trigger/main"], check=False)
+        return "on-main" if behind.returncode == 0 else "not-on-main"
+
+
+class PushMainTipTests(unittest.TestCase):
+    """The bundle carries the tip of main, so a receiver that has no main of its own can tell the commit is on it."""
+
+    def setUp(self) -> None:
+        self.ws = MainWorkspace(self)
+        self.receiver = MainAdmission(self.ws.dir)
+
+    def each_source(self) -> Any:
+        for label, text in bundle_snippet_sources().items():
+            with self.subTest(source=label):
+                yield text
+
+    def tip_in(self, bundle: bytes) -> str:
+        file = self.ws.dir / "tip.bundle"
+        file.write_bytes(bundle)
+        return git("bundle", "list-heads", str(file), MAIN_REF, cwd=self.ws.dir).split(" ", 1)[0]
+
+    def test_the_bundle_carries_the_tip_of_main_under_its_own_name_and_the_receiver_finds_the_commit_on_it(self) -> None:
+        for text in self.each_source():
+            bundle = made_bundle(text, self.ws)
+            self.assertIn(MAIN_REF, bundle_heads(bundle, self.ws.dir))
+            self.assertEqual(self.tip_in(bundle), self.ws.head)
+            self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "on-main")
+
+    def test_a_bundle_of_the_commit_alone_is_refused_by_the_receiver_which_is_what_the_sender_did_before(self) -> None:
+        bare = self.ws.dir / "bare.bundle"
+        subprocess.run(["git", "-C", str(self.ws.path), "bundle", "create", str(bare), "HEAD"], capture_output=True, check=True)
+        self.assertEqual(self.receiver.verdict(bare.read_bytes(), self.ws.head), "not-on-main")
+        for text in self.each_source():
+            self.assertEqual(self.receiver.verdict(made_bundle(text, self.ws), self.ws.head), "on-main")
+
+    def test_when_main_has_moved_on_the_tip_sent_is_the_tip_the_checkout_holds_and_the_commit_is_behind_it(self) -> None:
+        later = self.ws.next_commit()
+        self.ws.set_main(later)
+        for text in self.each_source():
+            bundle = made_bundle(text, self.ws)
+            self.assertEqual(self.tip_in(bundle), later)
+            self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "on-main")
+
+    def test_a_commit_that_is_not_behind_the_tip_is_still_sent_and_the_receiver_alone_refuses_it(self) -> None:
+        self.ws.set_main(self.ws.parent())
+        for text in self.each_source():
+            bundle = made_bundle(text, self.ws)
+            self.assertEqual(self.tip_in(bundle), self.ws.parent())
+            self.assertEqual(self.receiver.verdict(bundle, self.ws.head), "not-on-main")
+
+    def test_a_checkout_that_holds_no_tip_of_main_is_refused_before_a_bundle_is_made(self) -> None:
+        self.ws.drop_main()
+        for text in self.each_source():
+            with self.assertRaises(AssertionError) as raised:
+                made_bundle(text, self.ws)
+            self.assertIn("no tip of main", str(raised.exception))
+            self.assertFalse((self.ws.dir / "made.bundle").exists())
+
+    def test_the_plan_step_sends_the_tip_of_main_in_the_bundle_to_a_pushed_host(self) -> None:
+        sandbox = push_sandbox(self)
+        sandbox.host(HOST_ONE, 0, CLEAN)
+        sandbox.host(HOST_TWO, 0, PUSH_CLEAN)
+        values = {"SHA": self.ws.head, "PUSH_HOSTS": f"{HOST_TWO}\n", "PUSH_PLAYBOOK": PUSH_PLAYBOOK, "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}
+        result = sandbox.run(action_step("check"), check_env(**values), self.ws.extra())
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(self.receiver.verdict(stdin_of(sandbox, HOST_TWO), self.ws.head), "on-main")
+
+    def test_the_apply_step_sends_the_tip_of_main_in_the_bundle_to_a_pushed_host_on_both_runs(self) -> None:
+        # The second run is the delivery's zero-changes pass: a receiver that refuses it refuses the delivery.
+        sandbox = push_sandbox(self)
+        sandbox.host(HOST_ONE, 10, APPLIED, second=(0, UNCHANGED, ""))
+        sandbox.host(HOST_TWO, 10, PUSH_APPLIED, second=(0, PUSH_UNCHANGED, ""))
+        values = {"SHA": self.ws.head, "PUSH_HOSTS": f"{HOST_TWO}\n", "PUSH_PLAYBOOK": PUSH_PLAYBOOK, "JUMP_HOST": JUMP_HOST, "JUMP_KEY": JUMP_KEY}
+        result = sandbox.run(find_step_named("apply", "Apply on each host"), apply_env(**values), self.ws.extra())
+        self.assertEqual(result.code, 0, result.log)
+        for run in (1, 2):
+            self.assertEqual(self.receiver.verdict(stdin_of(sandbox, HOST_TWO, run), self.ws.head), "on-main", run)
 
 
 class PushParityTests(unittest.TestCase):

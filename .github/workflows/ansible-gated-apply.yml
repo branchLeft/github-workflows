@@ -1355,7 +1355,7 @@ jobs:
               # route to GitHub. Only an annotated tag under refs/tags/release/ whose own object
               # line is this commit is sent (a lightweight tag and a tag of a tag are not). The
               # receiver judges the signature, the name and the count; the sender judges none.
-              # With no such tag the bundle is the commit alone, as it was.
+              # With no such tag the bundle is the commit and the tip of main.
               listing=$(git -C "$GITHUB_WORKSPACE" for-each-ref --format='%(objecttype) %(object) %(type) %(refname)' refs/tags/release/) \
                 || fail "The release tags of the repository could not be read."
               while read -r kind target target_kind ref; do
@@ -1363,6 +1363,13 @@ jobs:
                   refs+=("$ref")
                 fi
               done <<< "$listing"
+              # The tip of main, as this checkout knows it, travels with the commit under the name
+              # refs/remotes/origin/main. A host with no route to GitHub has no main of its own, so
+              # it asks of this tip whether the commit is behind it. The sender does not judge the ancestry: the
+              # receiver refuses a commit that is not an ancestor of the tip, and a bundle with none.
+              git -C "$GITHUB_WORKSPACE" rev-parse --verify --quiet "refs/remotes/origin/main^{commit}" > /dev/null \
+                || fail "The checkout of the repository has no tip of main (refs/remotes/origin/main), so the host could not tell the commit is on main."
+              refs+=(refs/remotes/origin/main)
               git -C "$GITHUB_WORKSPACE" bundle create "$file" "${refs[@]}" > /dev/null 2>&1 || fail "The bundle of the commit could not be made."
             }
             # --- bundle end

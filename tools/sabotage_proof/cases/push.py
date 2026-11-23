@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..files import ACTION, DRIFT_CHECK, GATED_APPLY
 from ..model import Case, Edit
-from ..suites import PUSH_APPLY, PUSH_APPLY_GUARD, PUSH_OFF, PUSH_PARITY, PUSH_PLAN, PUSH_RELEASE_TAG, PUSH_VALIDATE, STRUCTURE
+from ..suites import PUSH_APPLY, PUSH_APPLY_GUARD, PUSH_MAIN_TIP, PUSH_OFF, PUSH_PARITY, PUSH_PLAN, PUSH_RELEASE_TAG, PUSH_VALIDATE, STRUCTURE
 from ..text import indented
 
 CASES: list[Case] = [
@@ -629,6 +629,42 @@ CASES: list[Case] = [
         [Edit(GATED_APPLY, "%(refname)' refs/tags/release/)", "%(refname)' refs/tags/)")],
         [
             PUSH_RELEASE_TAG("test_every_release_tag_that_names_the_commit_is_sent_and_only_those"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the action leaves the tip of main out of the bundle",
+        [Edit(ACTION, "refs+=(refs/remotes/origin/main)", "true")],
+        [
+            PUSH_MAIN_TIP("test_the_bundle_carries_the_tip_of_main_under_its_own_name_and_the_receiver_finds_the_commit_on_it"),
+            PUSH_MAIN_TIP("test_a_bundle_of_the_commit_alone_is_refused_by_the_receiver_which_is_what_the_sender_did_before"),
+            PUSH_MAIN_TIP("test_when_main_has_moved_on_the_tip_sent_is_the_tip_the_checkout_holds_and_the_commit_is_behind_it"),
+            PUSH_MAIN_TIP("test_the_plan_step_sends_the_tip_of_main_in_the_bundle_to_a_pushed_host"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the apply job leaves the tip of main out of the bundle",
+        [Edit(GATED_APPLY, "refs+=(refs/remotes/origin/main)", "true")],
+        [
+            PUSH_MAIN_TIP("test_the_bundle_carries_the_tip_of_main_under_its_own_name_and_the_receiver_finds_the_commit_on_it"),
+            PUSH_MAIN_TIP("test_the_apply_step_sends_the_tip_of_main_in_the_bundle_to_a_pushed_host_on_both_runs"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the action makes a bundle when the checkout holds no tip of main",
+        [Edit(ACTION, 'rev-parse --verify --quiet "refs/remotes/origin/main^{commit}"', "rev-parse --verify --quiet HEAD")],
+        [
+            PUSH_MAIN_TIP("test_a_checkout_that_holds_no_tip_of_main_is_refused_before_a_bundle_is_made"),
+            PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
+        ],
+    ),
+    Case(
+        "push: the apply job makes a bundle when the checkout holds no tip of main",
+        [Edit(GATED_APPLY, 'rev-parse --verify --quiet "refs/remotes/origin/main^{commit}"', "rev-parse --verify --quiet HEAD")],
+        [
+            PUSH_MAIN_TIP("test_a_checkout_that_holds_no_tip_of_main_is_refused_before_a_bundle_is_made"),
             PUSH_PARITY("test_the_bundle_snippet_is_the_same_text_in_the_action_and_in_the_apply_job"),
         ],
     ),
