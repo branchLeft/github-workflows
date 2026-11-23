@@ -502,8 +502,8 @@ that job: the check key in the plan job and the drift check, the apply key in th
 apply job. The remote command is exactly `<mode> <commit> <playbook>`, where
 `<mode>` is `check` for the plan and the drift check and `apply` for the apply,
 `<commit>` is the 40-digit commit id and `<playbook>` is the `push-playbook` input.
-A git bundle of the checked-out commit (`git bundle create FILE HEAD`, with the
-whole history) is the standard input. The host fetches nothing and no fetch or pull
+A git bundle of the checked-out commit (`git bundle create FILE HEAD
+refs/remotes/origin/main`, with the whole history) is the standard input. The host fetches nothing and no fetch or pull
 command is ever sent. The receiver answers with one summary line on standard
 output, with the same fields as the pull trigger's line and the same exit statuses:
 
@@ -553,12 +553,24 @@ that is an annotated tag whose own `object` line is the commit being delivered a
 whose `type` is `commit`. A lightweight tag, a tag of a tag, a tag on another commit
 and a tag outside `release/` are left out. The sender judges no signature, name or
 count: the receiver does, and refuses with `release-tag-missing` when no tag it
-accepts is there. With no such tag the bundle is the commit alone, as before, so a
-host that does not require a tag is unaffected. The tag must already be in the
+accepts is there. With no such tag the bundle is the commit and the tip of main (below),
+so a host that does not require a tag is unaffected. The tag must already be in the
 checkout (`fetch-depth: 0` fetches every tag), so a release is signed and pushed
 before the delivery that is to carry it. The tag trigger of the delivery, the
 release keys and the flag on a host are separate items; until the owner has signed a
 release, nothing sets the flag.
+
+**The tip of main in the bundle.** A pushed host has no route to GitHub and so no
+main of its own. Its receiver (shared-infra `pull_trigger.py`, `require_ancestor_of_main`)
+unpacks `refs/remotes/origin/main` from the bundle and refuses a commit that is not an
+ancestor of it, and a bundle that carries none, as `not-on-main`, before it reads the
+signature. So the bundle is always made with `HEAD` and `refs/remotes/origin/main`, the
+tip of main as the full-history checkout (`fetch-depth: 0`) knows it. A checkout with no
+such ref is refused before any host is asked, because the receiver would refuse the
+commit. The sender does not judge the ancestry: the receiver does. A receiver from before
+this ref was read ignores it, so a host that has not been updated is unaffected. This is
+sent on every push, the plan, the drift check and both apply runs, so the apply's
+second pass of the same commit is not refused for want of it.
 
 **How a pushed host's answer is judged.** Each host is judged by its route and by the
 one line its route speaks. A push host is accepted only with the `push-receiver`
