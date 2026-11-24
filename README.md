@@ -264,6 +264,22 @@ every other. The API read needs no grant beyond `contents: read` on a public
 repository; a private one cannot use this input, because the token cannot read
 the check runs and the discover job refuses.
 
+#### The order of the jobs
+
+A delivery acquires a runner three times between the push and the approval:
+`discover` first, then `lint`, the Molecule shards and the `plan` side by side,
+then the `apply` (after its environment's approval). The plan needs only
+`discover`, so it no longer waits for the shards, and the apply needs `discover`,
+`lint`, every shard and the plan, each passed or (for lint and the shards, in a
+run that skipped them) skipped. A caller's own preparation runs inside `discover`
+through `prepare-command` and needs no job before the call.
+
+The trade is that the plan's check-mode run can reach the hosts before the
+container tests have passed. Each host restricts the plan's key to the check
+command, and the apply never starts until lint, every shard and the plan have all
+passed, so a role that fails Molecule is never applied. The order is not an input:
+a caller that must keep the previous order pins the previous tag.
+
 #### When one host fails its plan (`skip-failed-hosts`)
 
 By default the plan is all-or-nothing: one host that fails its check fails the plan
@@ -375,6 +391,7 @@ Any failure stops the job before the key is read.
 | `dry-run-stub` | empty | With `dry-run`, the executable, relative to `working-directory`, that stands in for a host. |
 | `push-playbook` | empty | With `ssh_push_hosts`, the playbook a pushed host's receiver is asked to run: a relative path of letters, digits, dot, underscore, dash and slash, with no `..`. See "Pushed hosts". |
 | `push-dry-run-stub` | empty | With `dry-run` and `ssh_push_hosts`, the executable, relative to `working-directory`, that stands in for the receiver of a pushed host. It receives the destination, the mode, the commit and the playbook, and the bundle on standard input. |
+| `prepare-command` | empty | A `.py` file of the caller's repository, relative to `working-directory`, that the discover job runs on a delivery as `python3 <file> --before <commit before the push> --sha <pushed commit>`, so the caller's preparation costs no runner of its own. It prints `shards=true` or `shards=false`, `tested=true` or `tested=false` and, optionally, a `directories<<END` block of `role-directories` globs to test instead of the input. With `skip-rerun-after-merge-group`, lint and Molecule are skipped only when it says `shards=false` and `tested=true`; a failed command or an answer without both lines counts as `shards=true` and `tested=false`, so a failure runs more. The checkout then takes the full history. See "The order of the jobs". |
 | `skip-failed-hosts` | `false` | `false`: one host that fails its plan fails the plan and nothing is applied. `true`: the hosts that failed are left out, the apply (after approval) covers the hosts that passed, and the run ends red while any host was skipped. Leave it `false` when a commit can depend on an order across hosts. See "When one host fails its plan (`skip-failed-hosts`)". |
 | `continue-past-failed-apply` | `false` | `false`: the apply stops at the first host whose apply fails. `true`: it records that host in the step summary, goes on to the remaining planned hosts, names every failed host, and still ends red. A host whose plan failed is never applied either way. See "When one host fails its apply (`continue-past-failed-apply`)". |
 | `host-timeout-minutes` | 65 | One host call is stopped after this long (the host's own limit is one hour by default). |

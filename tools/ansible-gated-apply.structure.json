@@ -609,10 +609,12 @@
           "group": "ansible-apply-${{ github.repository }}-${{ inputs.environment }}"
         },
         "environment": "${{ inputs.environment }}",
-        "if": "!cancelled() && !failure() && needs.discover.outputs.delivery == 'true' && needs.plan.result == 'success' && needs.plan.outputs.has_changes != 'false' && inputs.dry-run == false && inputs.environment != ''",
+        "if": "!cancelled() && !failure() && needs.discover.outputs.delivery == 'true' && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.shard.result == 'success' || needs.shard.result == 'skipped') && needs.plan.result == 'success' && needs.plan.outputs.has_changes != 'false' && inputs.dry-run == false && inputs.environment != ''",
         "name": "Apply the planned commit (after approval)",
         "needs": [
           "discover",
+          "lint",
+          "shard",
           "plan"
         ],
         "runs-on": "ubuntu-24.04",
@@ -741,7 +743,11 @@
         "outputs": {
           "delivery": "${{ steps.context.outputs.delivery }}",
           "matrix": "${{ steps.shards.outputs.matrix }}",
-          "recheck": "${{ steps.context.outputs.rerun }}"
+          "recheck": "${{ steps.rerun.outputs.rerun }}"
+        },
+        "permissions": {
+          "actions": "read",
+          "contents": "read"
         },
         "runs-on": "ubuntu-24.04",
         "steps": [
@@ -749,6 +755,7 @@
             "name": "Checkout",
             "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
             "with": {
+              "fetch-depth": "${{ inputs.prepare-command != '' && '0' || '1' }}",
               "persist-credentials": false
             }
           },
@@ -760,12 +767,37 @@
               "EVENT_NAME": "${{ github.event_name }}",
               "IS_FORK": "${{ github.event.repository.fork }}",
               "REF": "${{ github.ref }}",
-              "SKIP_RERUN": "${{ inputs.skip-rerun-after-merge-group }}",
               "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
             },
             "id": "context",
             "name": "Decide whether this run may reach a host",
-            "run-sha256": "ac0a547a2248a20fc89ad0daee8018e43d4ffdf0298f5530c0c21f8c93a47d1b"
+            "run-sha256": "4dcefd4c3b12dc07da08d9e38a6356e227b56b9c332259a46a886c7ad0dfd92e"
+          },
+          {
+            "env": {
+              "BEFORE": "${{ github.event.before }}",
+              "GH_TOKEN": "${{ github.token }}",
+              "PREPARE_COMMAND": "${{ inputs.prepare-command }}",
+              "REPO": "${{ github.repository }}",
+              "SHA": "${{ github.sha }}",
+              "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
+            },
+            "id": "prepare",
+            "if": "steps.context.outputs.delivery == 'true' && inputs.prepare-command != ''",
+            "name": "Prepare the delivery",
+            "run-sha256": "99c9af3126aacb80b8bc4ec1ab54cd8a5a469de2938e349d27e555a3f075e6ad"
+          },
+          {
+            "env": {
+              "DELIVERY": "${{ steps.context.outputs.delivery }}",
+              "PREPARE_COMMAND": "${{ inputs.prepare-command }}",
+              "SHARDS": "${{ steps.prepare.outputs.shards }}",
+              "SKIP_RERUN": "${{ inputs.skip-rerun-after-merge-group }}",
+              "TESTED": "${{ steps.prepare.outputs.tested }}"
+            },
+            "id": "rerun",
+            "name": "Decide whether lint and Molecule run",
+            "run-sha256": "cb902bdf19451687110fe5f8dc647ea17ba741350b69e9fcb2d3ac0ede961467"
           },
           {
             "env": {
@@ -775,14 +807,14 @@
               "SHA": "${{ github.sha }}"
             },
             "id": "confirm",
-            "if": "steps.context.outputs.rerun == 'false'",
+            "if": "steps.rerun.outputs.rerun == 'false'",
             "name": "Confirm the merge queue passed this commit",
             "run-sha256": "327c4ff538e0b046a487ac771965a6d606cd14178766350a468beb4488c3a5ac"
           },
           {
             "env": {
               "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}",
-              "ROLE_DIRECTORIES": "${{ inputs.role-directories }}",
+              "ROLE_DIRECTORIES": "${{ steps.prepare.outputs.directories != '' && steps.prepare.outputs.directories || inputs.role-directories }}",
               "WORKING_DIRECTORY": "${{ inputs.working-directory }}"
             },
             "id": "shards",
@@ -873,12 +905,10 @@
           "cancel-in-progress": false,
           "group": "ansible-plan-${{ github.repository }}"
         },
-        "if": "${{ !cancelled() && needs.discover.result == 'success' && (needs.lint.result == 'success' || needs.lint.result == 'skipped') && (needs.shard.result == 'success' || needs.shard.result == 'skipped') && needs.discover.outputs.delivery == 'true' }}",
+        "if": "${{ !cancelled() && needs.discover.result == 'success' && needs.discover.outputs.delivery == 'true' }}",
         "name": "Plan the apply (check mode on each host)",
         "needs": [
-          "discover",
-          "lint",
-          "shard"
+          "discover"
         ],
         "outputs": {
           "apply_hosts": "${{ steps.ssh.outputs.apply-hosts }}",
@@ -1109,6 +1139,12 @@
             "description": "The plan job is stopped after this many minutes.",
             "required": false,
             "type": "number"
+          },
+          "prepare-command": {
+            "default": "",
+            "description": "A Python file of the caller's repository, relative to working-directory ('' by default: none), that the discover job runs on a delivery, as `python3 <file> --before <commit before the push> --sha <pushed commit>`, so that the caller's preparation costs no runner of its own. It prints `shards=true|false` (whether any Molecule shard must run), `tested=true|false` (whether a merge queue run of this commit passed) and, optionally, a `directories<<END` block with the role-directories globs to test instead of the input. With it, skip-rerun-after-merge-group skips lint and Molecule only when the answer is shards=false and tested=true; a failed command, or an answer that lacks either line, runs everything instead. The discover job's token has contents: read and actions: read.",
+            "required": false,
+            "type": "string"
           },
           "push-dry-run-stub": {
             "default": "",

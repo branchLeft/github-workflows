@@ -4,12 +4,19 @@ name: Ansible gated apply
 # hosts by the gated pull (ANS-17). Rules, inputs, secrets, the one-time setup
 # and the named limits are in the README ("ansible-gated-apply.yml").
 #
-# Five kinds of job. `discover` validates the inputs and lists the Molecule
-# shards. `lint` runs the static checks once. `shard` runs Molecule once per
-# role. `plan` asks each host, through the restricted route, what an apply of
-# this exact commit would change and shows it. `apply` waits on the deployment
-# gate and then asks each host to apply that same commit. The job named
-# `Ansible checks passed` is the one a caller requires.
+# Five kinds of job. `discover` validates the inputs, runs the caller's
+# preparation (prepare-command) and lists the Molecule shards. `lint` runs the
+# static checks once. `shard` runs Molecule once per role. `plan` asks each
+# host, through the restricted route, what an apply of this exact commit would
+# change and shows it. `apply` waits on the deployment gate and then asks each
+# host to apply that same commit. The job named `Ansible checks passed` is the
+# one a caller requires.
+#
+# The order is discover, then lint, the shards and the plan side by side, then
+# the apply once all of those have passed: a delivery waits for a runner three
+# times between the push and the approval, and twice before the plan. The plan
+# does not wait for the container tests, so its check-mode run can reach the
+# hosts before they pass; the apply never does.
 #
 # Concurrency (job groups only; there is no workflow-level group, which would
 # queue a newer run behind a run that waits for approval). On a delivery run
@@ -165,6 +172,22 @@ on:
         type: string
         required: false
         default: ''
+      prepare-command:
+        description: >-
+          A Python file of the caller's repository, relative to working-directory
+          ('' by default: none), that the discover job runs on a delivery, as
+          `python3 <file> --before <commit before the push> --sha <pushed commit>`,
+          so that the caller's preparation costs no runner of its own. It prints
+          `shards=true|false` (whether any Molecule shard must run), `tested=true|false`
+          (whether a merge queue run of this commit passed) and, optionally, a
+          `directories<<END` block with the role-directories globs to test instead
+          of the input. With it, skip-rerun-after-merge-group skips lint and
+          Molecule only when the answer is shards=false and tested=true; a failed
+          command, or an answer that lacks either line, runs everything instead.
+          The discover job's token has contents: read and actions: read.
+        type: string
+        required: false
+        default: ''
       skip-failed-hosts:
         description: >-
           false (the default) keeps the plan all-or-nothing: one host that fails
@@ -292,13 +315,21 @@ jobs:
       cancel-in-progress: false
     outputs:
       delivery: ${{ steps.context.outputs.delivery }}
-      recheck: ${{ steps.context.outputs.rerun }}
+      recheck: ${{ steps.rerun.outputs.rerun }}
       matrix: ${{ steps.shards.outputs.matrix }}
+    # actions: read is for prepare-command, which reads the run history through the API. The
+    # plan job already asks for the same grant, so a caller that can run this workflow has it.
+    permissions:
+      actions: read
+      contents: read
     steps:
+      # prepare-command may read history before the pushed commit, so a caller that sets it gets
+      # the full history. A caller that does not keeps the one commit.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: ${{ inputs.prepare-command != '' && '0' || '1' }}
 
       # Delivery happens only for a push to the default branch of the
       # repository itself. The host refuses a commit that is not on its main, so
@@ -314,7 +345,6 @@ jobs:
           ENVIRONMENT: ${{ inputs.environment }}
           WORKING_DIRECTORY: ${{ inputs.working-directory }}
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-          SKIP_RERUN: ${{ inputs.skip-rerun-after-merge-group }}
         run: |
           set -euo pipefail
           for value in "$WORKING_DIRECTORY" "$ANSIBLE_DIRECTORY"; do
@@ -335,11 +365,71 @@ jobs:
           fi
           echo "delivery=$delivery" >> "$GITHUB_OUTPUT"
           echo "This run reaches a host: $delivery"
-          # Only a delivery run may skip lint and Molecule, and only after the
-          # next step has shown the merge queue ran them on this commit.
+
+      # The caller's one preparation, run on a delivery in this job so that it costs no runner of
+      # its own: what the caller used to find out in jobs before this workflow. The command is a
+      # Python file of the caller's repository, run from working-directory as
+      #   python3 <command> --before <the commit before the push> --sha <the pushed commit>
+      # and it prints `name=value` lines in the form of $GITHUB_OUTPUT:
+      #   shards=true|false           whether any Molecule shard must run (true when unsure)
+      #   tested=true|false           whether a merge queue run of this commit passed (false when unsure)
+      #   directories<<END ... END    optional: the role-directories globs to test instead of the input
+      # A failed command, an answer without both lines or a block that never ends is replaced by
+      # shards=true and tested=false, so a failed preparation runs more and never less. A command
+      # that is not a .py path fails the job.
+      - name: Prepare the delivery
+        id: prepare
+        if: steps.context.outputs.delivery == 'true' && inputs.prepare-command != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+          WORKING_DIRECTORY: ${{ inputs.working-directory }}
+          PREPARE_COMMAND: ${{ inputs.prepare-command }}
+        run: |
+          set -uo pipefail
+          command_re='^[A-Za-z0-9_][A-Za-z0-9_./-]*[.]py$'
+          if ! [[ "$PREPARE_COMMAND" =~ $command_re ]] || [[ "$PREPARE_COMMAND" == *..* ]]; then
+            echo "::error::prepare-command must be a relative path to a .py file, with no '..'."
+            exit 1
+          fi
+          answer="$RUNNER_TEMP/prepare-answer.txt"
+          delimiter=""
+          if (cd "$WORKING_DIRECTORY" && python3 "$PREPARE_COMMAND" --before "$BEFORE" --sha "$SHA") > "$answer"; then
+            delimiter=$(sed -n 's/^directories<<//p' "$answer" | sed -n 1p)
+          else
+            : > "$answer"
+          fi
+          if ! grep -qE '^shards=(true|false)$' "$answer" \
+            || ! grep -qE '^tested=(true|false)$' "$answer" \
+            || { [ -n "$delimiter" ] && ! grep -qxF -- "$delimiter" "$answer"; }; then
+            echo "::warning::The preparation failed or printed no usable answer, so every shard runs."
+            printf '%s\n' 'shards=true' 'tested=false' > "$answer"
+          fi
+          cat "$answer" >> "$GITHUB_OUTPUT"
+
+      # Only a delivery run may skip lint and Molecule, and only after the
+      # confirm step below has shown the merge queue ran them on this commit.
+      # With a prepare-command the skip also needs the preparation to say that
+      # no shard is called for and that a merge queue run passed this commit;
+      # any other answer runs the checks instead of failing.
+      - name: Decide whether lint and Molecule run
+        id: rerun
+        env:
+          DELIVERY: ${{ steps.context.outputs.delivery }}
+          SKIP_RERUN: ${{ inputs.skip-rerun-after-merge-group }}
+          PREPARE_COMMAND: ${{ inputs.prepare-command }}
+          SHARDS: ${{ steps.prepare.outputs.shards }}
+          TESTED: ${{ steps.prepare.outputs.tested }}
+        run: |
+          set -euo pipefail
           rerun=true
-          if [ "$delivery" = true ] && [ "$SKIP_RERUN" = true ]; then
+          if [ "$DELIVERY" = true ] && [ "$SKIP_RERUN" = true ]; then
             rerun=false
+            if [ -n "$PREPARE_COMMAND" ] && { [ "$SHARDS" != false ] || [ "$TESTED" != true ]; }; then
+              rerun=true
+            fi
           fi
           echo "rerun=$rerun" >> "$GITHUB_OUTPUT"
           echo "This run runs lint and Molecule: $rerun"
@@ -353,7 +443,7 @@ jobs:
       # the plan and the apply need this job, so nothing reaches a host.
       - name: Confirm the merge queue passed this commit
         id: confirm
-        if: steps.context.outputs.rerun == 'false'
+        if: steps.rerun.outputs.rerun == 'false'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -426,7 +516,8 @@ jobs:
         env:
           WORKING_DIRECTORY: ${{ inputs.working-directory }}
           ANSIBLE_DIRECTORY: ${{ inputs.ansible-directory }}
-          ROLE_DIRECTORIES: ${{ inputs.role-directories }}
+          # The preparation's list when it gave one, else the input: every directory is judged below.
+          ROLE_DIRECTORIES: ${{ steps.prepare.outputs.directories != '' && steps.prepare.outputs.directories || inputs.role-directories }}
         run: |
           set -euo pipefail
           cd "$WORKING_DIRECTORY/$ANSIBLE_DIRECTORY"
@@ -676,16 +767,17 @@ jobs:
   # at the commit it was called at and runs the action from there.
   plan:
     name: Plan the apply (check mode on each host)
-    needs: [discover, lint, shard]
-    # lint and shard are skipped when the merge queue already ran them; a
-    # skipped need would skip this job, so the condition names the statuses.
-    # A need that a newer run cancelled (see the concurrency note at the top)
-    # is neither success nor skipped, so this run plans nothing.
+    # The plan starts beside lint and the Molecule shards, not after them: it needs only
+    # discover, so a delivery waits for a runner once for the checks and the plan together
+    # instead of once after the other. The check-mode run therefore reaches the hosts before
+    # the container tests have passed (the owner accepted that trade). The apply does
+    # not start until lint, every shard and this plan have all passed. A discover that a newer
+    # run cancelled (see the concurrency note at the top) is not success, so this run plans
+    # nothing.
+    needs: [discover]
     if: >-
       ${{ !cancelled()
       && needs.discover.result == 'success'
-      && (needs.lint.result == 'success' || needs.lint.result == 'skipped')
-      && (needs.shard.result == 'success' || needs.shard.result == 'skipped')
       && needs.discover.outputs.delivery == 'true' }}
     runs-on: ubuntu-24.04
     timeout-minutes: ${{ inputs.plan-timeout-minutes }}
@@ -894,12 +986,16 @@ jobs:
   # job then fails with that reason.
   apply:
     name: Apply the planned commit (after approval)
-    needs: [discover, plan]
+    needs: [discover, lint, shard, plan]
     # lint and shard are skipped when the merge queue already ran them; an implicit
     # success() would then skip this job, so the condition names the statuses.
+    # The plan no longer waits for them, so this job is the one that does: a lint or a
+    # shard that failed, was cancelled or timed out stops the apply here.
     if: >-
       !cancelled() && !failure()
       && needs.discover.outputs.delivery == 'true'
+      && (needs.lint.result == 'success' || needs.lint.result == 'skipped')
+      && (needs.shard.result == 'success' || needs.shard.result == 'skipped')
       && needs.plan.result == 'success'
       && needs.plan.outputs.has_changes != 'false'
       && inputs.dry-run == false
