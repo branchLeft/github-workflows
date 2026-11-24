@@ -12,7 +12,7 @@ It exits 0 when every check passes and 1 otherwise, printing each wrong path or 
 ## What it holds
 
 - A last-match-wins matcher with GitHub's semantics. A pattern whose last segment has a wildcard does not reach into subdirectories unless it ends in `/`. A line that names no owner removes ownership.
-- One table of sample paths, each with its class and whether the owner must hold it. Every kept class has a sample: workflows and actions, ruleset and branch-protection names, the gate tools and their tests, trust and key files, mail, and the licence text. Every released class has one too: the three gate-prose documents, unowned prose and files, and the paths the dropped name-only lines used to own.
+- One table of sample paths, each with its class and whether the owner must hold it. Every kept class has a sample: workflows and actions, ruleset and branch-protection names, the gate tools and their tests, the signer list and trust directory, and the human-facing README and licence text. Every released class has one too: the three gate-prose documents, unowned prose and files, the key, mail, Pulumi, Ansible-plugin and sudoers paths that guard nothing here, and the paths the dropped name-only lines used to own.
 
 ## Structural checks
 

@@ -1,7 +1,13 @@
-# Code owners for the files that can change who may merge, what a merge or a
-# deploy checks, or who can reach a secret. The owner approves those. Every
-# other file is unowned, so a pull request touching only those merges on the
-# reviewer App's approval. There is deliberately no catch-all line.
+# The owner is a required reviewer only for two things:
+#   (a) guardrails: anything that, if silently weakened, would stop an agent
+#       guardrail or a required check protecting us. That is the workflows and
+#       actions that enforce checks or gate deploys, this file, ruleset and
+#       branch-protection files, the gate tools and their tests, the floors
+#       and ignore files that set gate levels, and the trust anchors that
+#       decide who may sign a release.
+#   (b) human-facing docs: the README and the licence text.
+# Everything else is released: it merges on the reviewer App's approval and
+# green CI. There is deliberately no catch-all line.
 #
 # GitHub applies the LAST matching line, so a line with no owner releases a
 # path an earlier line owned. The released files sit after the owned groups and
@@ -41,23 +47,13 @@
 /.opv-lint*                                    @branchLeft/branchleft-admin
 /tools/floors.tsv                              @branchLeft/branchleft-admin
 
-# Keys, trust and access. Nothing here exists in this repo today; the lines
-# keep these files the owner's if they ever appear.
+# Trust anchors: the signer list that decides which release tags are trusted,
+# and the trust directory the host-key checks read.
 **/allowed_signers                             @branchLeft/branchleft-admin
 /ansible/trust/                                @branchLeft/branchleft-admin
-**/.npmrc                                      @branchLeft/branchleft-admin
-**/Pulumi.*.yaml                               @branchLeft/branchleft-admin
-**/library/                                    @branchLeft/branchleft-admin
-**/*_plugins/                                  @branchLeft/branchleft-admin
-**/module_utils/                               @branchLeft/branchleft-admin
-**/*sudoers*                                   @branchLeft/branchleft-admin
-**/*sudoers*/                                  @branchLeft/branchleft-admin
-**/authorized_keys*                            @branchLeft/branchleft-admin
 
-# Mail. Nothing here exists in this repo today.
-/mail/                                         @branchLeft/branchleft-admin
-
-# The owner's own words: the licence text.
+# Human-facing docs and the owner's own words: the README and the licence text.
+/README.md                                     @branchLeft/branchleft-admin
 /LICENSE                                       @branchLeft/branchleft-admin
 
 # Released: prose that explains a kept gate and that no job reads as input.
