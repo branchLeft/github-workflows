@@ -58,7 +58,7 @@ SHAPES: tuple[tuple[re.Pattern[str], str], ...] = tuple(
         # a $(cat PATH) reference
         (r"\$\(cat [^\s)]+\)", ""),
         # a key that names a file or a path, whose value starts with / or ~
-        (r'[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\1"),
+        (r'[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\2"),
         # a value that is true, false, null or none
         (r'[:=]\s*"?(true|false|null|none)"?\s*([\],}]|$)', r" \2"),
     )
@@ -139,6 +139,33 @@ def scrub(line: str) -> str:
     return text
 
 
+BLOCK_SCALAR = re.compile(r'^(\s*(?:-\s+)?[^\s:]*[:=]\s*"?)[>|][-+0-9]*\s*$')
+
+
+def block_scalar_lines(lines: list[str]) -> list[str]:
+    """Each `key: >-` or `key: |` line joined with the more-indented lines under it.
+
+    The assignment pattern reads one line at a time, so a secret written on the line after a block
+    scalar indicator is read here, beside its key. Blank lines are skipped; a line at the key's own
+    indentation or less ends the scalar.
+    """
+    joined: list[str] = []
+    for index, line in enumerate(lines):
+        head = BLOCK_SCALAR.match(line)
+        if head is None:
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        values: list[str] = []
+        for follow in lines[index + 1 :]:
+            if follow.strip() == "":
+                continue
+            if len(follow) - len(follow.lstrip(" ")) <= indent:
+                break
+            values.append(follow.strip())
+        joined.append(head.group(1) + " ".join(values))
+    return joined
+
+
 def matches(expression: re.Pattern[str], lines: list[str]) -> bool:
     """Whether any one line holds the expression."""
     return any(expression.search(line) for line in lines)
@@ -161,7 +188,8 @@ def failed_task(lines: list[str]) -> str:
 def scan(text: str, key_lines: list[str], allowances: list[Allowance]) -> Verdict:
     """Scan one host's output. The task is named only when no pattern matched."""
     lines = split_lines(CONTROL.sub("", text))
-    scanned = [scrub(line) for line in blank_allowed(lines, allowances)]
+    blanked = blank_allowed(lines, allowances)
+    scanned = [scrub(line) for line in blanked + block_scalar_lines(blanked)]
     hits: list[str] = []
     for name, expression in PATTERNS:
         compiled = re.compile(expression, re.IGNORECASE | re.ASCII)

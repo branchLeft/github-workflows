@@ -13,7 +13,7 @@ from ..suites import PLAN, REPORT_LOG
 NOPASSWD = r'(r"(^|[\s)])nopasswd:", r"\1"),'
 REFERENCE = r'(r"\$\{[a-z_][a-z0-9_]*(:?\?[^}]*)?\}", ""),'
 COMMAND = r'(r"\$\(cat [^\s)]+\)", ""),'
-FILE_KEY = r'''(r'[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\1"),'''
+FILE_KEY = r'''(r'[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\2"),'''
 FLAG = r'''(r'[:=]\s*"?(true|false|null|none)"?\s*([\],}]|$)', r" \2"),'''
 ASSIGNMENT_LINES = (
     '        r"(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)"\n'
@@ -95,7 +95,7 @@ CASES: list[Case] = [
     ),
     Case(
         "scan: a key that names a file takes the rest of its line with it",
-        [Edit(SCAN, r'''[:=](\s*"?[/~])', r"\1"''', r'''[:=].*', r"\1"''')],
+        [Edit(SCAN, r'''[:=](\s*"?[/~])', r"\2"''', r'''[:=].*', r"\1"''')],
         [PLAN("test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line")],
     ),
     Case(
@@ -103,7 +103,7 @@ CASES: list[Case] = [
         [
             Edit(
                 SCAN,
-                r'''[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\1"''',
+                r'''[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\2"''',
                 r'''[a-z0-9_.-]*(file|filename|path|dir)"?\s*[:=]', r"\1"''',
             ),
         ],
