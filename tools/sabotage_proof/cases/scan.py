@@ -20,7 +20,7 @@ ASSIGNMENT_LINES = (
     "        r'[A-Za-z0-9_.-]*\"?\\s*[:=]\\s*\"?[^\\s\"]{4,}',\n"
 )
 READS = "scanned if name == ASSIGNMENT else lines"
-BLANKED = "scrub(line) for line in blank_allowed(lines, allowances)"
+BLANKED = "blanked = blank_allowed(lines, allowances)"
 LINE_TEST = "text == a.line and applies(file, a)"
 
 
@@ -134,7 +134,7 @@ CASES: list[Case] = [
     # be widened: any file, a line that only starts like the entry, or a path that only ends alike.
     Case(
         "scan: the named allowance is not read by the credential-assignment pattern",
-        [Edit(SCAN, BLANKED, "scrub(line) for line in lines")],
+        [Edit(SCAN, BLANKED, "blanked = lines")],
         [PLAN("test_the_named_placeholder_in_its_own_file_is_shown_and_does_not_fail_the_job")],
     ),
     Case(
