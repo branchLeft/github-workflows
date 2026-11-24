@@ -20,13 +20,15 @@
 # Workflows and actions that enforce a check or gate a deploy. docs-lint-self.yml
 # emits the one required check here ("docs-lint"); the reusable workflows are
 # what the other repos' required checks and gated applies call (docs lint, opv
-# lint, image scan, the gated apply and the gated step); every action is gate code.
+# lint, image scan, the nightly rescan that applies the same critical-and-high gate
+# to a live image, the gated apply and the gated step); every action is gate code.
 # standards.yml and docs-lint.yml come from the shared lines at the end. The
-# self-test workflows, the drift check, the nightly rescan, the scan report and
-# Dependabot settings are released: nothing requires them and none gates a deploy.
+# self-test workflows, the drift check, the scan report and Dependabot settings are
+# released: nothing requires them and none gates a deploy.
 /.github/workflows/docs-lint-self.yml          @branchLeft/branchleft-admin
 /.github/workflows/opv-lint.yml                @branchLeft/branchleft-admin
 /.github/workflows/image-scan.yml              @branchLeft/branchleft-admin
+/.github/workflows/nightly-image-rescan.yml     @branchLeft/branchleft-admin
 /.github/workflows/ansible-gated-apply.yml     @branchLeft/branchleft-admin
 /.github/workflows/ansible-gated-step.yml      @branchLeft/branchleft-admin
 **/.github/actions/                            @branchLeft/branchleft-admin
