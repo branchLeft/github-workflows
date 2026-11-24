@@ -157,20 +157,71 @@ CASES: list[Case] = [
         [STRUCTURE("test_the_plan_job_calls_the_action_from_the_checkout_and_passes_the_plan_inputs")],
     ),
     Case(
-        "plan runs after a failed lint",
+        "apply runs after a failed lint",
         [
             Edit(
                 GATED_APPLY,
                 indented(
                     r"""
                     && (needs.lint.result == 'success' || needs.lint.result == 'skipped')
-                    """,
+                    && (needs.shard.result == 'success' || needs.shard.result == 'skipped')
+                    && needs.plan.result == 'success'""",
                     6,
                 ),
-                "",
+                indented(
+                    r"""
+                    && (needs.shard.result == 'success' || needs.shard.result == 'skipped')
+                    && needs.plan.result == 'success'""",
+                    6,
+                ),
             ),
         ],
-        [STRUCTURE("test_the_plan_job_runs_only_for_delivery_and_only_after_every_need_succeeded_or_was_skipped")],
+        [
+            STRUCTURE("test_the_apply_waits_for_lint_the_shards_and_the_plan_all_passed_or_skipped"),
+            STRUCTURE("test_the_apply_job_is_gated"),
+        ],
+    ),
+    Case(
+        "apply runs after a failed shard",
+        [
+            Edit(
+                GATED_APPLY,
+                indented(
+                    r"""
+                    && (needs.shard.result == 'success' || needs.shard.result == 'skipped')
+                    && needs.plan.result == 'success'""",
+                    6,
+                ),
+                indented("&& needs.plan.result == 'success'", 6),
+            ),
+        ],
+        [
+            STRUCTURE("test_the_apply_waits_for_lint_the_shards_and_the_plan_all_passed_or_skipped"),
+            STRUCTURE("test_the_apply_job_is_gated"),
+        ],
+    ),
+    Case(
+        "apply does not wait for lint and the shards",
+        [Edit(GATED_APPLY, "needs: [discover, lint, shard, plan]", "needs: [discover, plan]")],
+        [
+            STRUCTURE("test_the_apply_waits_for_lint_the_shards_and_the_plan_all_passed_or_skipped"),
+            STRUCTURE("test_the_apply_job_is_gated"),
+        ],
+    ),
+    Case(
+        "plan waits for lint and the shards again",
+        [
+            Edit(
+                GATED_APPLY,
+                """    needs: [discover]
+    if: >-
+      ${{ !cancelled()""",
+                """    needs: [discover, lint, shard]
+    if: >-
+      ${{ !cancelled()""",
+            ),
+        ],
+        [STRUCTURE("test_the_plan_job_runs_only_for_delivery_and_starts_beside_lint_and_the_shards")],
     ),
     Case(
         "apply has no leading status function, so a skipped lint skips it",
@@ -197,14 +248,12 @@ CASES: list[Case] = [
                     r"""
                     ${{ !cancelled()
                     && needs.discover.result == 'success'
-                    && (needs.lint.result == 'success' || needs.lint.result == 'skipped')
-                    && (needs.shard.result == 'success' || needs.shard.result == 'skipped')
                     && needs.discover.outputs.delivery == 'true' }}""",
                     6,
                 ),
                 indented("${{ !cancelled() && !failure() && needs.discover.outputs.delivery == 'true' }}", 6),
             ),
         ],
-        [STRUCTURE("test_the_plan_job_runs_only_for_delivery_and_only_after_every_need_succeeded_or_was_skipped")],
+        [STRUCTURE("test_the_plan_job_runs_only_for_delivery_and_starts_beside_lint_and_the_shards")],
     ),
 ]

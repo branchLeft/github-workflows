@@ -486,7 +486,8 @@ class StructureTests(unittest.TestCase):
     def test_permissions_are_read_only_everywhere_in_the_gated_workflow(self) -> None:
         self.assertEqual(DOC["permissions"], {"contents": "read"})
         for name, job in JOBS.items():
-            if name == "plan":
+            # discover reads the run history through the API for prepare-command, as plan reads the run record.
+            if name in ("plan", "discover"):
                 self.assertEqual(job["permissions"], {"actions": "read", "contents": "read"})
             else:
                 self.assertNotIn("permissions", job, name)
@@ -600,7 +601,8 @@ class StructureTests(unittest.TestCase):
     def test_the_apply_job_is_gated(self) -> None:
         job = JOBS["apply"]
         self.assertEqual(job["environment"], "${{ inputs.environment }}")
-        self.assertIn("plan", job["needs"])
+        # The plan no longer waits for lint and the shards, so the apply does: it needs all four.
+        self.assertEqual(job["needs"], ["discover", "lint", "shard", "plan"])
         # The whole condition, every term joined by &&. A term joined by || would
         # pass a per-term assertIn, so the test compares the entire string.
         condition = " ".join(str(job["if"]).split())
@@ -608,6 +610,8 @@ class StructureTests(unittest.TestCase):
             condition,
             "!cancelled() && !failure() "
             "&& needs.discover.outputs.delivery == 'true' "
+            "&& (needs.lint.result == 'success' || needs.lint.result == 'skipped') "
+            "&& (needs.shard.result == 'success' || needs.shard.result == 'skipped') "
             "&& needs.plan.result == 'success' "
             "&& needs.plan.outputs.has_changes != 'false' "
             "&& inputs.dry-run == false "
@@ -629,6 +633,8 @@ class StructureTests(unittest.TestCase):
         )
         for named in (
             "needs.discover.outputs.delivery",
+            "needs.lint.result",
+            "needs.shard.result",
             "needs.plan.result == 'success'",
             "has_changes",
             "inputs.dry-run",
@@ -636,18 +642,27 @@ class StructureTests(unittest.TestCase):
         ):
             self.assertIn(named, condition)
 
-    def test_the_plan_job_runs_only_for_delivery_and_only_after_every_need_succeeded_or_was_skipped(self) -> None:
-        # A need that a newer run cancelled is neither success nor skipped, so the
-        # plan of a superseded run never starts. !failure() alone would not catch it.
+    def test_the_plan_job_runs_only_for_delivery_and_starts_beside_lint_and_the_shards(self) -> None:
+        # The plan needs discover and nothing else, so a delivery waits for a runner once for the
+        # checks and the plan together. A discover that a newer run cancelled is not success, so
+        # the plan of a superseded run never starts. !failure() alone would not catch it.
+        self.assertEqual(JOBS["plan"]["needs"], ["discover"])
         self.assertEqual(
             " ".join(str(JOBS["plan"]["if"]).split()),
             "${{ !cancelled() "
             "&& needs.discover.result == 'success' "
-            "&& (needs.lint.result == 'success' || needs.lint.result == 'skipped') "
-            "&& (needs.shard.result == 'success' || needs.shard.result == 'skipped') "
             "&& needs.discover.outputs.delivery == 'true' }}",
         )
         self.assertNotIn("environment", JOBS["plan"])
+
+    def test_the_apply_waits_for_lint_the_shards_and_the_plan_all_passed_or_skipped(self) -> None:
+        # With the plan beside the shards, nothing but the apply keeps a failed shard from a host:
+        # its condition must name lint and shard with the same two statuses the plan used to.
+        apply = " ".join(str(JOBS["apply"]["if"]).split())
+        for need in ("lint", "shard"):
+            with self.subTest(need=need):
+                self.assertIn(f"&& (needs.{need}.result == 'success' || needs.{need}.result == 'skipped')", apply)
+        self.assertEqual(set(JOBS["apply"]["needs"]), {"discover", "lint", "shard", "plan"})
 
     def test_each_key_is_read_by_one_job_only(self) -> None:
         for name, job in JOBS.items():
@@ -771,7 +786,21 @@ class StructureTests(unittest.TestCase):
                 "ENVIRONMENT": "${{ inputs.environment }}",
                 "WORKING_DIRECTORY": "${{ inputs.working-directory }}",
                 "ANSIBLE_DIRECTORY": "${{ inputs.ansible-directory }}",
+            }),
+            ("discover", "Prepare the delivery", {
+                "GH_TOKEN": "${{ github.token }}",
+                "REPO": "${{ github.repository }}",
+                "BEFORE": "${{ github.event.before }}",
+                "SHA": "${{ github.sha }}",
+                "WORKING_DIRECTORY": "${{ inputs.working-directory }}",
+                "PREPARE_COMMAND": "${{ inputs.prepare-command }}",
+            }),
+            ("discover", "Decide whether lint and Molecule run", {
+                "DELIVERY": "${{ steps.context.outputs.delivery }}",
                 "SKIP_RERUN": "${{ inputs.skip-rerun-after-merge-group }}",
+                "PREPARE_COMMAND": "${{ inputs.prepare-command }}",
+                "SHARDS": "${{ steps.prepare.outputs.shards }}",
+                "TESTED": "${{ steps.prepare.outputs.tested }}",
             }),
             ("discover", "Confirm the merge queue", {
                 "GH_TOKEN": "${{ github.token }}",
@@ -1149,7 +1178,6 @@ def discover_env(**changes: str) -> dict[str, str]:
         "ENVIRONMENT": "production",
         "WORKING_DIRECTORY": ".",
         "ANSIBLE_DIRECTORY": "ansible",
-        "SKIP_RERUN": "false",
     }
     values.update(changes)
     return values
@@ -1193,14 +1221,26 @@ class SkipRerunDeclarationTests(unittest.TestCase):
 
     def test_the_confirmation_is_a_discover_step_that_runs_only_when_the_rerun_is_skipped(self) -> None:
         step = find_step("discover", "confirm")
-        self.assertEqual(step["if"], "steps.context.outputs.rerun == 'false'")
+        self.assertEqual(step["if"], "steps.rerun.outputs.rerun == 'false'")
         self.assertIn("confirm", [s.get("id") for s in JOBS["discover"]["steps"]])
-        self.assertEqual(JOBS["discover"]["outputs"]["recheck"], "${{ steps.context.outputs.rerun }}")
+        self.assertEqual(JOBS["discover"]["outputs"]["recheck"], "${{ steps.rerun.outputs.rerun }}")
+
+
+def rerun_env(**changes: str) -> dict[str, str]:
+    values = {
+        "DELIVERY": "true",
+        "SKIP_RERUN": "false",
+        "PREPARE_COMMAND": "",
+        "SHARDS": "",
+        "TESTED": "",
+    }
+    values.update(changes)
+    return values
 
 
 class RerunDecisionTests(unittest.TestCase):
     def rerun(self, **changes: str) -> str:
-        result = Sandbox(self).run(find_step("discover", "context"), discover_env(**changes))
+        result = Sandbox(self).run(find_step("discover", "rerun"), rerun_env(**changes))
         self.assertEqual(result.code, 0, result.log)
         return result.outputs.get("rerun", "<missing>")
 
@@ -1211,9 +1251,137 @@ class RerunDecisionTests(unittest.TestCase):
         self.assertEqual(self.rerun(), "true")
 
     def test_a_run_that_does_not_deliver_always_reruns_whatever_it_asks(self) -> None:
-        for changes in ({"EVENT_NAME": "pull_request"}, {"EVENT_NAME": "merge_group"}, {"REF": "refs/heads/feature"}, {"IS_FORK": "true"}):
+        for changes in (
+            {"DELIVERY": "false"},
+            {"DELIVERY": ""},
+            {"DELIVERY": "false", "PREPARE_COMMAND": "p.py", "SHARDS": "false", "TESTED": "true"},
+        ):
             with self.subTest(changes=changes):
                 self.assertEqual(self.rerun(SKIP_RERUN="true", **changes), "true")
+
+    def test_with_a_preparation_the_skip_needs_no_shard_called_for_and_a_queue_run_that_passed(self) -> None:
+        asked = {"SKIP_RERUN": "true", "PREPARE_COMMAND": "ansible/checks/prepare.py"}
+        self.assertEqual(self.rerun(**asked, SHARDS="false", TESTED="true"), "false")
+        for shards, tested in (("true", "true"), ("false", "false"), ("true", "false"), ("", ""), ("false", ""), ("", "true"), ("maybe", "true"), ("false", "maybe")):
+            with self.subTest(shards=shards, tested=tested):
+                self.assertEqual(self.rerun(**asked, SHARDS=shards, TESTED=tested), "true")
+
+    def test_a_preparation_that_does_not_ask_to_skip_never_skips(self) -> None:
+        asked = {"SKIP_RERUN": "false", "PREPARE_COMMAND": "ansible/checks/prepare.py"}
+        self.assertEqual(self.rerun(**asked, SHARDS="false", TESTED="true"), "true")
+
+
+PREPARE_ANSWER_GOOD = "tested=true\nshards=false\ndirectories<<END\nroles/*\npatterns/*\nEND\n"
+
+
+def prepare_env(**changes: str) -> dict[str, str]:
+    values = {
+        "GH_TOKEN": "token",
+        "REPO": "org/repo",
+        "BEFORE": "b" * 40,
+        "SHA": SHA,
+        "WORKING_DIRECTORY": ".",
+        "PREPARE_COMMAND": "prepare.py",
+    }
+    values.update(changes)
+    return values
+
+
+class PrepareTests(unittest.TestCase):
+    """The caller's preparation, run in discover: its answer passes, and anything else runs more."""
+
+    def prepare(self, program: str | None, **changes: str) -> Result:
+        sandbox = Sandbox(self)
+        if program is not None:
+            (sandbox.dir / "prepare.py").write_text(program)
+        return sandbox.run(find_step("discover", "prepare"), prepare_env(**changes))
+
+    def written(self, program: str | None, **changes: str) -> str:
+        sandbox = Sandbox(self)
+        if program is not None:
+            (sandbox.dir / "prepare.py").write_text(program)
+        result = sandbox.run(find_step("discover", "prepare"), prepare_env(**changes))
+        self.assertEqual(result.code, 0, result.log)
+        return sandbox.output.read_text()
+
+    def program_printing(self, text: str) -> str:
+        return f"import sys\nsys.stdout.write({text!r})\n"
+
+    def test_a_good_answer_passes_through_unchanged(self) -> None:
+        self.assertEqual(self.written(self.program_printing(PREPARE_ANSWER_GOOD)), PREPARE_ANSWER_GOOD)
+
+    def test_the_program_gets_the_commit_before_and_the_pushed_commit(self) -> None:
+        program = "import sys\nsys.stdout.write('tested=true\\nshards=false\\n')\nsys.stderr.write(' '.join(sys.argv[1:]))\n"
+        result = self.prepare(program)
+        self.assertEqual(result.code, 0, result.log)
+        self.assertIn(f"--before {'b' * 40} --sha {SHA}", result.log)
+
+    def test_the_program_runs_from_the_working_directory(self) -> None:
+        sandbox = Sandbox(self)
+        (sandbox.dir / "sub").mkdir()
+        (sandbox.dir / "sub" / "prepare.py").write_text(
+            self.program_printing("tested=false\nshards=true\n")
+        )
+        result = sandbox.run(find_step("discover", "prepare"), prepare_env(WORKING_DIRECTORY="sub"))
+        self.assertEqual(result.code, 0, result.log)
+        self.assertEqual(sandbox.output.read_text(), "tested=false\nshards=true\n")
+
+    def test_a_program_that_fails_runs_every_shard_and_proves_nothing(self) -> None:
+        fallback = "shards=true\ntested=false\n"
+        for name, program in {
+            "exits with an error": "import sys\nsys.exit(3)\n",
+            "crashes": "raise RuntimeError('boom')\n",
+            "cannot be parsed": "def (:\n",
+            "prints nothing": "pass\n",
+            "is missing": None,
+        }.items():
+            with self.subTest(program=name):
+                self.assertEqual(self.written(program), fallback)
+
+    def test_a_program_that_fails_after_printing_a_good_answer_is_not_believed(self) -> None:
+        program = self.program_printing(PREPARE_ANSWER_GOOD) + "import sys\nsys.exit(1)\n"
+        self.assertEqual(self.written(program), "shards=true\ntested=false\n")
+
+    def test_an_answer_that_lacks_a_line_or_is_garbled_runs_every_shard(self) -> None:
+        fallback = "shards=true\ntested=false\n"
+        for name, text in {
+            "no tested line": "shards=false\n",
+            "no shards line": "tested=true\n",
+            "a garbled verdict": "shards=maybe\ntested=true\n",
+            "a garbled proof": "shards=false\ntested=yes\n",
+            "a block that never ends": "shards=false\ntested=true\ndirectories<<END\nroles/*\n",
+        }.items():
+            with self.subTest(answer=name):
+                self.assertEqual(self.written(self.program_printing(text)), fallback)
+
+    def test_a_command_that_is_not_a_python_path_fails_the_job(self) -> None:
+        for command in ("../prepare.py", "/tmp/prepare.py", "prepare.sh", "a b.py", "prepare.py; true", "-x.py", "a/../b.py"):
+            with self.subTest(command=command):
+                result = self.prepare(self.program_printing(PREPARE_ANSWER_GOOD), PREPARE_COMMAND=command)
+                self.assertNotEqual(result.code, 0)
+                self.assertIn("prepare-command must be a relative path", result.log)
+
+    def test_the_step_runs_only_on_a_delivery_with_a_command(self) -> None:
+        step = find_step("discover", "prepare")
+        self.assertEqual(step["if"], "steps.context.outputs.delivery == 'true' && inputs.prepare-command != ''")
+
+    def test_the_step_writes_no_answer_of_its_own_except_the_failing_one(self) -> None:
+        text = find_step("discover", "prepare")["run"]
+        self.assertNotIn("shards=false", text)
+        self.assertNotIn("tested=true", text)
+
+    def test_the_input_defaults_to_none_and_the_checkout_keeps_one_commit_without_it(self) -> None:
+        declared = DOC[True]["workflow_call"]["inputs"]["prepare-command"]
+        self.assertEqual((declared["type"], declared["default"], declared["required"]), ("string", "", False))
+        checkout = JOBS["discover"]["steps"][0]
+        self.assertEqual(checkout["with"]["fetch-depth"], "${{ inputs.prepare-command != '' && '0' || '1' }}")
+
+    def test_the_shard_list_comes_from_the_preparation_when_it_gave_one_and_from_the_input_when_not(self) -> None:
+        env = find_step("discover", "shards")["env"]
+        self.assertEqual(
+            env["ROLE_DIRECTORIES"],
+            "${{ steps.prepare.outputs.directories != '' && steps.prepare.outputs.directories || inputs.role-directories }}",
+        )
 
 
 MERGE_GROUP_NAME = "ansible / Ansible checks passed"
@@ -7755,7 +7923,7 @@ class PushParityTests(unittest.TestCase):
 # none away, and a caller that passes none of its inputs runs what it ran.
 FROZEN_JOB_KEYS = {
     "gated": {
-        "discover": ["concurrency", "name", "outputs", "runs-on", "timeout-minutes"],
+        "discover": ["concurrency", "name", "outputs", "permissions", "runs-on", "timeout-minutes"],
         "lint": ["concurrency", "defaults", "if", "name", "needs", "runs-on", "timeout-minutes"],
         "shard": ["concurrency", "defaults", "env", "if", "name", "needs", "runs-on", "strategy", "timeout-minutes"],
         "plan": ["concurrency", "if", "name", "needs", "outputs", "permissions", "runs-on", "timeout-minutes"],
@@ -7778,6 +7946,10 @@ FROZEN_STEP_NAMES = {
     ("drift", "alert"): ["Open the issue, or comment on the open one"],
 }
 PUSH_DECISION = "Decide whether any host is pushed to"
+# The two steps prepare-command adds to discover: the caller's preparation, and the rerun decision
+# that used to be the end of the context step.
+PREPARE_STEP = "Prepare the delivery"
+RERUN_STEP = "Decide whether lint and Molecule run"
 PUSH_CHECKOUT = "Check out the repository with its whole history, to push it"
 PUSH_CONDITIONS = {"plan": "steps.push.outputs.push == 'true'", "drift": "steps.push.outputs.push == 'true'", "apply": "steps.guard.outputs.push == 'true'"}
 
@@ -7792,6 +7964,8 @@ class PushOffTests(unittest.TestCase):
                     self.assertEqual(sorted(k for k in job if k != "steps"), FROZEN_JOB_KEYS[label][name])
                     steps = [step.get("name") for step in job["steps"]]
                     added = {PUSH_DECISION, PUSH_CHECKOUT}
+                    if label == "gated" and name == "discover":
+                        added |= {PREPARE_STEP, RERUN_STEP}
                     if label == "gated" and name == "apply":
                         # The shared actions, checked out for the script that names a failed task.
                         added |= {"Take the commit of the shared actions the plan resolved", "Check out the shared actions at that commit", "Verify the checkout is that commit"}
