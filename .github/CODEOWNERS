@@ -22,9 +22,15 @@
 # what the other repos' required checks and gated applies call (docs lint, opv
 # lint, image scan, the nightly rescan that applies the same critical-and-high gate
 # to a live image, the gated apply and the gated step); every action is gate code.
-# standards.yml and docs-lint.yml come from the shared lines at the end. The
-# self-test workflows, the drift check, the scan report and Dependabot settings are
-# released: nothing requires them and none gates a deploy.
+# standards.yml and docs-lint.yml come from the shared lines at the end. The drift
+# check holds secrets and a write permission, and three self-tests carry an
+# environment, so those four stay owned. The other self-test workflows, the scan
+# report and Dependabot settings are released: nothing requires them and none
+# gates a deploy.
+/.github/workflows/ansible-drift-check.yml     @branchLeft/branchleft-admin
+/.github/workflows/ansible-gated-apply-self.yml @branchLeft/branchleft-admin
+/.github/workflows/assert-environment-gated-self.yml @branchLeft/branchleft-admin
+/.github/workflows/ssh-check-hosts-self.yml    @branchLeft/branchleft-admin
 /.github/workflows/docs-lint-self.yml          @branchLeft/branchleft-admin
 /.github/workflows/opv-lint.yml                @branchLeft/branchleft-admin
 /.github/workflows/image-scan.yml              @branchLeft/branchleft-admin

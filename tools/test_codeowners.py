@@ -75,7 +75,10 @@ SAMPLES: tuple[Sample, ...] = (
     _released(".github/workflows/spend-gate-self.yml", "released: self-test, not required"),
     _released(".github/workflows/opv-lint-self.yml", "released: self-test, not required"),
     _released(".github/workflows/codeowners-self.yml", "released: self-test, not required"),
-    _released(".github/workflows/ansible-drift-check.yml", "released: reports drift, gates nothing"),
+    _owned(".github/workflows/ansible-drift-check.yml", "criterion 3, holds secrets and a write"),
+    _owned(".github/workflows/ansible-gated-apply-self.yml", "criterion 3, carries an environment"),
+    _owned(".github/workflows/assert-environment-gated-self.yml", "criterion 3, environment"),
+    _owned(".github/workflows/ssh-check-hosts-self.yml", "criterion 3, carries an environment"),
     _released(".github/workflows/image-scan-report.yml", "released: manual report"),
     _released("sub/.github/workflows/a.yml", "released: a nested path is no workflow"),
     _released(".github/dependabot.yml", "released: update settings"),
@@ -234,8 +237,55 @@ def sample_problems(lines: Sequence[str]) -> list[str]:
     return problems
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def hold_reasons(text: str, is_action: bool) -> list[str]:
+    """Why a workflow or action file stays owned, read from its own text."""
+    out: list[str] = []
+    if (
+        re.search(r"(?<![\w-])secrets\.(?!GITHUB_TOKEN\b)[A-Za-z_]", text)
+        or re.search(r"(?<![\w-])secrets\[", text)
+        or re.search(r"secrets:\s*inherit", text)
+    ):
+        out.append("secrets")
+    if re.search(r"^\s+environment:", text, re.M):
+        out.append("environment")
+    if re.search(r"^\s+[a-z-]+:\s*write\s*(#.*)?$", text, re.M) or re.search(
+        r"permissions:\s*write-all", text
+    ):
+        out.append("write permission")
+    if re.search(r"workflow_call:", text) and re.search(r"^\s{4}secrets:\s*$", text, re.M):
+        out.append("workflow_call secrets")
+    if not is_action and not re.search(r"^permissions:", text, re.M):
+        start = re.search(r"^jobs:\s*$", text, re.M)
+        body = text[start.end():] if start else ""
+        pattern = r"^  (?=[A-Za-z0-9_.-]+:\s*(?:#.*)?$)"
+        jobs = re.split(pattern, body, flags=re.M)[1:]
+        if not jobs or any(not re.search(r"^    permissions:", job, re.M) for job in jobs):
+            out.append("no permissions block")
+    return out
+
+
+def automation_files(root: Path) -> list[Path]:
+    found = [*(root / ".github" / "workflows").glob("*.y*ml")]
+    found += [*(root / ".github" / "actions").glob("*/action.y*ml")]
+    return sorted(found)
+
+
+def workflow_problems(lines: Sequence[str], root: Path = ROOT) -> list[str]:
+    entries = parse(lines)
+    problems: list[str] = []
+    for file in automation_files(root):
+        rel = file.relative_to(root).as_posix()
+        reasons = hold_reasons(file.read_text(encoding="utf-8"), "/actions/" in rel)
+        if reasons and not owners_of(rel, entries):
+            problems.append(f"{rel} matches the hold rule ({', '.join(reasons)}) but is not owned")
+    return problems
+
+
 def problems_in(lines: Sequence[str]) -> list[str]:
-    return structural_problems(lines) + sample_problems(lines)
+    return structural_problems(lines) + sample_problems(lines) + workflow_problems(lines)
 
 
 def _index_of(lines: Sequence[str], pattern: str) -> int:

@@ -14,6 +14,8 @@ It exits 0 when every check passes and 1 otherwise, printing each wrong path or 
 - A last-match-wins matcher with GitHub's semantics. A pattern whose last segment has a wildcard does not reach into subdirectories unless it ends in `/`. A line that names no owner removes ownership.
 - One table of sample paths, each with its class and whether the owner must hold it. Every kept class has a sample: the workflows that enforce a check or gate a deploy and the actions, ruleset and branch-protection names, the gate tools and their tests, the signer list and trust directory, and the human-facing README and licence text. Every released class has one too: the three gate-prose documents, unowned prose and files, the key, mail, Pulumi, Ansible-plugin and sudoers paths that guard nothing here, and the paths the dropped name-only lines used to own.
 
+- A read of every file under `.github/workflows/` and `.github/actions/*/action.yml` against the hold rule: a file that names a secret other than `GITHUB_TOKEN`, carries an `environment:`, grants any write permission, has no explicit permissions block, or declares secrets on `workflow_call` must be owned. A file that matches and is not owned turns the check red, so a new workflow cannot be released by accident. The `codeowners-self` workflow runs when anything under those directories changes.
+
 ## Structural checks
 
 - No catch-all line.
