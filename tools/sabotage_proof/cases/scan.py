@@ -48,6 +48,11 @@ CASES: list[Case] = [
         ],
     ),
     Case(
+        "scan: the block-scalar join is no longer read by the assignment pattern",
+        [Edit(SCAN, "scrub(line) for line in blanked + block_scalar_lines(blanked)", "scrub(line) for line in blanked")],
+        [PLAN("test_a_block_scalar_secret_in_the_diff_is_withheld_and_never_shown")],
+    ),
+    Case(
         "scan: every pattern reads the copy with the shapes taken out",
         [Edit(SCAN, READS, "scanned")],
         [PLAN("test_the_other_patterns_read_the_diff_whole_even_beside_a_shape_the_assignment_pattern_lets_through")],

@@ -174,5 +174,27 @@ class HostOutputScanTests(unittest.TestCase):
     def test_a_block_scalar_ends_at_the_first_line_with_no_more_indent(self) -> None:
         self.assertEqual(self.run_script("password: >-\nhunter2hunter2\n").hits, "none")
 
+    def test_a_block_scalar_secret_is_withheld_in_added_removed_and_context_diff_lines(self) -> None:
+        diff = "--- before\n+++ after: /x\n"
+        cases = {
+            "added": "+password: >-\n+  hunter2hunter2\n",
+            "removed": "-token: |\n-    abcd1234efgh\n",
+            "context": " password: >-\n   hunter2hunter2\n",
+            "added, indented under a list item": "+- api_key: >-\n+    abcd1234efgh\n",
+        }
+        for name, body in cases.items():
+            with self.subTest(line=name):
+                self.assertEqual(self.run_script(diff + body).hits, "credential-assignment")
+
+    def test_a_block_scalar_that_is_not_a_credential_in_a_diff_is_not_a_hit(self) -> None:
+        self.assertEqual(
+            self.run_script("--- before\n+++ after: /x\n+description: >-\n+  just some words here\n").hits, "none"
+        )
+
+    def test_a_diff_block_scalar_ends_at_the_first_line_with_no_more_indent(self) -> None:
+        self.assertEqual(
+            self.run_script("--- before\n+++ after: /x\n+password: >-\n+next: 1\n+  hunter2hunter2\n").hits, "none"
+        )
+
 if __name__ == "__main__":
     unittest.main()

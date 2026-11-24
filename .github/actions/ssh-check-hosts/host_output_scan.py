@@ -146,17 +146,20 @@ def block_scalar_lines(lines: list[str]) -> list[str]:
     """Each `key: >-` or `key: |` line joined with the more-indented lines under it.
 
     The assignment pattern reads one line at a time, so a secret written on the line after a block
-    scalar indicator is read here, beside its key. Blank lines are skipped; a line at the key's own
-    indentation or less ends the scalar.
+    scalar indicator is read here, beside its key. In a diff each line starts with one character
+    (`+`, `-` or a space) that is not part of the text, so it is taken off before the indent is
+    measured. Blank lines are skipped; a line at the key's indent or less ends the scalar.
     """
+    diff = any(line.startswith(HEADER_BEFORE) for line in lines)
+    bodies = [line[1:] if diff and line[:1] in ("+", "-", " ") else line for line in lines]
     joined: list[str] = []
-    for index, line in enumerate(lines):
-        head = BLOCK_SCALAR.match(line)
+    for index, body in enumerate(bodies):
+        head = BLOCK_SCALAR.match(body)
         if head is None:
             continue
-        indent = len(line) - len(line.lstrip(" "))
+        indent = len(body) - len(body.lstrip(" "))
         values: list[str] = []
-        for follow in lines[index + 1 :]:
+        for follow in bodies[index + 1 :]:
             if follow.strip() == "":
                 continue
             if len(follow) - len(follow.lstrip(" ")) <= indent:
