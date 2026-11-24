@@ -14,8 +14,8 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'scan-hits=${hits:-none}; playbook=$playbook")"',
-                'scan-hits=${hits:-none}; playbook=$playbook; diff=$(cat "$cleaned")")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook; diff=$(cat "$cleaned")")"',
             ),
         ],
         [REPORT_LOG("test_a_planted_secret_in_a_diff_never_reaches_the_log")],
@@ -40,8 +40,8 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'scan-hits=${hits:-none}; playbook=$playbook")"',
-                'scan-hits=${hits:-none}; playbook=$playbook; dest=$dest")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook; dest=$dest")"',
             ),
         ],
         [REPORT_LOG("test_a_planted_secret_in_a_diff_never_reaches_the_log")],
@@ -51,8 +51,8 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'scan-hits=${hits:-none}; playbook=$playbook")"',
-                'scan-hits=${hits:-none}; playbook=$playbook; err=$(head -c 300 "$base.err")")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook; err=$(head -c 300 "$base.err")")"',
             ),
         ],
         [
@@ -70,7 +70,7 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"',
+                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
                 ":",
             ),
         ],
@@ -84,8 +84,8 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"',
-                '[ "$kind" = ok ] || echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"',
+                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
+                '[ "$kind" = ok ] || echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
             ),
         ],
         [
