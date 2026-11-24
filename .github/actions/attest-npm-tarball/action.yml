@@ -27,7 +27,7 @@ description: >
 
 inputs:
   tarball:
-    description: Path of the packed tarball, a regular file ending in .tgz.
+    description: Path of the file to attest, a regular file (not a symlink) ending in .tgz (npm tarball) or .tar.gz (release archive).
     required: true
   repo:
     description: The repository that owns the signer workflow, owner/repo.
@@ -65,9 +65,12 @@ runs:
       run: |
         set -eu
         case "$TARBALL" in
-          *.tgz) ;;
-          *) echo "::error::tarball must be a path ending in .tgz: '$TARBALL'"; exit 1 ;;
+          *.tgz | *.tar.gz) ;;
+          *) echo "::error::file must be a path ending in .tgz or .tar.gz: '$TARBALL'"; exit 1 ;;
         esac
+        if [ -L "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
+          echo "::error::file must be a regular file, not a symlink or other entry: '$TARBALL'"; exit 1
+        fi
         python3 -I "$VERIFIER" check-inputs "$TARBALL" --repo "$REPO" --signer-workflow "$SIGNER_WORKFLOW" --ref "$REF"
 
     - name: Attest the tarball

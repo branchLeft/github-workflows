@@ -158,6 +158,33 @@ class TheSteps(unittest.TestCase):
     def test_the_input_check_needs_no_token(self) -> None:
         self.assertEqual(self.run_step(self.CHECK, GH_TOKEN=EMPTY).returncode, 0)
 
+    def test_a_release_archive_is_accepted_as_a_regular_file(self) -> None:
+        archive = self.world.tmp / "ring-controller-bundle.tar.gz"
+        shutil.copyfile(self.path, archive)
+        done = self.run_step(self.CHECK, TARBALL=str(archive))
+        self.assertEqual(done.returncode, 0, done.stdout + done.stderr)
+
+    def test_a_file_that_is_not_a_regular_archive_is_refused(self) -> None:
+        archive = self.world.tmp / "bundle.tar.gz"
+        shutil.copyfile(self.path, archive)
+        directory = self.world.tmp / "dir.tar.gz"
+        directory.mkdir()
+        link = self.world.tmp / "link.tar.gz"
+        os.symlink(archive, link)
+        for name in ("tar", "zip", "tgz-suffix-then-text"):
+            with self.subTest(case=name):
+                target = self.world.tmp / {"tar": "bundle.tar", "zip": "bundle.zip", "tgz-suffix-then-text": "bundle.tgz.txt"}[name]
+                shutil.copyfile(self.path, target)
+                done = self.run_step(self.CHECK, TARBALL=str(target))
+                self.assertNotEqual(done.returncode, 0, done.stdout + done.stderr)
+        # The shell layer refuses a symlink or a directory on its own, so the regular-file
+        # check is proven by its own message; the program's check-inputs also refuses them.
+        for target in (directory, link):
+            with self.subTest(case=target.name):
+                done = self.run_step(self.CHECK, TARBALL=str(target))
+                self.assertNotEqual(done.returncode, 0, done.stdout + done.stderr)
+                self.assertIn("not a symlink or other entry", done.stdout)
+
 
 class TheStructure(unittest.TestCase):
     def setUp(self) -> None:
@@ -269,6 +296,18 @@ class Sabotage(unittest.TestCase):
             'python3 -I "$VERIFIER" check-inputs',
             "true",
             {"TheSteps.test_inputs_that_are_not_literal_are_refused_before_anything_is_attested"},
+        ),
+        "the regular-file check removed": (
+            ACTION_FILE,
+            '        if [ -L "$TARBALL" ] || [ ! -f "$TARBALL" ]; then\n',
+            '        if false; then\n',
+            {"TheSteps.test_a_file_that_is_not_a_regular_archive_is_refused"},
+        ),
+        "the extension check widened to any name": (
+            ACTION_FILE,
+            "          *.tgz | *.tar.gz) ;;\n",
+            "          *) ;;\n",
+            {"TheSteps.test_a_file_that_is_not_a_regular_archive_is_refused"},
         ),
         "the table check not run": (
             ACTION_FILE,
