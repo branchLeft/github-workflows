@@ -263,7 +263,7 @@ class CodeOwners(unittest.TestCase):
 
     def test_the_matcher_does_not_own_everything(self):
         lines = Path(CODEOWNERS).read_text(encoding="utf-8").splitlines()
-        self.assertIsNone(owner_of("README.md", lines))
+        self.assertIsNone(owner_of("RUNBOOK.md", lines))
 
 
 @unittest.skipIf(IN_SABOTAGE, "a sabotaged copy is being tested; it does not test itself")
