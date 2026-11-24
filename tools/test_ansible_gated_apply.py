@@ -2035,6 +2035,23 @@ class PlanTests(unittest.TestCase):
                 self.assertIn("matched a secret pattern (credential-assignment)", result.summary)
                 self.assertNotIn(value, result.summary + result.log)
 
+    def test_a_block_scalar_secret_in_the_diff_is_withheld_and_never_shown(self) -> None:
+        # The secret sits on the indented line under a block scalar indicator, in an added, a removed
+        # and a context line. The scan reads the diff's own lines, so each is withheld.
+        for name, body in {
+            "added": "+password: >-\n+  Zx9Qm2LpVt7Rw4Ks\n",
+            "removed": "-password: >-\n-  Zx9Qm2LpVt7Rw4Ks\n",
+            "context": " password: >-\n   Zx9Qm2LpVt7Rw4Ks\n",
+        }.items():
+            with self.subTest(line=name):
+                sandbox = Sandbox(self)
+                sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "--- before\n+++ after\n" + body)
+                sandbox.host(HOST_TWO, 0, CLEAN)
+                _, result = self.plan(sandbox)
+                self.assertNotEqual(result.code, 0, result.log)
+                self.assertIn("matched a secret pattern (credential-assignment)", result.summary)
+                self.assertNotIn("Zx9Qm2LpVt7Rw4Ks", result.summary + result.log)
+
     def test_the_other_patterns_read_the_diff_whole_even_beside_a_shape_the_assignment_pattern_lets_through(self) -> None:
         # The key sits inside a ${...} reference, which the assignment pattern's copy drops whole.
         line = "+EXAMPLE=${EXAMPLE:?" + "AKIA" + "ABCDEFGHIJKLMNOP}"
