@@ -21,7 +21,9 @@ SHARED_SET: tuple[str, ...] = (
     "/.standards.mode",
     "/.docs-lint*",
     "/.standards-db-tooling",
-    "/.github/",
+    "/.github/CODEOWNERS",
+    "/.github/workflows/standards.yml",
+    "/.github/workflows/docs-lint.yml",
 )
 
 RELEASE_LINES: tuple[str, ...] = (
@@ -59,11 +61,24 @@ def _released(path: str, klass: str) -> Sample:
 
 
 SAMPLES: tuple[Sample, ...] = (
-    _owned(".github/workflows/docs-lint.yml", "criterion 3"),
-    _owned("sub/.github/workflows/a.yml", "criterion 3"),
+    _owned(".github/workflows/docs-lint.yml", "criterion 3, shared line"),
+    _owned(".github/workflows/standards.yml", "criterion 3, shared line"),
+    _owned(".github/workflows/docs-lint-self.yml", "criterion 3, the required docs-lint check"),
+    _owned(".github/workflows/opv-lint.yml", "criterion 3, reusable gate"),
+    _owned(".github/workflows/image-scan.yml", "criterion 3, reusable gate"),
+    _owned(".github/workflows/ansible-gated-apply.yml", "criterion 3, deploy gate"),
+    _owned(".github/workflows/ansible-gated-step.yml", "criterion 3, deploy gate"),
     _owned(".github/actions/spend-gate/spend-gate.py", "criterion 3"),
     _owned("sub/.github/actions/a/b.py", "criterion 3"),
-    _owned(".github/dependabot.yml", "criterion 3"),
+    _owned(".github/CODEOWNERS", "criterion 1, shared line"),
+    _released(".github/workflows/spend-gate-self.yml", "released: self-test, not required"),
+    _released(".github/workflows/opv-lint-self.yml", "released: self-test, not required"),
+    _released(".github/workflows/codeowners-self.yml", "released: self-test, not required"),
+    _released(".github/workflows/ansible-drift-check.yml", "released: reports drift, gates nothing"),
+    _released(".github/workflows/nightly-image-rescan.yml", "released: scheduled rescan"),
+    _released(".github/workflows/image-scan-report.yml", "released: manual report"),
+    _released("sub/.github/workflows/a.yml", "released: a nested path is no workflow"),
+    _released(".github/dependabot.yml", "released: update settings"),
     _owned("x/CODEOWNERS", "criterion 1"),
     _owned("x/codeowners", "criterion 1"),
     _owned("x/CodeOwners", "criterion 1"),
@@ -197,7 +212,7 @@ def structural_problems(lines: Sequence[str]) -> list[str]:
         problems.append("a work-item reference (#<digits>) appears in the file")
     tail = entries[-len(SHARED_SET):]
     if tuple(e.pattern for e in tail) != SHARED_SET:
-        problems.append("the last five lines are not the shared set in template order")
+        problems.append("the last seven lines are not the shared set in template order")
     body = entries[: -len(SHARED_SET)]
     release_block = body[-len(RELEASE_LINES):]
     if tuple(e.pattern for e in release_block) != RELEASE_LINES:
@@ -263,7 +278,8 @@ def sabotage_cases(lines: Sequence[str]) -> list[tuple[str, list[str]]]:
     cases.append(("append an unowned /.github/actions/", [*lines, "/.github/actions/"]))
     cases.append(("move a release line below the shared set",
                   _move_to_end(lines, RELEASE_LINES[0])))
-    cases.append(("move /.github/ to the top", _move_to_top(lines, "/.github/")))
+    cases.append(("move the shared docs-lint.yml line to the top",
+                  _move_to_top(lines, "/.github/workflows/docs-lint.yml")))
     cases.append(("move /tools/ below the release lines",
                   _move_before(lines, "/tools/", SHARED_SET[0])))
     return cases
