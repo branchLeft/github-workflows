@@ -36,6 +36,11 @@ CASES: list[Case] = [
         ],
     ),
     Case(
+        "log line: the total printed is the host's own size, not the running total",
+        [Edit(ACTION, "size=$size total=$total_bytes limit=", "size=$size total=$size limit=")],
+        [REPORT_LOG("test_a_running_total_over_900000_withholds_the_host_that_passes_it_and_says_which_cap")],
+    ),
+    Case(
         "log line: the destination is printed in the host's line",
         [
             Edit(
@@ -70,7 +75,7 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"',
+                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; size=$size total=$total_bytes limit=$tripped; scan-hits=${hits:-none}; playbook=$playbook")"',
                 ":",
             ),
         ],
@@ -84,8 +89,8 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"',
-                '[ "$kind" = ok ] || echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"',
+                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; size=$size total=$total_bytes limit=$tripped; scan-hits=${hits:-none}; playbook=$playbook")"',
+                '[ "$kind" = ok ] || echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; size=$size total=$total_bytes limit=$tripped; scan-hits=${hits:-none}; playbook=$playbook")"',
             ),
         ],
         [

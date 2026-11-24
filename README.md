@@ -977,11 +977,17 @@ summary. The first line reads `N of M hosts not clean (` the count of each kind 
 Each host asked then gets one line, clean or not, in the order of the list:
 
 ```text
-::error::host 2: kind=unreachable; note=the SSH connection failed (exit 255); scan-hits=none; playbook=-
-::notice::host 1: kind=ok; note=-; scan-hits=none; playbook=ansible/playbooks/web1.yml
+::error::host 2: kind=unreachable; note=the SSH connection failed (exit 255); size=0 total=0 limit=none; scan-hits=none; playbook=-
+::notice::host 1: kind=ok; note=-; size=0 total=0 limit=none; scan-hits=none; playbook=ansible/playbooks/web1.yml
 ```
 
 - `host N` is the label; the host name and address are never printed.
+- `size` is the byte size of this host's own output (the diff), and `total` is the
+  running total of every host's size so far, this host included. They are compared
+  with the 300000-byte per-host cap and the 900000-byte total cap. `limit` names the
+  cap this host's size trips: `none`, `per-host`, `total` or `per-host,total`. A
+  host over a cap is withheld as too large, and the numbers are the only thing printed
+  about it.
 - `kind` is one of `ok` (the host is clean), `unreachable`, `no-answer`, `failed`,
   `refused: <reason>`, `withheld` or `drift`. A call stopped at its limit (exit 124) is `no-answer`,
   and its note says so.

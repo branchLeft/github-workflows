@@ -885,6 +885,19 @@ runs:
           fi
           size=$(wc -c < "$cleaned" | tr -d ' ')
           total_bytes=$((total_bytes + size))
+          # Which cap this host's size trips, for the log line only. The withholding below
+          # reads the same two caps and is unchanged.
+          tripped=none
+          if [ "$size" -gt "$per_host_cap" ]; then
+            tripped=per-host
+          fi
+          if [ "$total_bytes" -gt "$total_cap" ]; then
+            if [ "$tripped" = none ]; then
+              tripped=total
+            else
+              tripped="$tripped,total"
+            fi
+          fi
 
           # The diff is read for secrets by host_output_scan.py, which the apply job runs too on the
           # output of a host whose playbook failed (README, "What the scan reads"). It prints two
@@ -960,7 +973,7 @@ runs:
           elif [ "$kind" = drift ] && [ "$FAIL_ON_CHANGES" != true ]; then
             level=notice
           fi
-          echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"
+          echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; size=$size total=$total_bytes limit=$tripped; scan-hits=${hits:-none}; playbook=$playbook")"
           if [ "$show" = true ] && [ -s "$cleaned" ]; then
             fence=$(awk 'BEGIN { m = 2 } { s = $0; while (match(s, /`+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } } END { f = ""; for (k = 0; k <= m; k++) f = f "`"; print f }' "$cleaned")
             {

@@ -1754,7 +1754,7 @@ class PlanTests(unittest.TestCase):
         sandbox.host(HOST_TWO, 30, self.FAILED, stderr)
         _, result = self.plan(sandbox)
         self.assertIn("::error::host 2: kind=failed", result.log)
-        self.assertIn("exit 30, task Install the package; scan-hits=none", result.log)
+        self.assertRegex(result.log, r"exit 30, task Install the package; size=[0-9]+ total=[0-9]+ limit=none; scan-hits=none")
         self.assertNotIn("Gather the facts", result.log)
         self.assertNotIn("output-that-must-not-reach-the-log", result.log)
 
@@ -5853,7 +5853,8 @@ class ReportLogTests(unittest.TestCase):
     HOST_LINE = re.compile(r"^::(error|notice)::host [0-9]+: ")
     STRICT = re.compile(
         r"^::(error|notice)::host [0-9]+: kind=(ok|unreachable|no-answer|failed|refused: [a-z-]+|withheld|drift); "
-        r"note=[A-Za-z0-9 _./:;,()=-]+; scan-hits=(none|[a-z-]+(, [a-z-]+)*); playbook=([A-Za-z0-9_./-]+|-)$"
+        r"note=[A-Za-z0-9 _./:;,()=-]+; size=[0-9]+ total=[0-9]+ limit=(none|per-host|total|per-host,total); "
+        r"scan-hits=(none|[a-z-]+(, [a-z-]+)*); playbook=([A-Za-z0-9_./-]+|-)$"
     )
     PLAYBOOK = "ansible/playbooks/host.yml"
     SECRET_LINES = {
@@ -5905,7 +5906,7 @@ class ReportLogTests(unittest.TestCase):
         _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=answer))
         self.assertEqual(
             self.host_lines(result),
-            ["::error::host 2: kind=unreachable; note=the SSH connection failed (exit 255); scan-hits=none; playbook=-"],
+            ["::error::host 2: kind=unreachable; note=the SSH connection failed (exit 255); size=0 total=0 limit=none; scan-hits=none; playbook=-"],
         )
         for text in ("bravo", "STDERR_PLANT", "port 22"):
             self.assertNotIn(text, result.log)
@@ -5913,7 +5914,7 @@ class ReportLogTests(unittest.TestCase):
     def test_a_call_stopped_at_its_limit_is_a_no_answer_that_says_so(self) -> None:
         self.assertEqual(
             self.second_host_line((124, "", "")),
-            "::error::host 2: kind=no-answer; note=the call was stopped at its limit (exit 124); scan-hits=none; playbook=-",
+            "::error::host 2: kind=no-answer; note=the call was stopped at its limit (exit 124); size=0 total=0 limit=none; scan-hits=none; playbook=-",
         )
 
     def test_a_host_reached_after_the_time_was_spent_says_it_was_not_asked(self) -> None:
@@ -5929,7 +5930,7 @@ class ReportLogTests(unittest.TestCase):
             self.host_lines(result),
             [
                 "::error::host 3: kind=no-answer; note=not asked: the time given to the check was spent before this host; "
-                "scan-hits=none; playbook=-"
+                "size=0 total=0 limit=none; scan-hits=none; playbook=-"
             ],
         )
 
@@ -5938,14 +5939,14 @@ class ReportLogTests(unittest.TestCase):
         self.assertEqual(
             self.second_host_line(answer),
             f"::error::host 2: kind=no-answer; note=the summary line names another commit or exit status (exit 0); "
-            f"scan-hits=none; playbook={self.PLAYBOOK}",
+            f"size=0 total=0 limit=none; scan-hits=none; playbook={self.PLAYBOOK}",
         )
 
     def test_an_answer_that_is_not_one_summary_line_prints_no_playbook_and_none_of_its_text(self) -> None:
         _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=(0, "garbage OUTPUT_PLANT\n", "")))
         self.assertEqual(
             self.host_lines(result),
-            ["::error::host 2: kind=no-answer; note=the host did not answer with one summary line (exit 0); scan-hits=none; playbook=-"],
+            ["::error::host 2: kind=no-answer; note=the host did not answer with one summary line (exit 0); size=0 total=0 limit=none; scan-hits=none; playbook=-"],
         )
         self.assertNotIn("OUTPUT_PLANT", result.log)
 
@@ -5963,10 +5964,12 @@ class ReportLogTests(unittest.TestCase):
             ),
         ]
         for answer, kind, note in cases:
+            # The diff is the answer's standard error, so its size is that text's length.
+            size = len(answer[2])
             with self.subTest(kind=kind, note=note):
                 self.assertEqual(
                     self.second_host_line(answer),
-                    f"::error::host 2: kind={kind}; note={note}; scan-hits=none; playbook={self.PLAYBOOK}",
+                    f"::error::host 2: kind={kind}; note={note}; size={size} total={size} limit=none; scan-hits=none; playbook={self.PLAYBOOK}",
                 )
 
     def test_a_withheld_diff_prints_the_pattern_name_and_never_the_text_it_matched(self) -> None:
@@ -5976,7 +5979,7 @@ class ReportLogTests(unittest.TestCase):
             self.host_lines(result),
             [
                 "::error::host 2: kind=withheld; note=the diff matched a secret pattern (credential-assignment) and is withheld; "
-                f"scan-hits=credential-assignment; playbook={self.PLAYBOOK}"
+                f"size=30 total=30 limit=none; scan-hits=credential-assignment; playbook={self.PLAYBOOK}"
             ],
         )
         self.assertNotIn("0123456789abcdef", result.log)
@@ -5988,10 +5991,41 @@ class ReportLogTests(unittest.TestCase):
             self.host_lines(result),
             [
                 "::error::host 2: kind=withheld; note=the diff is too large to show whole, so it cannot be approved from here; "
-                f"scan-hits=none; playbook={self.PLAYBOOK}"
+                f"size=440000 total=440000 limit=per-host; scan-hits=none; playbook={self.PLAYBOOK}"
             ],
         )
         self.assertNotIn("line of changed text", result.log)
+
+    def test_a_shown_diff_prints_its_own_size_and_the_running_total(self) -> None:
+        small = (11, summary_line("would-change", 11, "check", "@SHA@", 1), "+x\n" * 100)
+        larger = (11, summary_line("would-change", 11, "check", "@SHA@", 1), "+y\n" * 200)
+        _, result = self.report(drift_answers(alpha=small, bravo=larger, charlie=DRIFT_CLEAN))
+        self.assertEqual(result.code, 0, result.log)
+        lines = self.every_host_line(result)
+        self.assertIn(f"size=300 total=300 limit=none; scan-hits=none; playbook={self.PLAYBOOK}", lines[0])
+        self.assertIn(f"size=600 total=900 limit=none; scan-hits=none; playbook={self.PLAYBOOK}", lines[1])
+        self.assertIn("size=0 total=900 limit=none", lines[2])
+        self.assertNotIn("+x", result.log)
+        self.assertNotIn("+y", result.log)
+
+    def test_a_running_total_over_900000_withholds_the_host_that_passes_it_and_says_which_cap(self) -> None:
+        quarter = (11, summary_line("would-change", 11, "check", "@SHA@", 1), ("+" + "a" * 99 + "\n") * 2500)
+        _, result = self.report(
+            drift_answers(alpha=DRIFT_CLEAN, bravo=quarter, charlie=quarter, delta=quarter, echo=quarter, foxtrot=DRIFT_CLEAN)
+        )
+        lines = self.every_host_line(result)
+        self.assertIn("size=252500 total=757500 limit=none", lines[3])
+        self.assertIn(
+            f"::error::host 5: kind=withheld; note=the diff is too large to show whole, so it cannot be approved from here; "
+            f"size=252500 total=1010000 limit=total; scan-hits=none; playbook={self.PLAYBOOK}",
+            lines[4],
+        )
+        self.assertNotIn("aaaa", lines[4])
+
+    def test_the_size_caps_are_still_300000_per_host_and_900000_in_all(self) -> None:
+        text = ACTION.read_text()
+        self.assertIn("        per_host_cap=300000\n", text)
+        self.assertIn("        total_cap=900000\n", text)
 
     def test_every_host_asked_prints_exactly_one_line_clean_or_not(self) -> None:
         answers = drift_answers(
@@ -6011,7 +6045,7 @@ class ReportLogTests(unittest.TestCase):
             with self.subTest(fail_on_changes=fail_on_changes):
                 _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=DRIFT_CLEAN), fail_on_changes)
                 self.assertEqual(result.code, 0, result.log)
-                tail = f"kind=ok; note=-; scan-hits=none; playbook={self.PLAYBOOK}"
+                tail = f"kind=ok; note=-; size=0 total=0 limit=none; scan-hits=none; playbook={self.PLAYBOOK}"
                 self.assertEqual(self.every_host_line(result), [f"::notice::host 1: {tail}", f"::notice::host 2: {tail}"])
 
     def test_a_clean_host_line_is_the_shape_the_delivery_approver_reads(self) -> None:
@@ -6029,7 +6063,7 @@ class ReportLogTests(unittest.TestCase):
 
     def test_a_host_that_would_change_is_a_notice_in_a_plan_and_an_error_in_a_drift_check(self) -> None:
         answers = drift_answers(alpha=DRIFT_CLEAN, bravo=drifted())
-        tail = f"host 2: kind=drift; note=-; scan-hits=none; playbook={self.PLAYBOOK}"
+        tail = f"host 2: kind=drift; note=-; size=53 total=53 limit=none; scan-hits=none; playbook={self.PLAYBOOK}"
         _, plan = self.report(answers, "false")
         self.assertEqual(plan.code, 0, plan.log)
         self.assertEqual(self.host_lines(plan), [f"::notice::{tail}"])
@@ -6101,7 +6135,7 @@ class ReportLogTests(unittest.TestCase):
             with self.subTest(fail_on_changes=fail_on_changes):
                 _, result = self.report(answers, fail_on_changes, jump_host="hop@gateway.example")
                 log = result.proc.stdout + result.proc.stderr
-                self.assertIn(f"scan-hits={names}; playbook={self.PLAYBOOK}", log)
+                self.assertIn(f"size=423 total=423 limit=none; scan-hits={names}; playbook={self.PLAYBOOK}", log)
                 for text in (
                     *self.SECRET_LINES.values(),
                     "BEGIN OPENSSH",
