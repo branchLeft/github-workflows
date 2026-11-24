@@ -7,7 +7,6 @@ requires its tests to go red there. A case that stops changing its text is itsel
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import os
 import pathlib
@@ -20,6 +19,9 @@ import unittest
 from typing import ClassVar
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "_testing"))
+from script_import import load_script  # noqa: E402
+
 FIXTURES = HERE / "fixtures"
 SCRIPT_NAME = "check-verify-job-hardened.py"
 INSIDE_SABOTAGE = "CHECK_VERIFY_JOB_HARDENED_SABOTAGE"
@@ -29,10 +31,7 @@ GRANTS = "    permissions:\n      contents: read\n      packages: read\n"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("check_verify_job_hardened", HERE / SCRIPT_NAME)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_script(HERE, SCRIPT_NAME, "check_verify_job_hardened")
 
 
 checker = _load_module()
@@ -570,6 +569,7 @@ class Sabotage(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="check-verify-job-hardened-sabotage-") as tmp:
             copy_dir = pathlib.Path(tmp, ".github", "actions", "check-verify-job-hardened")
             shutil.copytree(HERE, copy_dir, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(HERE.parent / "_testing", copy_dir.parent / "_testing", ignore=shutil.ignore_patterns("__pycache__"))
             if edit:
                 name, old, new, _ = edit
                 target = copy_dir / name
