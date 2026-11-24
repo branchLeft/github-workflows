@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from ansible_gated_harness import Result, SandboxBase
 
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO / ".github/workflows/ansible-gated-step.yml"
@@ -195,47 +196,17 @@ APPLIED = host_line("applied", 10, changed=3)
 UNCHANGED = host_line("unchanged", 0, changed=0)
 
 
-class Result:
-    def __init__(
-        self, proc: subprocess.CompletedProcess[str], outputs: dict[str, str], summary: str
-    ) -> None:
-        self.code = proc.returncode
-        self.log = proc.stdout + proc.stderr
-        self.outputs = outputs
-        self.summary = summary
-
-    def visible_log(self) -> str:
-        """The log as a reader sees it: the runner consumes the add-mask commands."""
-        return "\n".join(
-            line for line in self.log.splitlines() if not line.startswith("::add-mask::")
-        )
-
-
-class Sandbox:
+class Sandbox(SandboxBase):
     """A scratch directory with stubs on PATH and the files the runner provides."""
 
     def __init__(self, test: unittest.TestCase) -> None:
-        self.dir = Path(tempfile.mkdtemp(prefix="gated-step-test-"))
-        test.addCleanup(shutil.rmtree, self.dir, True)
-        self.bin = self.dir / "bin"
-        self.stubs = self.dir / "stubs"
-        self.temp = self.dir / "runner-temp"
+        super().__init__(
+            test,
+            "gated-step-test-",
+            (("ssh", SSH_STUB), ("timeout", TIMEOUT_STUB), ("yq", YQ_STUB), ("curl", CURL_STUB)),
+        )
         self.workspace = self.dir / "workspace"
-        for path in (self.bin, self.stubs, self.temp, self.workspace):
-            path.mkdir()
-        for name, text in (
-            ("ssh", SSH_STUB),
-            ("timeout", TIMEOUT_STUB),
-            ("yq", YQ_STUB),
-            ("curl", CURL_STUB),
-        ):
-            target = self.bin / name
-            target.write_text(text)
-            target.chmod(0o755)
-        self.output = self.dir / "github-output"
-        self.summary = self.dir / "github-summary"
-        self.output.write_text("")
-        self.summary.write_text("")
+        self.workspace.mkdir()
 
     def write(self, relative: str, text: str) -> Path:
         target = self.workspace / relative
@@ -268,8 +239,6 @@ class Sandbox:
         extra: dict[str, str] | None = None,
     ) -> Result:
         values = bind(step, {**base_context(), **(context or {})})
-        script = self.dir / "step.sh"
-        script.write_text(step["run"])
         env = {
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "HOME": str(self.dir),
@@ -283,23 +252,7 @@ class Sandbox:
             **(extra or {}),
             **values,
         }
-        proc = subprocess.run(
-            ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
-            env=env,
-            capture_output=True,
-            text=True,
-            cwd=self.workspace,
-            stdin=subprocess.DEVNULL,
-            # The runner's default mask, so a file a step means to make private is
-            # seen as private only if the step made it so.
-            preexec_fn=lambda: os.umask(0o022),
-            check=False,
-        )
-        outputs: dict[str, str] = {}
-        for line in self.output.read_text().splitlines():
-            key, _, value = line.partition("=")
-            outputs[key] = value
-        return Result(proc, outputs, self.summary.read_text())
+        return self.run_script(step["run"], env, self.workspace)
 
 
 class StructureTests(unittest.TestCase):
