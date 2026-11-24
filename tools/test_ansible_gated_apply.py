@@ -25,6 +25,7 @@ import yaml
 
 import run_workflow_steps
 import ssh_jump_proof
+from ansible_gated_harness import Result, SandboxBase
 
 REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = Path(os.environ.get("ANSIBLE_GATED_APPLY_WORKFLOW", REPO / ".github/workflows/ansible-gated-apply.yml"))
@@ -221,34 +222,15 @@ def real_refusal(verdict: str, code: int, mode: str, reason: str, floor: str = "
     return summary_line(verdict, code, mode, "@SHA@", "-", reason, floor)
 
 
-class Result:
-    def __init__(self, proc: subprocess.CompletedProcess[str], outputs: dict[str, str], summary: str) -> None:
-        self.proc = proc
-        self.code = proc.returncode
-        self.log = proc.stdout + proc.stderr
-        self.outputs = outputs
-        self.summary = summary
-
-
-class Sandbox:
+class Sandbox(SandboxBase):
     """A scratch directory with stubs on PATH and the files the runner provides."""
 
     def __init__(self, test: unittest.TestCase, gh_stub: str = GH_STUB) -> None:
-        self.dir = Path(tempfile.mkdtemp(prefix="gated-apply-test-"))
-        test.addCleanup(shutil.rmtree, self.dir, True)
-        self.bin = self.dir / "bin"
-        self.stubs = self.dir / "stubs"
-        self.temp = self.dir / "runner-temp"
-        for path in (self.bin, self.stubs, self.temp):
-            path.mkdir()
-        for name, text in (("ssh", SSH_STUB), ("timeout", TIMEOUT_STUB), ("gh", gh_stub), ("yq", YQ_STUB)):
-            target = self.bin / name
-            target.write_text(text)
-            target.chmod(0o755)
-        self.output = self.dir / "github-output"
-        self.summary = self.dir / "github-summary"
-        self.output.write_text("")
-        self.summary.write_text("")
+        super().__init__(
+            test,
+            "gated-apply-test-",
+            (("ssh", SSH_STUB), ("timeout", TIMEOUT_STUB), ("gh", gh_stub), ("yq", YQ_STUB)),
+        )
 
     def host(self, dest: str, code: int, out: str, err: str = "", second: tuple[int, str, str] | None = None) -> None:
         self.stubs.joinpath(f"{dest}.rc").write_text(f"{code}\n")
@@ -277,12 +259,6 @@ class Sandbox:
         path = self.stubs / "timeout.log"
         return path.read_text().splitlines() if path.exists() else []
 
-    def stub(self, name: str, text: str) -> None:
-        """Put another stand-in command on PATH for this sandbox only."""
-        target = self.bin / name
-        target.write_text(text)
-        target.chmod(0o755)
-
     def clock(self, *times: int) -> None:
         """Make `date +%s` answer these times, one per call."""
         self.stub("date", DATE_STUB)
@@ -293,8 +269,6 @@ class Sandbox:
         given = set(values)
         if declared != given:
             raise AssertionError(f"step env mismatch: missing {declared - given}, unexpected {given - declared}")
-        script = self.dir / "step.sh"
-        script.write_text(step["run"])
         env = {
             "PATH": f"{self.bin}{os.pathsep}{os.environ['PATH']}",
             "RUNNER_TEMP": str(self.temp),
@@ -307,23 +281,7 @@ class Sandbox:
             **(extra or {}),
             **values,
         }
-        proc = subprocess.run(
-            ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
-            env=env,
-            capture_output=True,
-            text=True,
-            cwd=self.dir,
-            stdin=subprocess.DEVNULL,
-            # The runner's default mask, so a file a step means to make private is
-            # seen as private only if the step made it so.
-            preexec_fn=lambda: os.umask(0o022),
-            check=False,
-        )
-        outputs: dict[str, str] = {}
-        for line in self.output.read_text().splitlines():
-            key, _, value = line.partition("=")
-            outputs[key] = value
-        return Result(proc, outputs, self.summary.read_text())
+        return self.run_script(step["run"], env, self.dir)
 
 
 def plan_guard_env(**changes: str) -> dict[str, str]:
