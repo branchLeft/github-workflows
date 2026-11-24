@@ -313,15 +313,15 @@ jobs:
     concurrency:
       group: ansible-ci-discover-${{ github.repository }}-${{ inputs.environment }}-${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && github.event.repository.fork != true && 'delivery' || format('run-{0}-{1}', github.run_id, github.run_attempt) }}
       cancel-in-progress: false
+    outputs:
+      delivery: ${{ steps.context.outputs.delivery }}
+      recheck: ${{ steps.rerun.outputs.rerun }}
+      matrix: ${{ steps.shards.outputs.matrix }}
     # actions: read is for prepare-command, which reads the run history through the API. The
     # plan job already asks for the same grant, so a caller that can run this workflow has it.
     permissions:
       actions: read
       contents: read
-    outputs:
-      delivery: ${{ steps.context.outputs.delivery }}
-      recheck: ${{ steps.rerun.outputs.rerun }}
-      matrix: ${{ steps.shards.outputs.matrix }}
     steps:
       # prepare-command may read history before the pushed commit, so a caller that sets it gets
       # the full history. A caller that does not keeps the one commit.
