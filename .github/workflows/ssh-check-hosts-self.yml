@@ -178,8 +178,9 @@ jobs:
               test -z "$ARTIFACT_ID"
               test -z "$(find "$published" -type f 2>/dev/null)"
             fi
-            if [ -d "$published" ]; then
-              ! grep -rq 'stub-scan-hit-0001' "$published"
+            if [ -d "$published" ] && grep -rq 'stub-scan-hit-0001' "$published"; then
+              echo "::error::a withheld diff's text is in the published output"
+              exit 1
             fi
           fi
           if [ "$EXPECT_STEP_OUTCOME" = success ]; then

@@ -211,6 +211,12 @@ outputs:
       The outcome in words with counts, and no host name. Empty if the step
       stopped before it could judge.
     value: ${{ steps.report.outputs.detail }}
+  failed-output-artifact-id:
+    description: >-
+      The id of the run artifact holding the shown cleaned output of each failed
+      host, one file per host, bounded by the caps. Empty when no failed host's
+      output was shown (a withheld diff is never in it).
+    value: ${{ steps.failed-output.outputs.artifact-id }}
 
 runs:
   using: composite
@@ -769,6 +775,10 @@ runs:
         : > "$rows"
         kinds="$plan_dir/kinds"
         : > "$kinds"
+        # The shown output of each failed host, as the scan left it, is copied here and
+        # published to the run as an artifact. Nothing else is copied here.
+        failed_output="$RUNNER_TEMP/ssh-check-failed-output"
+        mkdir -p "$failed_output"
         total=0
         clean=0
         changed=0
@@ -1007,6 +1017,11 @@ runs:
               cat "$cleaned"
               printf '%s\n' "$fence"
             } >> "$details"
+            # A failed host's shown output (the scan found no hit and it is within the caps)
+            # is published to the run. A withheld diff never reaches this copy.
+            if [ "$verdict" = failed ]; then
+              cp "$cleaned" "$failed_output/host-$((10#$n)).txt"
+            fi
           fi
         done
 
@@ -1104,3 +1119,17 @@ runs:
           exit 0
         fi
         echo "$first"
+
+    # The shown output of each failed host, already scanned and cleaned, is published so that
+    # an agent can read why a plan failed from the run. The directory holds nothing else. An
+    # empty directory uploads nothing, and the step does not fail on that. It runs even when
+    # the judging step fails the job.
+    - name: Publish the shown output of each failed host to the run
+      id: failed-output
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ssh-check-failed-output-${{ github.run_attempt }}-${{ steps.validate.outputs.hosts_digest }}
+        path: ${{ runner.temp }}/ssh-check-failed-output
+        if-no-files-found: ignore
+        retention-days: 30
