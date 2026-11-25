@@ -37,8 +37,8 @@ CASES: list[Case] = [
     ),
     Case(
         "log line: the total printed is the host's own size, not the running total",
-        [Edit(ACTION, "size=$size total=$total_bytes limit=", "size=$size total=$size limit=")],
-        [REPORT_LOG("test_a_running_total_over_900000_withholds_the_host_that_passes_it_and_says_which_cap")],
+        [Edit(ACTION, "diff-bytes=$size; running-total=$total_bytes; limit=", "diff-bytes=$size; running-total=$size; limit=")],
+        [REPORT_LOG("test_every_host_line_prints_its_diff_size_and_the_running_total_of_the_diffs_shown")],
     ),
     Case(
         "log line: the destination is printed in the host's line",
