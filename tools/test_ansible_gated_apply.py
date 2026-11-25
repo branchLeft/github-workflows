@@ -2122,6 +2122,36 @@ class PlanTests(unittest.TestCase):
         self.assertIn("too large", result.summary)
         self.assertNotIn("+line of changed text", result.summary)
 
+    def test_a_withheld_host_publishes_its_task_sizes_and_the_task_of_each_hit_and_no_content(self) -> None:
+        # The diff of one host has two tasks. The first holds a secret-looking line, a path and prose that are
+        # marked: none of the marked text may reach the summary or the log, only sizes, a pattern name and task names.
+        first = "TASK [demo : Write the env file] ****\n--- before\n+++ after: /etc/leakpath/app.env\n+api_token = leakvalue0123456789\n"
+        second = "TASK [demo : Install the unit] ****\n+leakbody " + "z" * 200 + "\n"
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 11, WOULD_CHANGE, first + second)
+        sandbox.host(HOST_TWO, 0, CLEAN)
+        _, result = self.plan(sandbox)
+        self.assertNotEqual(result.code, 0, result.log)
+        for where, text in (("summary", result.summary), ("log", result.log)):
+            with self.subTest(where=where):
+                self.assertIn(f"{len(second)} TASK [demo : Install the unit]", text)
+                self.assertIn(f"{len(first)} TASK [demo : Write the env file]", text)
+                self.assertIn("credential-assignment in TASK [demo : Write the env file]", text)
+                for marker in ("leakvalue", "leakpath", "leakbody", "api_token", "--- before"):
+                    self.assertNotIn(marker, text)
+
+    def test_a_host_withheld_for_size_publishes_its_task_sizes_and_no_hits(self) -> None:
+        body = "TASK [demo : Copy the big file] ****\n" + "+line of changed text\n" * 20000
+        sandbox = Sandbox(self)
+        sandbox.host(HOST_ONE, 11, WOULD_CHANGE, body)
+        sandbox.host(HOST_TWO, 0, CLEAN)
+        _, result = self.plan(sandbox)
+        self.assertNotEqual(result.code, 0, result.log)
+        for text in (result.summary, result.log):
+            self.assertIn(f"{len(body)} TASK [demo : Copy the big file]", text)
+            self.assertIn("scan hits by task: none", text)
+            self.assertNotIn("line of changed text", text)
+
     def test_control_characters_are_removed_and_a_backtick_fence_cannot_be_closed_early(self) -> None:
         sandbox = Sandbox(self)
         sandbox.host(HOST_ONE, 11, WOULD_CHANGE, "+red \x1b[31mtext\x1b[0m\n+````\n+```` injected\n")

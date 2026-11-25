@@ -12,6 +12,13 @@ carry a list of pattern names and, when nothing matched, the name of one task.
     task=<the text between the brackets of the last TASK header before the first fatal line, at most
           160 characters, or empty; always empty when hits is not none>
 
+With --report the script prints instead, for a host whose diff is withheld, where its bytes are:
+up to 15 lines `<bytes> TASK [<role> : <task name>]`, largest first, and for each pattern that
+matched the task it fell under. A line of that report is a size, a pattern name or a TASK header
+name (cut at 120 characters, any character outside letters, digits, space and `_ . / : ; , ( ) = -`
+turned into `?`, and replaced by its place in the output when it reads as a secret itself); it is
+never the text of any other line.
+
 What the scan reads, and the named allowances: README, section "What the scan reads".
 """
 
@@ -26,6 +33,9 @@ from typing import NamedTuple
 
 USAGE_ERROR = 2
 TASK_LIMIT = 160
+REPORT_ROWS = 15
+REPORT_HITS = 30
+NAME_LIMIT = 120
 
 # A pattern is a name and an extended regular expression, read without regard to case. The list is
 # a backstop: the control is no_log and diff: false on the task (ANS-16).
@@ -71,6 +81,12 @@ HEADER_BEFORE = "--- before"
 HEADER_AFTER = "+++ after: "
 TASK_HEADER = "TASK ["
 FATAL = "fatal: "
+# A header the report reads: the whole line must be `TASK [name]`, a space and a run of stars.
+TASK_HEADER_LINE = re.compile(r"TASK \[(.*)\] \*+", re.ASCII)
+# Where output that belongs to no TASK begins: the play banner, the recap and a handler's banner.
+OUTSIDE_STARTS = ("PLAY [", "PLAY RECAP", "RUNNING HANDLER [")
+UNSAFE_NAME = re.compile(r"[^A-Za-z0-9 _./:;,()=-]", re.ASCII)
+OUTSIDE = "outside any TASK"
 
 
 class Allowance(NamedTuple):
@@ -142,7 +158,7 @@ def scrub(line: str) -> str:
 BLOCK_SCALAR = re.compile(r'^(\s*(?:-\s+)?[^\s:]*[:=]\s*"?)[>|][-+0-9]*\s*$')
 
 
-def block_scalar_lines(lines: list[str]) -> list[str]:
+def block_scalar_lines(lines: list[str], diff: bool | None = None) -> list[str]:
     """Each `key: >-` or `key: |` line joined with the more-indented lines under it.
 
     The assignment pattern reads one line at a time, so a secret written on the line after a block
@@ -150,7 +166,8 @@ def block_scalar_lines(lines: list[str]) -> list[str]:
     (`+`, `-` or a space) that is not part of the text, so it is taken off before the indent is
     measured. Blank lines are skipped; a line at the key's indent or less ends the scalar.
     """
-    diff = any(line.startswith(HEADER_BEFORE) for line in lines)
+    if diff is None:
+        diff = any(line.startswith(HEADER_BEFORE) for line in lines)
     bodies = [line[1:] if diff and line[:1] in ("+", "-", " ") else line for line in lines]
     joined: list[str] = []
     for index, body in enumerate(bodies):
@@ -188,11 +205,10 @@ def failed_task(lines: list[str]) -> str:
     return ""
 
 
-def scan(text: str, key_lines: list[str], allowances: list[Allowance]) -> Verdict:
-    """Scan one host's output. The task is named only when no pattern matched."""
-    lines = split_lines(CONTROL.sub("", text))
+def detect(lines: list[str], key_lines: list[str], allowances: list[Allowance], diff: bool | None = None) -> list[str]:
+    """The names of the patterns that match the lines, in the order of PATTERNS, key material last."""
     blanked = blank_allowed(lines, allowances)
-    scanned = [scrub(line) for line in blanked + block_scalar_lines(blanked)]
+    scanned = [scrub(line) for line in blanked + block_scalar_lines(blanked, diff)]
     hits: list[str] = []
     for name, expression in PATTERNS:
         compiled = re.compile(expression, re.IGNORECASE | re.ASCII)
@@ -200,7 +216,85 @@ def scan(text: str, key_lines: list[str], allowances: list[Allowance]) -> Verdic
             hits.append(name)
     if any(key and key in line for key in key_lines for line in lines):
         hits.append(KEY_MATERIAL)
+    return hits
+
+
+def scan(text: str, key_lines: list[str], allowances: list[Allowance]) -> Verdict:
+    """Scan one host's output. The task is named only when no pattern matched."""
+    lines = split_lines(CONTROL.sub("", text))
+    hits = detect(lines, key_lines, allowances)
     return Verdict(hits, "" if hits else failed_task(lines))
+
+
+class Segment(NamedTuple):
+    """The lines under one TASK header (`task` is its number from 1) or under none (`task` is 0)."""
+
+    task: int
+    name: str
+    lines: list[str]
+
+
+def segments(lines: list[str]) -> list[Segment]:
+    """Cut the output at each TASK header and at each play, recap or handler banner."""
+    result = [Segment(0, "", [])]
+    count = 0
+    for line in lines:
+        header = TASK_HEADER_LINE.fullmatch(line.rstrip("\r"))
+        if header is not None:
+            count += 1
+            result.append(Segment(count, header.group(1), [line]))
+        elif line.startswith(OUTSIDE_STARTS):
+            result.append(Segment(0, "", [line]))
+        else:
+            result[-1].lines.append(line)
+    return result
+
+
+def label(segment: Segment, key_lines: list[str]) -> str:
+    """The published name of a task: its cleaned, cut header text, or its number if that reads as a secret."""
+    if segment.task == 0:
+        return OUTSIDE
+    cleaned = UNSAFE_NAME.sub("?", segment.name)[:NAME_LIMIT]
+    if detect([segment.name, cleaned], key_lines, []):
+        return f"TASK number {segment.task} (its name reads as a secret and is not shown)"
+    return f"TASK [{cleaned}]"
+
+
+def report(text: str, key_lines: list[str], allowances: list[Allowance]) -> list[str]:
+    """Where the bytes of a withheld output are, and which task each matched pattern fell under.
+
+    Every line is built from a byte count, a pattern name, a fixed phrase or a label(), and from
+    nothing else: no line of the output, and no value, path or diff text, is ever copied.
+    """
+    lines = split_lines(CONTROL.sub("", text))
+    diff = any(line.startswith(HEADER_BEFORE) for line in lines)
+    parts = segments(lines)
+    labels = [label(part, key_lines) for part in parts]
+    sizes: dict[str, int] = {}
+    for part, name in zip(parts, labels):
+        sizes[name] = sizes.get(name, 0) + sum(len(line) + 1 for line in part.lines)
+    outside = sizes.pop(OUTSIDE, 0)
+    ranked = sorted(sizes.items(), key=lambda item: (-item[1], item[0]))
+    out = [f"output bytes by task, largest first ({min(REPORT_ROWS, len(ranked))} of {len(ranked)} tasks):"]
+    out += [f"{size} {name}" for name, size in ranked[:REPORT_ROWS]]
+    out.append(f"{outside} {OUTSIDE}")
+    found = detect(lines, key_lines, allowances)
+    if not found:
+        out.append("scan hits by task: none")
+        return out
+    out.append("scan hits by task:")
+    rows: list[str] = []
+    seen = {name: [] for name in found}
+    for part, name in zip(parts, labels):
+        for hit in detect(part.lines, key_lines, allowances, diff):
+            if hit in seen and name not in seen[hit]:
+                seen[hit].append(name)
+    for hit in found:
+        rows += [f"{hit} in {name}" for name in seen[hit] or ["no one task"]]
+    out += rows[:REPORT_HITS]
+    if len(rows) > REPORT_HITS:
+        out.append(f"{len(rows) - REPORT_HITS} more hit rows not shown")
+    return out
 
 
 def read_latin1(path: Path) -> str:
@@ -213,6 +307,7 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("file", type=Path)
     parser.add_argument("--keylines", type=Path)
     parser.add_argument("--allowances", default="")
+    parser.add_argument("--report", action="store_true")
     try:
         args = parser.parse_args(argv)
     except SystemExit as stop:
@@ -223,7 +318,11 @@ def main(argv: Sequence[str]) -> int:
     except OSError:
         print("host_output_scan: a file could not be read", file=sys.stderr)
         return USAGE_ERROR
-    verdict = scan(text, key_lines, parse_allowances(args.allowances))
+    allowances = parse_allowances(args.allowances)
+    if args.report:
+        sys.stdout.buffer.write(("\n".join(report(text, key_lines, allowances)) + "\n").encode("latin-1"))
+        return 0
+    verdict = scan(text, key_lines, allowances)
     out = f"hits={', '.join(verdict.hits) or 'none'}\ntask={verdict.task}\n"
     sys.stdout.buffer.write(out.encode("latin-1"))
     return 0
