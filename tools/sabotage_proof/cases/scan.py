@@ -13,14 +13,14 @@ from ..suites import PLAN, REPORT_LOG
 NOPASSWD = r'(r"(^|[\s)])nopasswd:", r"\1"),'
 REFERENCE = r'(r"\$\{[a-z_][a-z0-9_]*(:?\?[^}]*)?\}", ""),'
 COMMAND = r'(r"\$\(cat [^\s)]+\)", ""),'
-FILE_KEY = r'''(r'[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\1"),'''
+FILE_KEY = r'''(r'[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\2"),'''
 FLAG = r'''(r'[:=]\s*"?(true|false|null|none)"?\s*([\],}]|$)', r" \2"),'''
 ASSIGNMENT_LINES = (
     '        r"(passw(or)?d|passphrase|secret|token|api[_-]?key|private[_-]?key|credential)"\n'
     "        r'[A-Za-z0-9_.-]*\"?\\s*[:=]\\s*\"?[^\\s\"]{4,}',\n"
 )
 READS = "scanned if name == ASSIGNMENT else lines"
-BLANKED = "scrub(line) for line in blank_allowed(lines, allowances)"
+BLANKED = "blanked = blank_allowed(lines, allowances)"
 LINE_TEST = "text == a.line and applies(file, a)"
 
 
@@ -46,6 +46,11 @@ CASES: list[Case] = [
             PLAN("test_a_secret_looking_string_in_the_diff_is_withheld_and_fails_the_job"),
             REPORT_LOG("test_a_withheld_diff_prints_the_pattern_name_and_never_the_text_it_matched"),
         ],
+    ),
+    Case(
+        "scan: the block-scalar join is no longer read by the assignment pattern",
+        [Edit(SCAN, "scrub(line) for line in blanked + block_scalar_lines(blanked)", "scrub(line) for line in blanked")],
+        [PLAN("test_a_block_scalar_secret_in_the_diff_is_withheld_and_never_shown")],
     ),
     Case(
         "scan: every pattern reads the copy with the shapes taken out",
@@ -95,7 +100,7 @@ CASES: list[Case] = [
     ),
     Case(
         "scan: a key that names a file takes the rest of its line with it",
-        [Edit(SCAN, r'''[:=](\s*"?[/~])', r"\1"''', r'''[:=].*', r"\1"''')],
+        [Edit(SCAN, r'''[:=](\s*"?[/~])', r"\2"''', r'''[:=].*', r"\1"''')],
         [PLAN("test_a_credential_assignment_is_withheld_whatever_else_is_on_its_line")],
     ),
     Case(
@@ -103,7 +108,7 @@ CASES: list[Case] = [
         [
             Edit(
                 SCAN,
-                r'''[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\1"''',
+                r'''[a-z0-9_.-]*[_.-](file|filename|path|dir)"?\s*[:=](\s*"?[/~])', r"\2"''',
                 r'''[a-z0-9_.-]*(file|filename|path|dir)"?\s*[:=]', r"\1"''',
             ),
         ],
@@ -134,7 +139,7 @@ CASES: list[Case] = [
     # be widened: any file, a line that only starts like the entry, or a path that only ends alike.
     Case(
         "scan: the named allowance is not read by the credential-assignment pattern",
-        [Edit(SCAN, BLANKED, "scrub(line) for line in lines")],
+        [Edit(SCAN, BLANKED, "blanked = lines")],
         [PLAN("test_the_named_placeholder_in_its_own_file_is_shown_and_does_not_fail_the_job")],
     ),
     Case(

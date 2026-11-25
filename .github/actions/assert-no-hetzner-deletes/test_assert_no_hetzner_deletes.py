@@ -4,7 +4,6 @@ Why: assert-no-hetzner-deletes.md beside the module (section Unit tests).
 """
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -17,19 +16,16 @@ import tempfile
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "_testing"))
+from script_import import load_script  # noqa: E402
+
 FIXTURES = HERE / "fixtures"
 ACTION = HERE / "action.yml"
 INSIDE_SABOTAGE = "ASSERT_NO_HETZNER_DELETES_SABOTAGE"
 
 
 def _load_module():
-    """Import the script by path: its filename has hyphens, so it is not a
-    legal module name for a plain import."""
-    path = HERE / "assert-no-hetzner-deletes.py"
-    spec = importlib.util.spec_from_file_location("assert_no_hetzner_deletes", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_script(HERE, "assert-no-hetzner-deletes.py", "assert_no_hetzner_deletes")
 
 
 guard = _load_module()
@@ -551,6 +547,7 @@ class SabotageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="hetzner-deletes-sabotage-") as tmp:
             copy = pathlib.Path(tmp, ".github", "actions", "assert-no-hetzner-deletes")
             shutil.copytree(HERE, copy, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(HERE.parent / "_testing", copy.parent / "_testing", ignore=shutil.ignore_patterns("__pycache__"))
             if edit:
                 name, old, new, _ = edit
                 target = copy / name

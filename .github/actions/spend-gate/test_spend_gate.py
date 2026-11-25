@@ -5,7 +5,6 @@ create and error ones); update, replace and delete steps follow the engine sourc
 labelled so where they are built."""
 
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -18,18 +17,17 @@ import tempfile
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "_testing"))
+from script_import import load_script  # noqa: E402
+
 FIXTURES = HERE / "fixtures"
 SCRIPT_ENV = "SPEND_GATE_SCRIPT"
 
 
 def _load_module():
-    """Import the script by path: its filename has hyphens. SPEND_GATE_SCRIPT points the
-    tests at another copy of it, which is how the sabotage test breaks a copy and not this one."""
-    path = pathlib.Path(os.environ.get(SCRIPT_ENV) or HERE / "spend-gate.py").resolve()
-    spec = importlib.util.spec_from_file_location("spend_gate", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """SPEND_GATE_SCRIPT points the tests at another copy of the script, which is how the
+    sabotage test breaks a copy and not this one."""
+    return load_script(HERE, "spend-gate.py", "spend_gate", SCRIPT_ENV)
 
 
 gate = _load_module()
@@ -591,6 +589,7 @@ class SabotageTests(unittest.TestCase):
             actions = pathlib.Path(tmp, ".github", "actions")
             for each in (self.GATE, self.SHARED):
                 shutil.copytree(HERE.parent / each, actions / each, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(HERE.parent / "_testing", actions / "_testing", ignore=shutil.ignore_patterns("__pycache__"))
             script = actions / self.GATE / "spend-gate.py"
             if control:
                 target = actions / name / f"{name}.py"

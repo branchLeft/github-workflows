@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..files import ACTION, GATED_APPLY
 from ..model import Case, Edit
-from ..suites import APPLY, DRIFT_REPORT, PLAN, STRUCTURE, VALIDATE_HOSTS
+from ..suites import APPLY, DRIFT_REPORT, PLAN, REPORT_LOG, STRUCTURE, VALIDATE_HOSTS
 from ..text import indented
 
 CASES: list[Case] = [
@@ -18,6 +18,17 @@ CASES: list[Case] = [
             ),
         ],
         [DRIFT_REPORT("test_a_host_that_would_change_is_red_in_a_drift_check_and_green_in_a_plan")],
+    ),
+    Case(
+        "a withheld diff counts toward the total that caps the later hosts",
+        [
+            Edit(
+                ACTION,
+                '          if [ "$show" = true ]; then\n            total_bytes=$((total_bytes + size))\n          fi\n',
+                '          total_bytes=$((total_bytes + size))\n',
+            ),
+        ],
+        [REPORT_LOG("test_a_withheld_diff_does_not_count_toward_the_total_that_caps_the_later_hosts")],
     ),
     Case(
         "the per-host plan files are numbered with two digits again, so past 99 hosts they sort out of order",

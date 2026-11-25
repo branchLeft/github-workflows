@@ -5,6 +5,7 @@ The plan step and the apply job are tested through it in test_ansible_gated_appl
 
 from __future__ import annotations
 
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -148,6 +149,52 @@ class HostOutputScanTests(unittest.TestCase):
         self.assertEqual(proc.stdout, b"")
         self.assertNotIn(b"nonexistent", proc.stderr)
 
+
+    def test_a_file_key_is_taken_out_and_its_value_keeps_its_slash(self) -> None:
+        # The scrub is loaded alone: the copy it leaves is what the patterns read.
+        spec = importlib.util.spec_from_file_location("host_output_scan", SCRIPT)
+        assert spec is not None and spec.loader is not None
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.scrub("password_file: /etc/example/db-password"), " /etc/example/db-password")
+
+    def test_a_secret_on_the_line_after_a_block_scalar_indicator_is_withheld(self) -> None:
+        lines = (
+            "password: >-\n  hunter2hunter2\n",
+            "token: |\n    abcd1234efgh\n",
+            "- api_key: >-\n    abcd1234efgh\n",
+        )
+        for text in lines:
+            with self.subTest(text=text):
+                self.assertEqual(self.run_script(text).hits, "credential-assignment")
+
+    def test_a_block_scalar_that_is_not_a_credential_is_not_a_hit(self) -> None:
+        self.assertEqual(self.run_script("description: >-\n  just some words here\n").hits, "none")
+
+    def test_a_block_scalar_ends_at_the_first_line_with_no_more_indent(self) -> None:
+        self.assertEqual(self.run_script("password: >-\nhunter2hunter2\n").hits, "none")
+
+    def test_a_block_scalar_secret_is_withheld_in_added_removed_and_context_diff_lines(self) -> None:
+        diff = "--- before\n+++ after: /x\n"
+        cases = {
+            "added": "+password: >-\n+  hunter2hunter2\n",
+            "removed": "-token: |\n-    abcd1234efgh\n",
+            "context": " password: >-\n   hunter2hunter2\n",
+            "added, indented under a list item": "+- api_key: >-\n+    abcd1234efgh\n",
+        }
+        for name, body in cases.items():
+            with self.subTest(line=name):
+                self.assertEqual(self.run_script(diff + body).hits, "credential-assignment")
+
+    def test_a_block_scalar_that_is_not_a_credential_in_a_diff_is_not_a_hit(self) -> None:
+        self.assertEqual(
+            self.run_script("--- before\n+++ after: /x\n+description: >-\n+  just some words here\n").hits, "none"
+        )
+
+    def test_a_diff_block_scalar_ends_at_the_first_line_with_no_more_indent(self) -> None:
+        self.assertEqual(
+            self.run_script("--- before\n+++ after: /x\n+password: >-\n+next: 1\n+  hunter2hunter2\n").hits, "none"
+        )
 
 if __name__ == "__main__":
     unittest.main()

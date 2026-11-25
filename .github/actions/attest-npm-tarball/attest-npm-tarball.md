@@ -15,7 +15,8 @@ and the consumer judge an attestation by the same rules. The rules are in
 
 ## The steps, in order
 
-1. **Check the inputs.** The tarball ends in `.tgz` and is a file; `repo` is
+1. **Check the inputs.** The file ends in `.tgz` (an npm tarball) or `.tar.gz` (a
+   release archive) and is a regular file, not a symlink or directory; `repo` is
    `owner/name`; `signer-workflow` is a workflow file of that repository; `ref` is an
    exact `refs/tags/...` or `refs/heads/...`. Nothing is attested for an identity
    that is not well formed.
