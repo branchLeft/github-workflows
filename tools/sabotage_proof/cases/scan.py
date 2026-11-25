@@ -49,7 +49,7 @@ CASES: list[Case] = [
     ),
     Case(
         "scan: the block-scalar join is no longer read by the assignment pattern",
-        [Edit(SCAN, "scrub(line) for line in blanked + block_scalar_lines(blanked)", "scrub(line) for line in blanked")],
+        [Edit(SCAN, "scrub(line) for line in blanked + block_scalar_lines(blanked, diff)", "scrub(line) for line in blanked")],
         [PLAN("test_a_block_scalar_secret_in_the_diff_is_withheld_and_never_shown")],
     ),
     Case(
@@ -172,5 +172,17 @@ CASES: list[Case] = [
         "scan: a file header carries over into the next file of the same diff",
         [Edit(SCAN, "if line.startswith(HEADER_BEFORE):\n            file = \"\"", "if line.startswith(HEADER_BEFORE):\n            pass")],
         [PLAN("test_the_named_placeholder_is_withheld_in_any_other_place_or_with_anything_added")],
+    ),
+    # The report of a withheld host names a task and a size, never a line of the output.
+    Case(
+        "scan: the report of a withheld host echoes the line a pattern matched",
+        [
+            Edit(
+                SCAN,
+                'rows += [f"{hit} in {name}" for name in seen[hit] or ["no one task"]]',
+                'rows += [f"{hit} in {name} " + " ".join(x for x in lines if "api_token" in x) for name in seen[hit] or ["no one task"]]',
+            )
+        ],
+        [PLAN("test_a_withheld_host_publishes_its_task_sizes_and_the_task_of_each_hit_and_no_content")],
     ),
 ]
