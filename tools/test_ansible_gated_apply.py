@@ -5974,6 +5974,47 @@ class ReportLogTests(unittest.TestCase):
         )
         self.assertNotIn("line of changed text", result.log)
 
+    def test_a_diff_under_the_per_host_cap_that_takes_the_total_past_900000_is_withheld_with_limit_total(self) -> None:
+        # Each diff is 250000 bytes, under the 300000 per-host cap. Three are shown (750000 in all); the fourth would
+        # take the running total to 1000000, so it is withheld and its line names the total cap alone.
+        body =("+" + "a" * 98 + "\n") * 2500
+        self.assertEqual(len(body), 250000)
+        answers = drift_answers(
+            alpha=DRIFT_CLEAN,
+            bravo=(11, summary_line("would-change", 11, "check", "@SHA@", 1), body),
+            charlie=(11, summary_line("would-change", 11, "check", "@SHA@", 1), body),
+            delta=(11, summary_line("would-change", 11, "check", "@SHA@", 1), body),
+            echo=(11, summary_line("would-change", 11, "check", "@SHA@", 1), body),
+        )
+        _, result = self.report(answers)
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertEqual(
+            self.every_host_line(result)[1:],
+            [
+                f"::notice::host 2: kind=drift; note=-; scan-hits=none; diff-bytes=250000; running-total=250000; limit=none; playbook={self.PLAYBOOK}",
+                f"::notice::host 3: kind=drift; note=-; scan-hits=none; diff-bytes=250000; running-total=500000; limit=none; playbook={self.PLAYBOOK}",
+                f"::notice::host 4: kind=drift; note=-; scan-hits=none; diff-bytes=250000; running-total=750000; limit=none; playbook={self.PLAYBOOK}",
+                "::error::host 5: kind=withheld; note=the diff is too large to show whole, so it cannot be approved from here; "
+                f"scan-hits=none; diff-bytes=250000; running-total=750000; limit=total; playbook={self.PLAYBOOK}",
+            ],
+        )
+
+    def test_a_diff_over_the_per_host_cap_that_also_takes_the_total_past_900000_is_withheld_with_limit_per_host_total(self) -> None:
+        # The first diff is 250000 bytes and is shown. The second is 700000 bytes: over the 300000 per-host cap, and
+        # over the total cap with the first (950000). Both caps are named, and its bytes do not count toward the total.
+        small = (11, summary_line("would-change", 11, "check", "@SHA@", 1), ("+" + "a" * 98 + "\n") * 2500)
+        big = (11, summary_line("would-change", 11, "check", "@SHA@", 1), ("+" + "a" * 98 + "\n") * 7000)
+        _, result = self.report(drift_answers(alpha=DRIFT_CLEAN, bravo=small, charlie=big))
+        self.assertNotEqual(result.code, 0, result.log)
+        self.assertEqual(
+            self.every_host_line(result)[1:],
+            [
+                f"::notice::host 2: kind=drift; note=-; scan-hits=none; diff-bytes=250000; running-total=250000; limit=none; playbook={self.PLAYBOOK}",
+                "::error::host 3: kind=withheld; note=the diff is too large to show whole, so it cannot be approved from here; "
+                f"scan-hits=none; diff-bytes=700000; running-total=250000; limit=per-host,total; playbook={self.PLAYBOOK}",
+            ],
+        )
+
     def test_a_withheld_diff_does_not_count_toward_the_total_that_caps_the_later_hosts(self) -> None:
         # The first host's diff matches a secret pattern and is withheld, so none of it is shown. Its bytes must not
         # count toward the 900000-byte total, or the small diff of the second host is withheld as too large.
