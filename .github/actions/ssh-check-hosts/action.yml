@@ -217,6 +217,12 @@ outputs:
       host, one file per host, bounded by the caps. Empty when no failed host's
       output was shown (a withheld diff is never in it).
     value: ${{ steps.failed-output.outputs.artifact-id }}
+  failed-output-name:
+    description: >-
+      The name of that run artifact: ssh-check-failed-output, the run attempt and
+      eight random bytes. It holds no value from the hosts. Empty if the step stopped
+      before it could judge.
+    value: ${{ steps.report.outputs.failed-output-name }}
 
 runs:
   using: composite
@@ -779,6 +785,10 @@ runs:
         # published to the run as an artifact. Nothing else is copied here.
         failed_output="$RUNNER_TEMP/ssh-check-failed-output"
         mkdir -p "$failed_output"
+        # The artifact's name holds the run attempt and eight random bytes, never a value from the
+        # hosts: a name made from the host list would let a short list be guessed from its hash.
+        nonce=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+        echo "failed-output-name=ssh-check-failed-output-$GITHUB_RUN_ATTEMPT-$nonce" >> "$GITHUB_OUTPUT"
         total=0
         clean=0
         changed=0
@@ -1129,7 +1139,7 @@ runs:
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
       with:
-        name: ssh-check-failed-output-${{ github.run_attempt }}-${{ steps.validate.outputs.hosts_digest }}
+        name: ${{ steps.report.outputs.failed-output-name || 'ssh-check-failed-output' }}
         path: ${{ runner.temp }}/ssh-check-failed-output
         if-no-files-found: ignore
         retention-days: 30

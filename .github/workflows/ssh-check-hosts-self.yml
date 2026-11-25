@@ -168,6 +168,7 @@ jobs:
           PUSH_HOSTS_DIGEST: ${{ steps.ssh.outputs.push-hosts-digest }}
           EXPECT_PUSH: ${{ matrix.push-hosts != '' }}
           ARTIFACT_ID: ${{ steps.ssh.outputs.failed-output-artifact-id }}
+          ARTIFACT_NAME: ${{ steps.ssh.outputs.failed-output-name }}
           EXPECT_ARTIFACT: ${{ matrix.expect-artifact }}
           EXPECT_TEXT: ${{ matrix.expect-text }}
         run: |
@@ -183,6 +184,12 @@ jobs:
             published="$RUNNER_TEMP/ssh-check-failed-output"
             if [ "$EXPECT_ARTIFACT" = true ]; then
               test -n "$ARTIFACT_ID"
+              # The name is the prefix, the run attempt and random bytes: no value from the hosts.
+              printf '%s' "$ARTIFACT_NAME" | grep -Eq '^ssh-check-failed-output-[0-9]+-[0-9a-f]{16}$'
+              if [ -n "$HOSTS_DIGEST" ] && [[ "$ARTIFACT_NAME" == *"$HOSTS_DIGEST"* ]]; then
+                echo "::error::the artifact name holds the host list's digest"
+                exit 1
+              fi
               test "$(find "$published" -type f | wc -l | tr -d ' ')" = 1
               grep -q -F "$EXPECT_TEXT" "$published"/*
               # The same shown output is in the step summary the action wrote (its plan file).

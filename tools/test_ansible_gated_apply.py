@@ -1044,7 +1044,7 @@ class StructureTests(unittest.TestCase):
         self.assertIs(inputs["skip-failed-hosts"]["required"], False)
         self.assertEqual(inputs["total-timeout"]["default"], "")
         self.assertEqual(inputs["dry-run"]["default"], "false")
-        self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "push-hosts-digest", "jump2-hosts-digest", "outcome", "detail", "apply-hosts", "failed-hosts", "failed-output-artifact-id"})
+        self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "push-hosts-digest", "jump2-hosts-digest", "outcome", "detail", "apply-hosts", "failed-hosts", "failed-output-artifact-id", "failed-output-name"})
         for name in ("push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "jump2-host", "jump2-key", "jump2-hosts", "host-check-keys"):
             self.assertEqual(inputs[name]["default"], "", name)
             self.assertIs(inputs[name]["required"], False, name)

@@ -322,9 +322,9 @@ def load_action(path: Path) -> tuple[dict[str, str], list[ActionStep]]:
     for raw in raw_steps:
         step = _mapping(raw, "a step")
         if "run" not in step:
-            # A step that uses an action (the artifact upload after the judging) is not a shell step of the proof.
+            # A step that uses an action (the artifact upload) is not a shell step of the proof.
             continue
-        environment ={key: str(value) for key, value in _mapping(step.get("env", {}), "env").items()}
+        environment = {key: str(value) for key, value in _mapping(step.get("env", {}), "env").items()}
         steps.append(ActionStep(str(step.get("id")), str(step.get("run")), environment))
     if [step.step_id for step in steps] != list(STEP_IDS):
         raise ActionFormatError(f"the steps are not {STEP_IDS}")
