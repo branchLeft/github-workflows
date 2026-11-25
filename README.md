@@ -704,8 +704,8 @@ README changes, so does this list.
 | Seen as | Cause | What to do |
 | --- | --- | --- |
 | Plan job red, `Plan failed: N of M hosts not clean` first line | A host refused, was busy, failed, timed out, did not answer, or answered with a line this workflow cannot read or for another commit | Read the `::error::host N` line for that host in the job log (it names the kind and the reason), then the row in the job summary. No approval was requested. |
-| Plan row says the diff matched a secret pattern | A line of the diff looks like a credential (see "What the scan reads" for the shapes that do not count), or holds the check key | Fix the task with `no_log: true` and `diff: false` (ANS-16). The diff is withheld and the job fails. |
-| Plan row says the diff is too large | More than 300 KB for a host or 900 KB in all | Split the change. The approver must be able to read the whole plan. |
+| Plan row says the diff matched a secret pattern | A line of the diff looks like a credential (see "What the scan reads" for the shapes that do not count), or holds the check key | Fix the task with `no_log: true` and `diff: false` (ANS-16). The diff is withheld and the job fails. The log and the summary section "where the withheld output is" name the task each pattern fell under (see "Where a withheld host's bytes are"). |
+| Plan row says the diff is too large | More than 300 KB for a host or 900 KB in all | Split the change. The approver must be able to read the whole plan. The same section lists the 15 largest tasks by bytes. |
 | Apply job red, reason `rollback` | The host already ran a newer commit on main than the one approved. The failure message names the planned commit, and names the host's last applied commit when the host's one summary line carries the optional `floor=` field. Without that field the message says the floor is in the host's journal, because the host's stderr is withheld from the public log: read it there. | Nothing to do on a linear main: the newer commit includes this one's changes. With a merge commit the floor can be a mainline commit that does not contain a planned side-branch commit, so check before relying on that. If that newer apply failed, fix forward with a new commit, as for any red host. |
 | Apply job red, "second run" | The apply left something to change, so the role is not idempotent (ANS-11) | Fix the role. The host is already at the applied state. |
 | Apply job red on one host | Hosts after it were not touched; hosts before it were applied | Read the host's log, fix forward with a new commit. |
@@ -965,6 +965,22 @@ diff whole, and the log never carries the text that matched. A shape that is not
 the table is still withheld until the task hides it (`no_log: true` and
 `diff: false`, ANS-16) or this table gains a row, with a test that shows the row
 lets through that shape alone.
+
+#### Where a withheld host's bytes are
+
+A host whose diff is withheld, for a pattern or for size, adds to the job log (lines that start
+`host N: withheld,`) and to a job summary section "where the withheld output is":
+
+- up to 15 lines `<bytes> TASK [<role> : <task name>]`, largest first, and one line of the bytes
+  that belong to no TASK (the play banner, the recap, a handler's banner);
+- for each pattern that matched, a line `<pattern name> in TASK [<role> : <task name>]`, at most 30.
+
+It is built by `host_output_scan.py --report` from numbers, pattern names, fixed phrases and the
+text of a `TASK [...]` header line, and from nothing else: no other line, value, path or diff text
+is copied. A header counts only as a whole line `TASK [name]` and a run of stars. A name is cut
+at 120 characters, and any character outside letters, digits, space and `_ . / : ; , ( ) = -` becomes
+`?`. A name that itself reads as a secret is replaced by its number in the output. The scan that
+withholds is unchanged and the caps are the same.
 
 #### What a red run means, and how to clear it
 

@@ -722,6 +722,10 @@ runs:
         plain() {
           printf '%s' "$1" | tr -c 'A-Za-z0-9 _./:;,()=-' '?'
         }
+        # The same, with the brackets of a TASK name kept, for the lines of a withheld host's report.
+        plain_task() {
+          printf '%s' "$1" | tr -c 'A-Za-z0-9 _./:;,()=[]-' '?'
+        }
         # The jump hosts' names are replaced in a log line as they are in the diff
         # (the report step's awk): the playbook is the one field a host writes.
         redact_jumps() {
@@ -964,6 +968,24 @@ runs:
             level=notice
           fi
           echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"
+          # A host whose diff is withheld, for a secret pattern or for size, also gets where its
+          # bytes are: up to 15 lines of bytes and TASK name, largest first, and for each pattern
+          # that matched, the task it fell under. host_output_scan.py --report builds every line
+          # from a count, a pattern name, a fixed phrase or a TASK header name cut at 120 characters
+          # and cleaned; it copies no other line, value, path or diff text. The text goes to the
+          # log and to the job summary; plain_task() is the last defence on the log line.
+          if [ "$kind" = withheld ]; then
+            breakdown=$(python3 "$GITHUB_ACTION_PATH/host_output_scan.py" "$cleaned" --keylines "$keylines" --allowances "$allowance_text" --report) || breakdown="the breakdown of this output could not be built"
+            while IFS= read -r breakdown_line; do
+              echo "$(plain_task "$label: withheld, $breakdown_line")"
+            done <<< "$breakdown"
+            {
+              printf '\n### %s: where the withheld output is\n\n' "$label"
+              printf '%s\n' '```text'
+              printf '%s\n' "$breakdown"
+              printf '%s\n' '```'
+            } >> "$details"
+          fi
           if [ "$show" = true ] && [ -s "$cleaned" ]; then
             fence=$(awk 'BEGIN { m = 2 } { s = $0; while (match(s, /`+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } } END { f = ""; for (k = 0; k <= m; k++) f = f "`"; print f }' "$cleaned")
             {
