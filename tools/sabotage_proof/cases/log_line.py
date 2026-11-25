@@ -14,8 +14,8 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
-                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook; diff=$(cat "$cleaned")")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook; diff=$(cat "$cleaned")")"',
             ),
         ],
         [REPORT_LOG("test_a_planted_secret_in_a_diff_never_reaches_the_log")],
@@ -36,12 +36,17 @@ CASES: list[Case] = [
         ],
     ),
     Case(
+        "log line: the total printed is the host's own size, not the running total",
+        [Edit(ACTION, "diff-bytes=$size; running-total=$total_bytes; limit=", "diff-bytes=$size; running-total=$size; limit=")],
+        [REPORT_LOG("test_every_host_line_prints_its_diff_size_and_the_running_total_of_the_diffs_shown")],
+    ),
+    Case(
         "log line: the destination is printed in the host's line",
         [
             Edit(
                 ACTION,
-                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
-                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook; dest=$dest")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook; dest=$dest")"',
             ),
         ],
         [REPORT_LOG("test_a_planted_secret_in_a_diff_never_reaches_the_log")],
@@ -51,8 +56,8 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
-                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook; err=$(head -c 300 "$base.err")")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook")"',
+                'scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook; err=$(head -c 300 "$base.err")")"',
             ),
         ],
         [
@@ -70,7 +75,7 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
+                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook")"',
                 ":",
             ),
         ],
@@ -84,8 +89,8 @@ CASES: list[Case] = [
         [
             Edit(
                 ACTION,
-                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
-                '[ "$kind" = ok ] || echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; playbook=$playbook")"',
+                'echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook")"',
+                '[ "$kind" = ok ] || echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook")"',
             ),
         ],
         [
