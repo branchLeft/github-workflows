@@ -125,6 +125,10 @@
         "description": "The number of hosts whose answer was a failure of any kind. With skip-failed-hosts it can be above 0 on a step that succeeded.",
         "value": "${{ steps.report.outputs.failed_hosts }}"
       },
+      "failed-output-artifact-id": {
+        "description": "The id of the run artifact holding the shown cleaned output of each failed host, one file per host, bounded by the caps. Empty when no failed host's output was shown (a withheld diff is never in it).",
+        "value": "${{ steps.failed-output.outputs.artifact-id }}"
+      },
       "has-changes": {
         "description": "false only when every host answered clean for this commit, or, with skip-failed-hosts, when every host that passed answered clean; true for every other outcome.",
         "value": "${{ steps.report.outputs.has_changes }}"
@@ -215,8 +219,20 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "319a3507d097edb76fa74c25c99e7b71e3814a7835e5e66a6850bdc594f62b5a",
+          "run-sha256": "08cde35799c8ccbb1ad4d1896f191e836db41362c3d060a5673fe6822017c53c",
           "shell": "bash"
+        },
+        {
+          "id": "failed-output",
+          "if": "always()",
+          "name": "Publish the shown output of each failed host to the run",
+          "uses": "actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9",
+          "with": {
+            "if-no-files-found": "ignore",
+            "name": "ssh-check-failed-output-${{ github.run_attempt }}-${{ steps.validate.outputs.hosts_digest }}",
+            "path": "${{ runner.temp }}/ssh-check-failed-output",
+            "retention-days": 30
+          }
         }
       ],
       "using": "composite"
@@ -263,7 +279,9 @@
           },
           {
             "env": {
+              "ARTIFACT_ID": "${{ steps.ssh.outputs.failed-output-artifact-id }}",
               "DETAIL": "${{ steps.ssh.outputs.detail }}",
+              "EXPECT_ARTIFACT": "${{ matrix.expect-artifact }}",
               "EXPECT_HAS_CHANGES": "${{ matrix.has-changes }}",
               "EXPECT_OUTCOME": "${{ matrix.outcome }}",
               "EXPECT_OUTCOME_ALWAYS": "${{ matrix.outcome-always }}",
@@ -276,7 +294,7 @@
               "STEP_OUTCOME": "${{ steps.ssh.outcome }}"
             },
             "name": "The step ended as the case expects, with the outputs it expects",
-            "run-sha256": "86401a907340721318b27ce769f1992167db78eba89b976516b77baf2cf8d800"
+            "run-sha256": "66ee24f3ac9a91e3765ed85aa42a4e1370ef36741e1ab56f2572467de9def42d"
           }
         ],
         "strategy": {
@@ -352,6 +370,26 @@
                 "outcome": "",
                 "outcome-always": "no-answer",
                 "push-hosts": "ci@first-stub-host",
+                "step-outcome": "failure"
+              },
+              {
+                "expect-artifact": "true",
+                "fail-on-changes": "false",
+                "has-changes": "",
+                "hosts": "ci@first-stub-host\nci@fail-stub-host",
+                "name": "a failed host's clean output is published to the run as an artifact",
+                "outcome": "",
+                "outcome-always": "failed",
+                "step-outcome": "failure"
+              },
+              {
+                "expect-artifact": "false",
+                "fail-on-changes": "false",
+                "has-changes": "",
+                "hosts": "ci@first-stub-host\nci@secret-fail-stub-host",
+                "name": "a failed host whose output matches a secret pattern publishes no artifact",
+                "outcome": "",
+                "outcome-always": "withheld",
                 "step-outcome": "failure"
               }
             ]
