@@ -11,7 +11,7 @@
 #
 # GitHub applies the LAST matching line, so a line with no owner releases a
 # path an earlier line owned. The released files sit after the owned groups and
-# before the seven shared lines. Those seven come from the standards template and
+# before the five shared lines. Those five come from the standards template and
 # stay last, byte for byte, so the standards sync check passes.
 #
 # Matching is case-sensitive and has no character classes, so each name form
@@ -79,11 +79,14 @@
 /tools/opv-lint-rules.md
 /tools/resolve-pinned-ref.md
 
+# Owned .github files. The shared set below covers all of .github/.
+/.github/CODEOWNERS      @branchLeft/branchleft-admin
+/.github/workflows/standards.yml  @branchLeft/branchleft-admin
+/.github/workflows/docs-lint.yml  @branchLeft/branchleft-admin
+
 # The shared set from the standards template. Keep these lines last.
 /.standardsignore        @branchLeft/branchleft-admin
 /.standards.mode         @branchLeft/branchleft-admin
 /.docs-lint*             @branchLeft/branchleft-admin
 /.standards-db-tooling   @branchLeft/branchleft-admin
-/.github/CODEOWNERS      @branchLeft/branchleft-admin
-/.github/workflows/standards.yml  @branchLeft/branchleft-admin
-/.github/workflows/docs-lint.yml  @branchLeft/branchleft-admin
+/.github/                @branchLeft/branchleft-admin
