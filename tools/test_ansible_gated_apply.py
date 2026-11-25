@@ -5160,7 +5160,7 @@ class SshJumpProofFixtureTests(unittest.TestCase):
     def test_the_proof_loads_the_run_text_of_the_action_unchanged(self) -> None:
         defaults, steps = ssh_jump_proof.load_action(ACTION)
         self.assertEqual([step.step_id for step in steps], ["validate", "check", "report"])
-        self.assertEqual([step.script for step in steps], [step["run"] for step in ACTION_STEPS])
+        self.assertEqual([step.script for step in steps], [step["run"] for step in ACTION_STEPS if "run" in step])
         self.assertEqual((defaults["jump-host"], defaults["jump-key"]), ("", ""))
 
     def test_the_stand_in_target_prints_a_summary_line_the_report_step_reads_as_clean(self) -> None:

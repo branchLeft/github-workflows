@@ -287,6 +287,7 @@
               "EXPECT_OUTCOME_ALWAYS": "${{ matrix.outcome-always }}",
               "EXPECT_PUSH": "${{ matrix.push-hosts != '' }}",
               "EXPECT_STEP_OUTCOME": "${{ matrix.step-outcome }}",
+              "EXPECT_TEXT": "${{ matrix.expect-text }}",
               "HAS_CHANGES": "${{ steps.ssh.outputs.has-changes }}",
               "HOSTS_DIGEST": "${{ steps.ssh.outputs.hosts-digest }}",
               "OUTCOME": "${{ steps.ssh.outputs.outcome }}",
@@ -294,7 +295,7 @@
               "STEP_OUTCOME": "${{ steps.ssh.outcome }}"
             },
             "name": "The step ended as the case expects, with the outputs it expects",
-            "run-sha256": "66ee24f3ac9a91e3765ed85aa42a4e1370ef36741e1ab56f2572467de9def42d"
+            "run-sha256": "e895f7d31cbb082edad005b9abcbf9d748f71fddaa08f16f3c9881fe2b9c051b"
           }
         ],
         "strategy": {
@@ -374,10 +375,22 @@
               },
               {
                 "expect-artifact": "true",
+                "expect-text": "stub-visible-failure",
                 "fail-on-changes": "false",
                 "has-changes": "",
                 "hosts": "ci@first-stub-host\nci@fail-stub-host",
                 "name": "a failed host's clean output is published to the run as an artifact",
+                "outcome": "",
+                "outcome-always": "failed",
+                "step-outcome": "failure"
+              },
+              {
+                "expect-artifact": "true",
+                "expect-text": "Refused: a secret-bearing file on this host is not named on the holder list",
+                "fail-on-changes": "false",
+                "has-changes": "",
+                "hosts": "ci@first-stub-host\nci@demo1-stub-host",
+                "name": "a failed demo1-shaped refusal's message is in the artifact and in the step summary",
                 "outcome": "",
                 "outcome-always": "failed",
                 "step-outcome": "failure"
