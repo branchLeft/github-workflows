@@ -99,6 +99,32 @@ jobs:
             has-changes: ''
             outcome: ''
             outcome-always: no-answer
+          - name: a failed host's clean output is published to the run as an artifact
+            hosts: "ci@first-stub-host\nci@fail-stub-host"
+            fail-on-changes: 'false'
+            step-outcome: failure
+            has-changes: ''
+            outcome: ''
+            outcome-always: failed
+            expect-artifact: 'true'
+            expect-text: 'stub-visible-failure'
+          - name: a failed demo1-shaped refusal's message is in the artifact and in the step summary
+            hosts: "ci@first-stub-host\nci@demo1-stub-host"
+            fail-on-changes: 'false'
+            step-outcome: failure
+            has-changes: ''
+            outcome: ''
+            outcome-always: failed
+            expect-artifact: 'true'
+            expect-text: 'Refused: a secret-bearing file on this host is not named on the holder list'
+          - name: a failed host whose output matches a secret pattern publishes no artifact
+            hosts: "ci@first-stub-host\nci@secret-fail-stub-host"
+            fail-on-changes: 'false'
+            step-outcome: failure
+            has-changes: ''
+            outcome: ''
+            outcome-always: withheld
+            expect-artifact: 'false'
     steps:
       # The whole history, because the push cases send a bundle of this checkout.
       - name: Checkout
@@ -141,12 +167,41 @@ jobs:
           EXPECT_OUTCOME_ALWAYS: ${{ matrix.outcome-always }}
           PUSH_HOSTS_DIGEST: ${{ steps.ssh.outputs.push-hosts-digest }}
           EXPECT_PUSH: ${{ matrix.push-hosts != '' }}
+          ARTIFACT_ID: ${{ steps.ssh.outputs.failed-output-artifact-id }}
+          ARTIFACT_NAME: ${{ steps.ssh.outputs.failed-output-name }}
+          EXPECT_ARTIFACT: ${{ matrix.expect-artifact }}
+          EXPECT_TEXT: ${{ matrix.expect-text }}
         run: |
           set -euo pipefail
           echo "step outcome: $STEP_OUTCOME; has-changes: '$HAS_CHANGES'; outcome: '$OUTCOME'; detail: '$DETAIL'"
           test "$STEP_OUTCOME" = "$EXPECT_STEP_OUTCOME"
           if [ -n "$EXPECT_OUTCOME_ALWAYS" ]; then
             test "$OUTCOME" = "$EXPECT_OUTCOME_ALWAYS"
+          fi
+          # The failed hosts' shown output is published to the run. A withheld diff is
+          # in no published file and no artifact, and its secret text is in none.
+          if [ -n "$EXPECT_ARTIFACT" ]; then
+            published="$RUNNER_TEMP/ssh-check-failed-output"
+            if [ "$EXPECT_ARTIFACT" = true ]; then
+              test -n "$ARTIFACT_ID"
+              # The name is the prefix, the run attempt and random bytes: no value from the hosts.
+              printf '%s' "$ARTIFACT_NAME" | grep -Eq '^ssh-check-failed-output-[0-9]+-[0-9a-f]{16}$'
+              if [ -n "$HOSTS_DIGEST" ] && [[ "$ARTIFACT_NAME" == *"$HOSTS_DIGEST"* ]]; then
+                echo "::error::the artifact name holds the host list's digest"
+                exit 1
+              fi
+              test "$(find "$published" -type f | wc -l | tr -d ' ')" = 1
+              grep -q -F "$EXPECT_TEXT" "$published"/*
+              # The same shown output is in the step summary the action wrote (its plan file).
+              grep -q -F "$EXPECT_TEXT" "$RUNNER_TEMP/ansible-plan/summary.md"
+            else
+              test -z "$ARTIFACT_ID"
+              test -z "$(find "$published" -type f 2>/dev/null)"
+            fi
+            if [ -d "$published" ] && grep -rq 'stub-scan-hit-0001' "$published"; then
+              echo "::error::a withheld diff's text is in the published output"
+              exit 1
+            fi
           fi
           if [ "$EXPECT_STEP_OUTCOME" = success ]; then
             test "$HAS_CHANGES" = "$EXPECT_HAS_CHANGES"

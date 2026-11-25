@@ -464,7 +464,8 @@ class StructureTests(unittest.TestCase):
                     self.assertRegex(target, r"^[\w.-]+/[\w.-]+@[0-9a-f]{40}$")
                     self.assertRegex(rest, r"^\s+# v\d")
         self.assertTrue(found["gated"])
-        self.assertEqual(found["action"], [])
+        # The action's one use is the upload of the failed hosts' shown output, pinned like any other.
+        self.assertEqual(found["action"], ["actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9"])
         self.assertEqual(found["drift"].count(ACTION_USES), 1)
         self.assertEqual(found["gated"].count(ACTION_USES), 1)
 
@@ -479,6 +480,8 @@ class StructureTests(unittest.TestCase):
 
     def test_every_run_step_of_the_action_names_bash_and_stops_on_error(self) -> None:
         for step in ACTION_STEPS:
+            if "run" not in step:
+                continue
             with self.subTest(step=step.get("name")):
                 self.assertEqual(step.get("shell"), "bash")
                 self.assertTrue(step["run"].startswith("set -euo pipefail\n"))
@@ -1041,7 +1044,7 @@ class StructureTests(unittest.TestCase):
         self.assertIs(inputs["skip-failed-hosts"]["required"], False)
         self.assertEqual(inputs["total-timeout"]["default"], "")
         self.assertEqual(inputs["dry-run"]["default"], "false")
-        self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "push-hosts-digest", "jump2-hosts-digest", "outcome", "detail", "apply-hosts", "failed-hosts"})
+        self.assertEqual(set(ACTION_DOC["outputs"]), {"has-changes", "hosts-digest", "push-hosts-digest", "jump2-hosts-digest", "outcome", "detail", "apply-hosts", "failed-hosts", "failed-output-artifact-id", "failed-output-name"})
         for name in ("push-hosts", "push-playbook", "push-dry-run-stub", "push-repo-private", "jump2-host", "jump2-key", "jump2-hosts", "host-check-keys"):
             self.assertEqual(inputs[name]["default"], "", name)
             self.assertIs(inputs[name]["required"], False, name)
@@ -5157,7 +5160,7 @@ class SshJumpProofFixtureTests(unittest.TestCase):
     def test_the_proof_loads_the_run_text_of_the_action_unchanged(self) -> None:
         defaults, steps = ssh_jump_proof.load_action(ACTION)
         self.assertEqual([step.step_id for step in steps], ["validate", "check", "report"])
-        self.assertEqual([step.script for step in steps], [step["run"] for step in ACTION_STEPS])
+        self.assertEqual([step.script for step in steps], [step["run"] for step in ACTION_STEPS if "run" in step])
         self.assertEqual((defaults["jump-host"], defaults["jump-key"]), ("", ""))
 
     def test_the_stand_in_target_prints_a_summary_line_the_report_step_reads_as_clean(self) -> None:
