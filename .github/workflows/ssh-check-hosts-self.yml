@@ -107,6 +107,16 @@ jobs:
             outcome: ''
             outcome-always: failed
             expect-artifact: 'true'
+            expect-text: 'stub-visible-failure'
+          - name: a failed demo1-shaped refusal's message is in the artifact and in the step summary
+            hosts: "ci@first-stub-host\nci@demo1-stub-host"
+            fail-on-changes: 'false'
+            step-outcome: failure
+            has-changes: ''
+            outcome: ''
+            outcome-always: failed
+            expect-artifact: 'true'
+            expect-text: 'Refused: a secret-bearing file on this host is not named on the holder list'
           - name: a failed host whose output matches a secret pattern publishes no artifact
             hosts: "ci@first-stub-host\nci@secret-fail-stub-host"
             fail-on-changes: 'false'
@@ -159,6 +169,7 @@ jobs:
           EXPECT_PUSH: ${{ matrix.push-hosts != '' }}
           ARTIFACT_ID: ${{ steps.ssh.outputs.failed-output-artifact-id }}
           EXPECT_ARTIFACT: ${{ matrix.expect-artifact }}
+          EXPECT_TEXT: ${{ matrix.expect-text }}
         run: |
           set -euo pipefail
           echo "step outcome: $STEP_OUTCOME; has-changes: '$HAS_CHANGES'; outcome: '$OUTCOME'; detail: '$DETAIL'"
@@ -173,7 +184,9 @@ jobs:
             if [ "$EXPECT_ARTIFACT" = true ]; then
               test -n "$ARTIFACT_ID"
               test "$(find "$published" -type f | wc -l | tr -d ' ')" = 1
-              grep -q 'stub-visible-failure' "$published"/*
+              grep -q -F "$EXPECT_TEXT" "$published"/*
+              # The same shown output is in the step summary the action wrote (its plan file).
+              grep -q -F "$EXPECT_TEXT" "$RUNNER_TEMP/ansible-plan/summary.md"
             else
               test -z "$ARTIFACT_ID"
               test -z "$(find "$published" -type f 2>/dev/null)"

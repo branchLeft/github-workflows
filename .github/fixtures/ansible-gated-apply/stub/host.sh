@@ -32,6 +32,13 @@ case "$dest" in
     printf 'PLAY [all]\nTASK [role : Install the package] ****\nok: [host]\nTASK [role : Apply the stub] ****\nfatal: [host]: FAILED! => {"msg": "stub-visible-failure"}\n' >&2
     exit 3
     ;;
+  # A host whose role refuses, with a task and a bounded refusal message shaped like the
+  # demo1 refusal of a secret-bearing file (the self-test of the action). The text is clean.
+  *demo1-stub*)
+    printf 'pull-trigger verdict=error exit=3 reason=ok mode=check commit=%s playbook=ansible/playbooks/stub.yml changed=-\n' "$commit"
+    printf 'PLAY [all]\nTASK [branchleft.demo1_build : Refuse a host that holds a secret-bearing file the holder list does not name] ****\nfatal: [host]: FAILED! => {"changed": false, "msg": "Refused: a secret-bearing file on this host is not named on the holder list (holder list has 10 row(s))."}\n' >&2
+    exit 3
+    ;;
   *)
     printf 'pull-trigger verdict=would-change exit=11 reason=ok mode=check commit=%s playbook=ansible/playbooks/stub.yml changed=1\n' "$commit"
     printf -- '--- before\n+++ after\n@@ -1 +1 @@\n-greeting = OLD_VALUE\n+greeting = NEW_VALUE\n' >&2
