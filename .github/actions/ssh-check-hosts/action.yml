@@ -788,7 +788,7 @@ runs:
         # The artifact's name holds the run attempt and eight random bytes, never a value from the
         # hosts: a name made from the host list would let a short list be guessed from its hash.
         nonce=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
-        echo "failed-output-name=ssh-check-failed-output-$GITHUB_RUN_ATTEMPT-$nonce" >> "$GITHUB_OUTPUT"
+        echo "failed-output-name=ssh-check-failed-output-${GITHUB_RUN_ATTEMPT:-0}-$nonce" >> "$GITHUB_OUTPUT"
         total=0
         clean=0
         changed=0
