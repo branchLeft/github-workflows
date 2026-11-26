@@ -223,7 +223,7 @@
           },
           "id": "report",
           "name": "Judge the answers, scan the diff and write the result",
-          "run-sha256": "8b93f1b44112858d1a496f55ca00b6be979edc04dbef212ddb1fcb7291754c2c",
+          "run-sha256": "dbc35be1079d140daa8afa66c709234c67f48c3d1780bbcffe9898c177c0a470",
           "shell": "bash"
         },
         {
