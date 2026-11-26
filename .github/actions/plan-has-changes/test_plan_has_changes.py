@@ -4,7 +4,6 @@ Fixture shapes are those the Pulumi CLI wrote for a throwaway local stack."""
 
 import ast
 import contextlib
-import importlib.util
 import io
 import json
 import os
@@ -16,19 +15,17 @@ import sys
 import tempfile
 import unittest
 
+HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "_testing"))
+from script_import import load_script  # noqa: E402
 
 SCRIPT_ENV = "PLAN_HAS_CHANGES_SCRIPT"
 
 
 def _load_module():
-    """Import the script by path: its filename has hyphens, so it is not a
-    legal module name for a plain import. PLAN_HAS_CHANGES_SCRIPT points the tests
-    at another copy, which is how the sabotage test breaks a copy and not this one."""
-    path = pathlib.Path(os.environ.get(SCRIPT_ENV) or pathlib.Path(__file__).resolve().parent / "plan-has-changes.py").resolve()
-    spec = importlib.util.spec_from_file_location("plan_has_changes", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    """PLAN_HAS_CHANGES_SCRIPT points the tests at another copy, which is how the sabotage
+    test breaks a copy and not this one."""
+    return load_script(HERE, "plan-has-changes.py", "plan_has_changes", SCRIPT_ENV)
 
 
 noop = _load_module()
@@ -2245,6 +2242,7 @@ class SabotageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="plan-has-changes-sabotage-") as tmp:
             copy = pathlib.Path(tmp, ".github", "actions", "plan-has-changes")
             shutil.copytree(here, copy, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(here.parent / "_testing", copy.parent / "_testing", ignore=shutil.ignore_patterns("__pycache__"))
             script = copy / "plan-has-changes.py"
             if control:
                 text = script.read_text(encoding="utf-8")

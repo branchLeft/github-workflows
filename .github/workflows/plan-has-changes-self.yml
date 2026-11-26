@@ -10,11 +10,13 @@ on:
   pull_request:
     paths:
       - .github/actions/plan-has-changes/**
+      - .github/actions/_testing/**
       - .github/workflows/plan-has-changes-self.yml
   push:
     branches: [main]
     paths:
       - .github/actions/plan-has-changes/**
+      - .github/actions/_testing/**
       - .github/workflows/plan-has-changes-self.yml
   schedule:
     - cron: '17 4 * * 1'

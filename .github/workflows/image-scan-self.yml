@@ -13,6 +13,7 @@ on:
       - .github/actions/image-scan/**
       - .github/workflows/image-scan.yml
       - .github/workflows/image-scan-report.yml
+      - .github/actions/_testing/**
       - .github/workflows/image-scan-self.yml
   push:
     branches: [main]
@@ -20,6 +21,7 @@ on:
       - .github/actions/image-scan/**
       - .github/workflows/image-scan.yml
       - .github/workflows/image-scan-report.yml
+      - .github/actions/_testing/**
       - .github/workflows/image-scan-self.yml
   schedule:
     - cron: '17 4 * * 1'

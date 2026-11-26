@@ -211,6 +211,18 @@ outputs:
       The outcome in words with counts, and no host name. Empty if the step
       stopped before it could judge.
     value: ${{ steps.report.outputs.detail }}
+  failed-output-artifact-id:
+    description: >-
+      The id of the run artifact holding the shown cleaned output of each failed
+      host, one file per host, bounded by the caps. Empty when no failed host's
+      output was shown (a withheld diff is never in it).
+    value: ${{ steps.failed-output.outputs.artifact-id }}
+  failed-output-name:
+    description: >-
+      The name of that run artifact: ssh-check-failed-output, the run attempt and
+      eight random bytes. It holds no value from the hosts. Empty if the step stopped
+      before it could judge.
+    value: ${{ steps.report.outputs.failed-output-name }}
 
 runs:
   using: composite
@@ -722,6 +734,10 @@ runs:
         plain() {
           printf '%s' "$1" | tr -c 'A-Za-z0-9 _./:;,()=-' '?'
         }
+        # The same, with the brackets of a TASK name kept, for the lines of a withheld host's report.
+        plain_task() {
+          printf '%s' "$1" | tr -c 'A-Za-z0-9 _./:;,()=[]-' '?'
+        }
         # The jump hosts' names are replaced in a log line as they are in the diff
         # (the report step's awk): the playbook is the one field a host writes.
         redact_jumps() {
@@ -761,10 +777,23 @@ runs:
         summary="$plan_dir/summary.md"
         details="$plan_dir/details.md"
         : > "$details"
+        # The look lines of the shown diffs, copied to the log in a group (README, "The look").
+        # Only these shapes: a line of the look that matches none of them is never copied.
+        looklog="$plan_dir/look.log"
+        : > "$looklog"
+        look_re='^(look issue=[0-9]{1,8} name=[a-z][a-z0-9-]{0,47} (kind=file_sha256 result=([0-9a-f]{64}|absent|not-regular|outside-root|too-large|unreadable|skipped-time)|kind=http_status result=([0-9]{3}|port-not-allowed|unreachable|timeout|skipped-time)|kind=unit_active result=(active|inactive|failed|activating|deactivating|reloading|maintenance|unknown|skipped-time)|kind=ssh_public_key result=((ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) [A-Za-z0-9+/]{16,}={0,2}|absent|not-regular|not-ssh-key|path-not-allowed|too-large|unreadable|skipped-time)|kind=uptime_90d result=(([a-z0-9_-]{1,64}=(100\.0000|[0-9]{1,2}\.[0-9]{4}) )*[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z|absent|not-regular|not-report|path-not-allowed|too-large|unreadable|skipped-time))|look-refused entry=[0-9]{1,4} reason=[a-z-]{1,40}|look-summary declared=[0-9]{1,4} here=[0-9]{1,4} refused=[0-9]{1,4} file=[a-z-]{1,40})$'
         rows="$plan_dir/rows.md"
         : > "$rows"
         kinds="$plan_dir/kinds"
         : > "$kinds"
+        # The shown output of each failed host, as the scan left it, is copied here and
+        # published to the run as an artifact. Nothing else is copied here.
+        failed_output="$RUNNER_TEMP/ssh-check-failed-output"
+        mkdir -p "$failed_output"
+        # The artifact's name holds the run attempt and eight random bytes, never a value from the
+        # hosts: a name made from the host list would let a short list be guessed from its hash.
+        nonce=$(od -An -N8 -tx1 /dev/urandom | tr -d ' \n')
+        echo "failed-output-name=ssh-check-failed-output-${GITHUB_RUN_ATTEMPT:-0}-$nonce" >> "$GITHUB_OUTPUT"
         total=0
         clean=0
         changed=0
@@ -884,7 +913,19 @@ runs:
                   }' > "$cleaned"
           fi
           size=$(wc -c < "$cleaned" | tr -d ' ')
-          total_bytes=$((total_bytes + size))
+          # Which cap this host's size trips, for the log line only. The withholding below
+          # reads the same two caps and is unchanged.
+          tripped=none
+          if [ "$size" -gt "$per_host_cap" ]; then
+            tripped=per-host
+          fi
+          if [ $((total_bytes + size)) -gt "$total_cap" ]; then
+            if [ "$tripped" = none ]; then
+              tripped=total
+            else
+              tripped="$tripped,total"
+            fi
+          fi
 
           # The diff is read for secrets by host_output_scan.py, which the apply job runs too on the
           # output of a host whose playbook failed (README, "What the scan reads"). It prints two
@@ -907,11 +948,15 @@ runs:
             verdict="failed"
             kind="withheld"
             note="the diff matched a secret pattern ($hits) and is withheld"
-          elif [ "$size" -gt "$per_host_cap" ] || [ "$total_bytes" -gt "$total_cap" ]; then
+          elif [ "$size" -gt "$per_host_cap" ] || [ $((total_bytes + size)) -gt "$total_cap" ]; then
             show=false
             verdict="failed"
             kind="withheld"
             note="the diff is too large to show whole, so it cannot be approved from here"
+          fi
+          # Only a diff that is shown counts toward the total: a withheld diff is not in the summary.
+          if [ "$show" = true ]; then
+            total_bytes=$((total_bytes + size))
           fi
 
           case "$verdict" in
@@ -960,7 +1005,25 @@ runs:
           elif [ "$kind" = drift ] && [ "$FAIL_ON_CHANGES" != true ]; then
             level=notice
           fi
-          echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; playbook=$playbook")"
+          echo "::$level::$(plain "$label: kind=$kind; note=${note:--}; scan-hits=${hits:-none}; diff-bytes=$size; running-total=$total_bytes; limit=$tripped; playbook=$playbook")"
+          # A host whose diff is withheld, for a secret pattern or for size, also gets where its
+          # bytes are: up to 15 lines of bytes and TASK name, largest first, and for each pattern
+          # that matched, the task it fell under. host_output_scan.py --report builds every line
+          # from a count, a pattern name, a fixed phrase or a TASK header name cut at 120 characters
+          # and cleaned; it copies no other line, value, path or diff text. The text goes to the
+          # log and to the job summary; plain_task() is the last defence on the log line.
+          if [ "$kind" = withheld ]; then
+            breakdown=$(python3 "$GITHUB_ACTION_PATH/host_output_scan.py" "$cleaned" --keylines "$keylines" --allowances "$allowance_text" --report) || breakdown="the breakdown of this output could not be built"
+            while IFS= read -r breakdown_line; do
+              echo "$(plain_task "$label: withheld, $breakdown_line")"
+            done <<< "$breakdown"
+            {
+              printf '\n### %s: where the withheld output is\n\n' "$label"
+              printf '%s\n' '```text'
+              printf '%s\n' "$breakdown"
+              printf '%s\n' '```'
+            } >> "$details"
+          fi
           if [ "$show" = true ] && [ -s "$cleaned" ]; then
             fence=$(awk 'BEGIN { m = 2 } { s = $0; while (match(s, /`+/)) { if (RLENGTH > m) m = RLENGTH; s = substr(s, RSTART + RLENGTH) } } END { f = ""; for (k = 0; k <= m; k++) f = f "`"; print f }' "$cleaned")
             {
@@ -969,6 +1032,16 @@ runs:
               cat "$cleaned"
               printf '%s\n' "$fence"
             } >> "$details"
+            # A failed host's shown output (the scan found no hit and it is within the caps)
+            # is published to the run. A withheld diff never reaches this copy.
+            if [ "$verdict" = failed ]; then
+              cp "$cleaned" "$failed_output/host-$((10#$n)).txt"
+            fi
+          fi
+          # Only a shown diff's look lines reach the log, the same lines the summary shows. A
+          # withheld diff contributes none.
+          if [ "$show" = true ]; then
+            tr -d '\r' < "$cleaned" | grep -E "$look_re" | sed "s/^/$label: /" >> "$looklog" || true
           fi
         done
 
@@ -1047,6 +1120,11 @@ runs:
         # fixed note; the diffs stay in the job summary only.
         printf '| Host | Result | Note |\n| --- | --- | --- |\n'
         cat "$rows"
+        if [ -s "$looklog" ]; then
+          echo "::group::look"
+          cat "$looklog"
+          echo "::endgroup::"
+        fi
 
         if [ "$failed" -gt 0 ] && [ "$partial" != true ]; then
           echo "::error::$first"
@@ -1066,3 +1144,17 @@ runs:
           exit 0
         fi
         echo "$first"
+
+    # The shown output of each failed host, already scanned and cleaned, is published so that
+    # an agent can read why a plan failed from the run. The directory holds nothing else. An
+    # empty directory uploads nothing, and the step does not fail on that. It runs even when
+    # the judging step fails the job.
+    - name: Publish the shown output of each failed host to the run
+      id: failed-output
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: ${{ steps.report.outputs.failed-output-name || 'ssh-check-failed-output' }}
+        path: ${{ runner.temp }}/ssh-check-failed-output
+        if-no-files-found: ignore
+        retention-days: 30

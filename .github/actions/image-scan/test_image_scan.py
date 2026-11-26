@@ -5,7 +5,6 @@ lockfile with the fields the gate does not read trimmed away; every other report
 
 import contextlib
 import datetime
-import importlib.util
 import io
 import json
 import os
@@ -20,19 +19,17 @@ import unittest
 from unittest import mock
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "_testing"))
+from script_import import load_script  # noqa: E402
+
 FIXTURES = HERE / "fixtures"
 SCRIPT_ENV = "IMAGE_SCAN_SCRIPT"
 
 
 def _load_module():
-    """Import the script by path (its name has a hyphen). IMAGE_SCAN_SCRIPT points the tests at
-    another copy, which is how the sabotage tests break a copy and not this one."""
-    path = pathlib.Path(os.environ.get(SCRIPT_ENV) or HERE / "image-scan.py").resolve()
-    spec = importlib.util.spec_from_file_location("image_scan", path)
-    module = importlib.util.module_from_spec(spec)
-    sys.modules["image_scan"] = module
-    spec.loader.exec_module(module)
-    return module
+    """IMAGE_SCAN_SCRIPT points the tests at another copy, which is how the sabotage tests
+    break a copy and not this one."""
+    return load_script(HERE, "image-scan.py", "image_scan", SCRIPT_ENV, register=True)
 
 
 gate = _load_module()
@@ -877,6 +874,7 @@ class SabotageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="image-scan-sabotage-") as tmp:
             copy = pathlib.Path(tmp, "image-scan")
             shutil.copytree(HERE, copy, ignore=shutil.ignore_patterns("__pycache__"))
+            shutil.copytree(HERE.parent / "_testing", copy.parent / "_testing", ignore=shutil.ignore_patterns("__pycache__"))
             script = copy / "image-scan.py"
             if broken:
                 text = script.read_text(encoding="utf-8")

@@ -774,8 +774,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1 if problems else 0
         if args.command == "check-inputs":
             literal_identity(args)
-            if not Path(args.tarball).is_file():
-                raise Refusal(f"{args.tarball} is not a file")
+            if not Path(args.tarball).is_file() or Path(args.tarball).is_symlink():
+                raise Refusal(f"{args.tarball} is not a regular file")
             print("the tarball and the identity are well formed")
             return 0
         token = os.environ.get("GH_TOKEN", "")

@@ -11,11 +11,13 @@ on:
   pull_request:
     paths:
       - .github/actions/assert-no-hetzner-deletes/**
+      - .github/actions/_testing/**
       - .github/workflows/assert-no-hetzner-deletes-self.yml
   push:
     branches: [main]
     paths:
       - .github/actions/assert-no-hetzner-deletes/**
+      - .github/actions/_testing/**
       - .github/workflows/assert-no-hetzner-deletes-self.yml
   schedule:
     - cron: '17 4 * * 1'

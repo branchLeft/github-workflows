@@ -7,24 +7,24 @@ a failure."""
 from __future__ import annotations
 
 import contextlib
-import importlib.util
 import io
 import pathlib
+import sys
 import tempfile
 import time
 import unittest
 
 HERE = pathlib.Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parent / "_testing"))
+from script_import import load_script  # noqa: E402
+
 FIXTURES = HERE / "fixtures"
 SUMMARY = "Write the plan to the job summary"
 PLAN_FILE = "preview-plan.json"
 
 
 def _load_module():
-    spec = importlib.util.spec_from_file_location("check_apply_gate", HERE / "check-apply-gate.py")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    return load_script(HERE, "check-apply-gate.py", "check_apply_gate")
 
 
 gate = _load_module()
