@@ -7,13 +7,15 @@ on:
     paths:
       - .github/CODEOWNERS
       - tools/test_codeowners.py
-      - .github/workflows/codeowners-self.yml
+      - .github/workflows/**
+      - .github/actions/**
   push:
     branches: [main]
     paths:
       - .github/CODEOWNERS
       - tools/test_codeowners.py
-      - .github/workflows/codeowners-self.yml
+      - .github/workflows/**
+      - .github/actions/**
   schedule:
     - cron: '17 4 * * 1'
 

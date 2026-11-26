@@ -17,9 +17,26 @@
 # Matching is case-sensitive and has no character classes, so each name form
 # below is spelled in lower-case, Capitalised and UPPER-case.
 
-# Workflows and actions: they run with the repository's secrets and decide
-# pass or fail on every pull request.
-**/.github/workflows/                          @branchLeft/branchleft-admin
+# Workflows and actions that enforce a check or gate a deploy. docs-lint-self.yml
+# emits the one required check here ("docs-lint"); the reusable workflows are
+# what the other repos' required checks and gated applies call (docs lint, opv
+# lint, image scan, the nightly rescan that applies the same critical-and-high gate
+# to a live image, the gated apply and the gated step); every action is gate code.
+# standards.yml and docs-lint.yml come from the shared lines at the end. The drift
+# check holds secrets and a write permission, and three self-tests carry an
+# environment, so those four stay owned. The other self-test workflows, the scan
+# report and Dependabot settings are released: nothing requires them and none
+# gates a deploy.
+/.github/workflows/ansible-drift-check.yml     @branchLeft/branchleft-admin
+/.github/workflows/ansible-gated-apply-self.yml @branchLeft/branchleft-admin
+/.github/workflows/assert-environment-gated-self.yml @branchLeft/branchleft-admin
+/.github/workflows/ssh-check-hosts-self.yml    @branchLeft/branchleft-admin
+/.github/workflows/docs-lint-self.yml          @branchLeft/branchleft-admin
+/.github/workflows/opv-lint.yml                @branchLeft/branchleft-admin
+/.github/workflows/image-scan.yml              @branchLeft/branchleft-admin
+/.github/workflows/nightly-image-rescan.yml     @branchLeft/branchleft-admin
+/.github/workflows/ansible-gated-apply.yml     @branchLeft/branchleft-admin
+/.github/workflows/ansible-gated-step.yml      @branchLeft/branchleft-admin
 **/.github/actions/                            @branchLeft/branchleft-admin
 
 # CODEOWNERS and ruleset or branch-protection files: they say who must approve.
@@ -67,4 +84,6 @@
 /.standards.mode         @branchLeft/branchleft-admin
 /.docs-lint*             @branchLeft/branchleft-admin
 /.standards-db-tooling   @branchLeft/branchleft-admin
-/.github/                @branchLeft/branchleft-admin
+/.github/CODEOWNERS      @branchLeft/branchleft-admin
+/.github/workflows/standards.yml  @branchLeft/branchleft-admin
+/.github/workflows/docs-lint.yml  @branchLeft/branchleft-admin

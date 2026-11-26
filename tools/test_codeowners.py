@@ -21,7 +21,9 @@ SHARED_SET: tuple[str, ...] = (
     "/.standards.mode",
     "/.docs-lint*",
     "/.standards-db-tooling",
-    "/.github/",
+    "/.github/CODEOWNERS",
+    "/.github/workflows/standards.yml",
+    "/.github/workflows/docs-lint.yml",
 )
 
 RELEASE_LINES: tuple[str, ...] = (
@@ -59,11 +61,27 @@ def _released(path: str, klass: str) -> Sample:
 
 
 SAMPLES: tuple[Sample, ...] = (
-    _owned(".github/workflows/docs-lint.yml", "criterion 3"),
-    _owned("sub/.github/workflows/a.yml", "criterion 3"),
+    _owned(".github/workflows/docs-lint.yml", "criterion 3, shared line"),
+    _owned(".github/workflows/standards.yml", "criterion 3, shared line"),
+    _owned(".github/workflows/docs-lint-self.yml", "criterion 3, the required docs-lint check"),
+    _owned(".github/workflows/opv-lint.yml", "criterion 3, reusable gate"),
+    _owned(".github/workflows/image-scan.yml", "criterion 3, reusable gate"),
+    _owned(".github/workflows/ansible-gated-apply.yml", "criterion 3, deploy gate"),
+    _owned(".github/workflows/ansible-gated-step.yml", "criterion 3, deploy gate"),
+    _owned(".github/workflows/nightly-image-rescan.yml", "criterion 3, reusable SEC-6 gate"),
     _owned(".github/actions/spend-gate/spend-gate.py", "criterion 3"),
     _owned("sub/.github/actions/a/b.py", "criterion 3"),
-    _owned(".github/dependabot.yml", "criterion 3"),
+    _owned(".github/CODEOWNERS", "criterion 1, shared line"),
+    _released(".github/workflows/spend-gate-self.yml", "released: self-test, not required"),
+    _released(".github/workflows/opv-lint-self.yml", "released: self-test, not required"),
+    _released(".github/workflows/codeowners-self.yml", "released: self-test, not required"),
+    _owned(".github/workflows/ansible-drift-check.yml", "criterion 3, holds secrets and a write"),
+    _owned(".github/workflows/ansible-gated-apply-self.yml", "criterion 3, carries an environment"),
+    _owned(".github/workflows/assert-environment-gated-self.yml", "criterion 3, environment"),
+    _owned(".github/workflows/ssh-check-hosts-self.yml", "criterion 3, carries an environment"),
+    _released(".github/workflows/image-scan-report.yml", "released: manual report"),
+    _released("sub/.github/workflows/a.yml", "released: a nested path is no workflow"),
+    _released(".github/dependabot.yml", "released: update settings"),
     _owned("x/CODEOWNERS", "criterion 1"),
     _owned("x/codeowners", "criterion 1"),
     _owned("x/CodeOwners", "criterion 1"),
@@ -197,7 +215,7 @@ def structural_problems(lines: Sequence[str]) -> list[str]:
         problems.append("a work-item reference (#<digits>) appears in the file")
     tail = entries[-len(SHARED_SET):]
     if tuple(e.pattern for e in tail) != SHARED_SET:
-        problems.append("the last five lines are not the shared set in template order")
+        problems.append("the last seven lines are not the shared set in template order")
     body = entries[: -len(SHARED_SET)]
     release_block = body[-len(RELEASE_LINES):]
     if tuple(e.pattern for e in release_block) != RELEASE_LINES:
@@ -219,8 +237,55 @@ def sample_problems(lines: Sequence[str]) -> list[str]:
     return problems
 
 
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def hold_reasons(text: str, is_action: bool) -> list[str]:
+    """Why a workflow or action file stays owned, read from its own text."""
+    out: list[str] = []
+    if (
+        re.search(r"(?<![\w-])secrets\.(?!GITHUB_TOKEN\b)[A-Za-z_]", text)
+        or re.search(r"(?<![\w-])secrets\[", text)
+        or re.search(r"secrets:\s*inherit", text)
+    ):
+        out.append("secrets")
+    if re.search(r"^\s+environment:", text, re.M):
+        out.append("environment")
+    if re.search(r"^\s+[a-z-]+:\s*write\s*(#.*)?$", text, re.M) or re.search(
+        r"permissions:\s*write-all", text
+    ):
+        out.append("write permission")
+    if re.search(r"workflow_call:", text) and re.search(r"^\s{4}secrets:\s*$", text, re.M):
+        out.append("workflow_call secrets")
+    if not is_action and not re.search(r"^permissions:", text, re.M):
+        start = re.search(r"^jobs:\s*$", text, re.M)
+        body = text[start.end():] if start else ""
+        pattern = r"^  (?=[A-Za-z0-9_.-]+:\s*(?:#.*)?$)"
+        jobs = re.split(pattern, body, flags=re.M)[1:]
+        if not jobs or any(not re.search(r"^    permissions:", job, re.M) for job in jobs):
+            out.append("no permissions block")
+    return out
+
+
+def automation_files(root: Path) -> list[Path]:
+    found = [*(root / ".github" / "workflows").glob("*.y*ml")]
+    found += [*(root / ".github" / "actions").glob("*/action.y*ml")]
+    return sorted(found)
+
+
+def workflow_problems(lines: Sequence[str], root: Path = ROOT) -> list[str]:
+    entries = parse(lines)
+    problems: list[str] = []
+    for file in automation_files(root):
+        rel = file.relative_to(root).as_posix()
+        reasons = hold_reasons(file.read_text(encoding="utf-8"), "/actions/" in rel)
+        if reasons and not owners_of(rel, entries):
+            problems.append(f"{rel} matches the hold rule ({', '.join(reasons)}) but is not owned")
+    return problems
+
+
 def problems_in(lines: Sequence[str]) -> list[str]:
-    return structural_problems(lines) + sample_problems(lines)
+    return structural_problems(lines) + sample_problems(lines) + workflow_problems(lines)
 
 
 def _index_of(lines: Sequence[str], pattern: str) -> int:
@@ -263,7 +328,8 @@ def sabotage_cases(lines: Sequence[str]) -> list[tuple[str, list[str]]]:
     cases.append(("append an unowned /.github/actions/", [*lines, "/.github/actions/"]))
     cases.append(("move a release line below the shared set",
                   _move_to_end(lines, RELEASE_LINES[0])))
-    cases.append(("move /.github/ to the top", _move_to_top(lines, "/.github/")))
+    cases.append(("move the shared docs-lint.yml line to the top",
+                  _move_to_top(lines, "/.github/workflows/docs-lint.yml")))
     cases.append(("move /tools/ below the release lines",
                   _move_before(lines, "/tools/", SHARED_SET[0])))
     return cases
