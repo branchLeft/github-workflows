@@ -361,4 +361,9 @@ CASES: list[Case] = [
         [Edit(ACTION, "|port-not-allowed|unreachable|", "|unreachable|")],
         [LOOK_RESULTS("test_the_judge_accepts_every_result_the_program_can_print")],
     ),
+    Case(
+        "the judge drops an uptime_90d word the program can print",
+        [Edit(ACTION, "|not-report|path-not-allowed|", "|path-not-allowed|")],
+        [LOOK_RESULTS("test_the_judge_copies_each_closed_uptime_word")],
+    ),
 ]

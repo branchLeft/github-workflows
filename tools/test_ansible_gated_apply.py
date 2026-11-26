@@ -6328,7 +6328,14 @@ class LookResultsTests(unittest.TestCase):
     """
 
     NAME = "pull-trigger-program-example"
-    SAMPLES = {"sha256": "a" * 64, "status": "200", "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh"}
+    SAMPLES = {
+        "sha256": "a" * 64,
+        "status": "200",
+        "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh",
+        "uptime": "ops1-web=99.9990 status-api=100.0000 2026-11-26T10:00:00Z",
+    }
+    UPTIME_TIME = "2026-11-26T10:00:00Z"
+    UPTIME_WORDS = ["absent", "not-regular", "not-report", "path-not-allowed", "skipped-time", "too-large", "unreadable"]
 
     def look_re(self) -> str:
         text = (REPO / ".github/actions/ssh-check-hosts/action.yml").read_text(encoding="utf-8")
@@ -6363,6 +6370,40 @@ class LookResultsTests(unittest.TestCase):
         ]:
             with self.subTest(kind=kind, result=result):
                 self.assertFalse(self.accepts(f"look issue=4082 name={self.NAME} kind={kind} result={result}"))
+
+    def uptime_line(self, result: str) -> str:
+        return f"look issue=2103 name=ops1-uptime-90d kind=uptime_90d result={result}"
+
+    def test_the_judge_copies_a_well_formed_uptime_line(self) -> None:
+        for result in [
+            f"ops1-web=99.9990 status-api=100.0000 {self.UPTIME_TIME}",
+            f"a=0.0000 {self.UPTIME_TIME}",
+            f"web-1_b=42.5000 {self.UPTIME_TIME}",
+            f"{self.UPTIME_TIME}",
+        ]:
+            with self.subTest(result=result):
+                self.assertTrue(self.accepts(self.uptime_line(result)))
+
+    def test_the_judge_copies_each_closed_uptime_word(self) -> None:
+        for word in self.UPTIME_WORDS:
+            with self.subTest(word=word):
+                self.assertTrue(self.accepts(self.uptime_line(word)))
+
+    def test_the_judge_refuses_a_crafted_uptime_line(self) -> None:
+        for label, result in [
+            ("an extra field", f"web=99.9990 {self.UPTIME_TIME} run=whoami"),
+            ("a :: command after the time", f"web=99.9990 {self.UPTIME_TIME} ::set-output name=x::y"),
+            ("a :: command before the result", f"::warning::web=99.9990 {self.UPTIME_TIME}"),
+            ("an escape code after the time", f"web=99.9990 {self.UPTIME_TIME}\x1b[31m"),
+            ("an escape code before the key", f"\x1b[2Jweb=99.9990 {self.UPTIME_TIME}"),
+            ("an over-long key", f"{'k' * 65}=99.9990 {self.UPTIME_TIME}"),
+            ("a figure of 100.0001", f"web=100.0001 {self.UPTIME_TIME}"),
+            ("a figure of 101", f"web=101.0000 {self.UPTIME_TIME}"),
+            ("a figure of 999.9990", f"web=999.9990 {self.UPTIME_TIME}"),
+            ("a newline inside the line", f"web=99.9990\n{self.UPTIME_TIME}"),
+        ]:
+            with self.subTest(label=label):
+                self.assertFalse(self.accepts(self.uptime_line(result)))
 
     def test_the_committed_words_are_the_words_of_the_program(self) -> None:
         program = os.environ.get("LOOK_PROGRAM", "")

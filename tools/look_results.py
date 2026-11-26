@@ -21,10 +21,11 @@ KIND_FUNCTIONS = {
     "_unit_state": "unit_active",
     "_http_status": "http_status",
     "_ssh_public_key": "ssh_public_key",
+    "_uptime_90d": "uptime_90d",
 }
 # The one function whose words are shared by every kind: the skip printed when the time is spent.
 SHARED_FUNCTION = "_line"
-KINDS = ("file_sha256", "unit_active", "http_status", "ssh_public_key")
+KINDS = ("file_sha256", "unit_active", "http_status", "ssh_public_key", "uptime_90d")
 
 
 def module_constants(tree: ast.Module) -> dict[str, ast.expr]:
@@ -62,6 +63,9 @@ def words_of(expr: ast.expr, constants: dict[str, ast.expr], enum_words: dict[st
         return set(), {shape}
     if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "hexdigest":
         return set(), {"sha256"}
+    # `" ".join(...)` returns the pairs and the time of a success line: one shape.
+    if isinstance(expr, ast.Call) and isinstance(expr.func, ast.Attribute) and expr.func.attr == "join":
+        return set(), {shape}
     if isinstance(expr, ast.Attribute) and expr.attr == "value" and isinstance(expr.value, ast.Attribute):
         member = expr.value.attr
         return ({enum_words[member]} if member in enum_words else set()), set()
@@ -84,7 +88,7 @@ def words_of(expr: ast.expr, constants: dict[str, ast.expr], enum_words: dict[st
 def derive(tree: ast.Module) -> dict[str, dict[str, list[str]]]:
     constants = module_constants(tree)
     enum_words = look_word_values(tree)
-    shape_of = {"_http_status": "status", "_ssh_public_key": "key"}
+    shape_of = {"_http_status": "status", "_ssh_public_key": "key", "_uptime_90d": "uptime"}
     per_kind: dict[str, dict[str, set[str]]] = {kind: {"words": set(), "shapes": set()} for kind in KINDS}
     shared_words: set[str] = set()
     for node in ast.walk(tree):
