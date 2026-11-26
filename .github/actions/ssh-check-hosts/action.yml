@@ -781,7 +781,7 @@ runs:
         # Only these shapes: a line of the look that matches none of them is never copied.
         looklog="$plan_dir/look.log"
         : > "$looklog"
-        look_re='^(look issue=[0-9]{1,8} name=[a-z][a-z0-9-]{0,47} kind=(file_sha256|unit_active|http_status|ssh_public_key) result=[A-Za-z0-9+/=_. -]+|look-refused entry=[0-9]{1,4} reason=[a-z-]{1,40}|look-summary declared=[0-9]{1,4} here=[0-9]{1,4} refused=[0-9]{1,4} file=[a-z-]{1,40})$'
+        look_re='^(look issue=[0-9]{1,8} name=[a-z][a-z0-9-]{0,47} (kind=file_sha256 result=([0-9a-f]{64}|absent|not-regular|outside-root|too-large|unreadable|skipped-time)|kind=http_status result=([0-9]{3}|unreachable|timeout|skipped-time)|kind=unit_active result=(active|inactive|failed|activating|deactivating|reloading|maintenance|unknown|skipped-time)|kind=ssh_public_key result=((ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256|ecdsa-sha2-nistp384|ecdsa-sha2-nistp521) [A-Za-z0-9+/=]+|absent|not-regular|unreadable|too-large|not-ssh-key|skipped-time))|look-refused entry=[0-9]{1,4} reason=[a-z-]{1,40}|look-summary declared=[0-9]{1,4} here=[0-9]{1,4} refused=[0-9]{1,4} file=[a-z-]{1,40})$'
         rows="$plan_dir/rows.md"
         : > "$rows"
         kinds="$plan_dir/kinds"

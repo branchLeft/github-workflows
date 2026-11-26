@@ -210,6 +210,11 @@ CASES: list[Case] = [
                     r"""
                     printf '| Host | Result | Note |\n| --- | --- | --- |\n'
                     cat "$rows"
+                    if [ -s "$looklog" ]; then
+                      echo "::group::look"
+                      cat "$looklog"
+                      echo "::endgroup::"
+                    fi
 
                     if [ "$failed" -gt 0 ] && [ "$partial" != true ]; then""",
                     8,

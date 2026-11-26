@@ -6069,9 +6069,9 @@ class ReportLogTests(unittest.TestCase):
     def test_the_look_lines_of_a_shown_diff_reach_the_log_in_a_group_and_a_withheld_diff_adds_none(self) -> None:
         # The look (pull_trigger README, "The look") is printed to the host's standard error after a check. Its
         # lines are shown in the job summary, and the same ones go to the log in a group; nothing else does.
-        look = "look issue=4082 name=pull-trigger-program-db1 kind=file_sha256 result=" + "a" * 64
+        look = "look issue=4082 name=pull-trigger-program-example kind=file_sha256 result=" + "a" * 64
         look_summary = "look-summary declared=1 here=1 refused=0 file=ok"
-        not_a_look = "look issue=4082 name=pull-trigger-program-db1 kind=run_command result=NOT_A_LOOK_PLANT"
+        not_a_look = "look issue=4082 name=pull-trigger-program-example kind=run_command result=NOT_A_LOOK_PLANT"
         withheld_look = "look issue=4083 name=withheld-fact kind=unit_active result=active"
         answers = drift_answers(
             alpha=(0, CLEAN, f"{look}\n{look_summary}\n{not_a_look}\n"),
@@ -6088,6 +6088,43 @@ class ReportLogTests(unittest.TestCase):
         self.assertNotIn("NOT_A_LOOK_PLANT", result.log)
         self.assertNotIn(withheld_look, result.log)
         self.assertNotIn("host 2: look", result.proc.stdout)
+
+    def test_each_look_line_shape_is_copied_and_a_line_that_only_nearly_matches_is_not(self) -> None:
+        # The result= class and the end of the line ($ anchor), one line each (pull_trigger README, "The look").
+        name = "name=pull-trigger-program-example"
+        copied = [
+            f"look issue=4082 {name} kind=file_sha256 result={'a' * 64}",
+            f"look issue=4082 {name} kind=http_status result=200",
+            f"look issue=4082 {name} kind=unit_active result=maintenance",
+            f"look issue=4082 {name} kind=file_sha256 result=absent",
+            f"look issue=4082 {name} kind=http_status result=timeout",
+            f"look issue=4082 {name} kind=ssh_public_key result=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh",
+            f"look issue=4082 {name} kind=ssh_public_key result=not-ssh-key",
+            "look-refused entry=2 reason=path-not-allowed",
+            "look-summary declared=1 here=1 refused=0 file=ok",
+        ]
+        not_copied = [
+            f"look issue=4082 {name} kind=unit_active result=active TRAILING_PLANT",
+            f"look issue=4082 {name} kind=unit_active result=active ",
+            f"look issue=4082 {name} kind=unit_active result=active!",
+            f"look issue=4082 {name} kind=unit_active result=ACTIVE",
+            f"look issue=4082 {name} kind=unit_active result=failed-to-start",
+            f"look issue=4082 {name} kind=file_sha256 result=active",
+            f"look issue=4082 {name} kind=http_status result=unknown",
+            f"look issue=4082 {name} kind=http_status result=2000",
+            f"look issue=4082 {name} kind=file_sha256 result={'a' * 63}",
+            f"look issue=4082 {name} kind=ssh_public_key result=ssh-dss AAAAC3NzaC1kc3MAAACBAbcdefgh",
+            f"look issue=4082 {name} kind=ssh_public_key result=ssh-ed25519  AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh",
+            "look-refused entry=2 reason=path-not-allowed TRAILING_PLANT",
+            "look-summary declared=1 here=1 refused=0 file=ok TRAILING_PLANT",
+        ]
+        answers = drift_answers(alpha=(0, CLEAN, "\n".join(copied + not_copied) + "\n"))
+        _, result = self.report(answers)
+        group = result.proc.stdout.split("::group::look\n", 1)[1].split("::endgroup::", 1)[0]
+        self.assertEqual(group.splitlines(), [f"host 1: {line}" for line in copied], result.proc.stdout)
+        self.assertNotIn("TRAILING_PLANT", result.proc.stdout)
+        for line in not_copied:
+            self.assertIn(line, result.summary)
 
     def test_every_host_line_prints_its_diff_size_and_the_running_total_of_the_diffs_shown(self) -> None:
         small = "+small change\n"
