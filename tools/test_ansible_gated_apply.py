@@ -6066,6 +6066,66 @@ class ReportLogTests(unittest.TestCase):
         )
         self.assertIn(small, result.summary)
 
+    def test_the_look_lines_of_a_shown_diff_reach_the_log_in_a_group_and_a_withheld_diff_adds_none(self) -> None:
+        # The look (pull_trigger README, "The look") is printed to the host's standard error after a check. Its
+        # lines are shown in the job summary, and the same ones go to the log in a group; nothing else does.
+        look = "look issue=4082 name=pull-trigger-program-example kind=file_sha256 result=" + "a" * 64
+        look_summary = "look-summary declared=1 here=1 refused=0 file=ok"
+        not_a_look = "look issue=4082 name=pull-trigger-program-example kind=run_command result=NOT_A_LOOK_PLANT"
+        withheld_look = "look issue=4083 name=withheld-fact kind=unit_active result=active"
+        answers = drift_answers(
+            alpha=(0, CLEAN, f"{look}\n{look_summary}\n{not_a_look}\n"),
+            bravo=(11, summary_line("would-change", 11, "check", "@SHA@", 1), f"+api_token = 0123456789abcdef\n{withheld_look}\n"),
+        )
+        _, result = self.report(answers)
+        self.assertIn(look, result.summary)
+        self.assertIn(look_summary, result.summary)
+        self.assertIn(
+            f"::group::look\nhost 1: {look}\nhost 1: {look_summary}\n::endgroup::\n",
+            result.proc.stdout,
+            result.log,
+        )
+        self.assertNotIn("NOT_A_LOOK_PLANT", result.log)
+        self.assertNotIn(withheld_look, result.log)
+        self.assertNotIn("host 2: look", result.proc.stdout)
+
+    def test_each_look_line_shape_is_copied_and_a_line_that_only_nearly_matches_is_not(self) -> None:
+        # The result= class and the end of the line ($ anchor), one line each (pull_trigger README, "The look").
+        name = "name=pull-trigger-program-example"
+        copied = [
+            f"look issue=4082 {name} kind=file_sha256 result={'a' * 64}",
+            f"look issue=4082 {name} kind=http_status result=200",
+            f"look issue=4082 {name} kind=unit_active result=maintenance",
+            f"look issue=4082 {name} kind=file_sha256 result=absent",
+            f"look issue=4082 {name} kind=http_status result=timeout",
+            f"look issue=4082 {name} kind=ssh_public_key result=ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh",
+            f"look issue=4082 {name} kind=ssh_public_key result=not-ssh-key",
+            "look-refused entry=2 reason=path-not-allowed",
+            "look-summary declared=1 here=1 refused=0 file=ok",
+        ]
+        not_copied = [
+            f"look issue=4082 {name} kind=unit_active result=active TRAILING_PLANT",
+            f"look issue=4082 {name} kind=unit_active result=active ",
+            f"look issue=4082 {name} kind=unit_active result=active!",
+            f"look issue=4082 {name} kind=unit_active result=ACTIVE",
+            f"look issue=4082 {name} kind=unit_active result=failed-to-start",
+            f"look issue=4082 {name} kind=file_sha256 result=active",
+            f"look issue=4082 {name} kind=http_status result=unknown",
+            f"look issue=4082 {name} kind=http_status result=2000",
+            f"look issue=4082 {name} kind=file_sha256 result={'a' * 63}",
+            f"look issue=4082 {name} kind=ssh_public_key result=ssh-dss AAAAC3NzaC1kc3MAAACBAbcdefgh",
+            f"look issue=4082 {name} kind=ssh_public_key result=ssh-ed25519  AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh",
+            "look-refused entry=2 reason=path-not-allowed TRAILING_PLANT",
+            "look-summary declared=1 here=1 refused=0 file=ok TRAILING_PLANT",
+        ]
+        answers = drift_answers(alpha=(0, CLEAN, "\n".join(copied + not_copied) + "\n"))
+        _, result = self.report(answers)
+        group = result.proc.stdout.split("::group::look\n", 1)[1].split("::endgroup::", 1)[0]
+        self.assertEqual(group.splitlines(), [f"host 1: {line}" for line in copied], result.proc.stdout)
+        self.assertNotIn("TRAILING_PLANT", result.proc.stdout)
+        for line in not_copied:
+            self.assertIn(line, result.summary)
+
     def test_every_host_line_prints_its_diff_size_and_the_running_total_of_the_diffs_shown(self) -> None:
         small = "+small change\n"
         drift = (11, summary_line("would-change", 11, "check", "@SHA@", 1), small)
@@ -6258,6 +6318,108 @@ def alert_env(**changes: str) -> dict[str, str]:
     }
     values.update(changes)
     return values
+
+
+class LookResultsTests(unittest.TestCase):
+    """The judge's look regex accepts every result the program can print, and no other (tools/look-results.json).
+
+    The list is derived by tools/look_results.py from shared-infra's pull_trigger.py at the sha the file names.
+    A run with LOOK_PROGRAM set to that file also checks the committed list against the program.
+    """
+
+    NAME = "pull-trigger-program-example"
+    SAMPLES = {
+        "sha256": "a" * 64,
+        "status": "200",
+        "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAbcdefgh",
+        "uptime": "ops1-web=99.9990 status-api=100.0000 2026-11-26T10:00:00Z",
+    }
+    UPTIME_TIME = "2026-11-26T10:00:00Z"
+    UPTIME_WORDS = ["absent", "not-regular", "not-report", "path-not-allowed", "skipped-time", "too-large", "unreadable"]
+
+    def look_re(self) -> str:
+        text = (REPO / ".github/actions/ssh-check-hosts/action.yml").read_text(encoding="utf-8")
+        match = re.search(r"^        look_re='(.+)'$", text, re.MULTILINE)
+        self.assertIsNotNone(match, "the judge's look_re line is not where this test expects it")
+        assert match is not None
+        return match.group(1)
+
+    def accepts(self, line: str) -> bool:
+        proc = subprocess.run(["grep", "-E", self.look_re()], input=line + "\n", capture_output=True, text=True, check=False)
+        return proc.returncode == 0 and proc.stdout == line + "\n"
+
+    def committed(self) -> dict[str, Any]:
+        return json.loads((REPO / "tools/look-results.json").read_text(encoding="utf-8"))["kinds"]
+
+    def test_the_judge_accepts_every_result_the_program_can_print(self) -> None:
+        for kind, values in sorted(self.committed().items()):
+            results = list(values["words"]) + [self.SAMPLES[shape] for shape in values["shapes"]]
+            for result in results:
+                with self.subTest(kind=kind, result=result):
+                    self.assertTrue(self.accepts(f"look issue=4082 name={self.NAME} kind={kind} result={result}"))
+
+    def test_the_judge_refuses_a_result_of_another_kind_or_one_nearly_matching(self) -> None:
+        for kind, result in [
+            ("file_sha256", "port-not-allowed"),
+            ("unit_active", "port-not-allowed"),
+            ("http_status", "path-not-allowed"),
+            ("unit_active", "failed-to-start"),
+            ("unit_active", "ACTIVE"),
+            ("http_status", "200 OK"),
+            ("file_sha256", "a" * 63),
+        ]:
+            with self.subTest(kind=kind, result=result):
+                self.assertFalse(self.accepts(f"look issue=4082 name={self.NAME} kind={kind} result={result}"))
+
+    def uptime_line(self, result: str) -> str:
+        return f"look issue=2103 name=ops1-uptime-90d kind=uptime_90d result={result}"
+
+    def test_the_judge_copies_a_well_formed_uptime_line(self) -> None:
+        for result in [
+            f"ops1-web=99.9990 status-api=100.0000 {self.UPTIME_TIME}",
+            f"a=0.0000 {self.UPTIME_TIME}",
+            f"web-1_b=42.5000 {self.UPTIME_TIME}",
+            f"{self.UPTIME_TIME}",
+        ]:
+            with self.subTest(result=result):
+                self.assertTrue(self.accepts(self.uptime_line(result)))
+
+    def test_the_judge_copies_each_closed_uptime_word(self) -> None:
+        for word in self.UPTIME_WORDS:
+            with self.subTest(word=word):
+                self.assertTrue(self.accepts(self.uptime_line(word)))
+
+    def test_the_judge_refuses_a_crafted_uptime_line(self) -> None:
+        for label, result in [
+            ("an extra field", f"web=99.9990 {self.UPTIME_TIME} run=whoami"),
+            ("a :: command after the time", f"web=99.9990 {self.UPTIME_TIME} ::set-output name=x::y"),
+            ("a :: command before the result", f"::warning::web=99.9990 {self.UPTIME_TIME}"),
+            ("an escape code after the time", f"web=99.9990 {self.UPTIME_TIME}\x1b[31m"),
+            ("an escape code before the key", f"\x1b[2Jweb=99.9990 {self.UPTIME_TIME}"),
+            ("an over-long key", f"{'k' * 65}=99.9990 {self.UPTIME_TIME}"),
+            ("a figure of 100.0001", f"web=100.0001 {self.UPTIME_TIME}"),
+            ("a figure of 101", f"web=101.0000 {self.UPTIME_TIME}"),
+            ("a figure of 999.9990", f"web=999.9990 {self.UPTIME_TIME}"),
+            ("a newline inside the line", f"web=99.9990\n{self.UPTIME_TIME}"),
+        ]:
+            with self.subTest(label=label):
+                self.assertFalse(self.accepts(self.uptime_line(result)))
+
+    def test_the_committed_words_are_the_words_of_the_program(self) -> None:
+        program = os.environ.get("LOOK_PROGRAM", "")
+        if not program:
+            self.skipTest("set LOOK_PROGRAM to shared-infra's pull_trigger.py to compare the committed list with it")
+        sys.path.insert(0, str(REPO / "tools"))
+        import ast
+
+        import look_results
+
+        derived = look_results.derive(ast.parse(Path(program).read_text(encoding="utf-8")))
+        self.assertEqual(
+            derived,
+            self.committed(),
+            "the program's result words changed: regenerate tools/look-results.json with tools/look_results.py",
+        )
 
 
 class AlertTests(unittest.TestCase):

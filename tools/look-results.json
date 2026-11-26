@@ -1,0 +1,75 @@
+{
+  "kinds": {
+    "file_sha256": {
+      "shapes": [
+        "sha256"
+      ],
+      "words": [
+        "absent",
+        "not-regular",
+        "outside-root",
+        "skipped-time",
+        "too-large",
+        "unreadable"
+      ]
+    },
+    "http_status": {
+      "shapes": [
+        "status"
+      ],
+      "words": [
+        "port-not-allowed",
+        "skipped-time",
+        "timeout",
+        "unreachable"
+      ]
+    },
+    "ssh_public_key": {
+      "shapes": [
+        "key"
+      ],
+      "words": [
+        "absent",
+        "not-regular",
+        "not-ssh-key",
+        "path-not-allowed",
+        "skipped-time",
+        "too-large",
+        "unreadable"
+      ]
+    },
+    "unit_active": {
+      "shapes": [],
+      "words": [
+        "activating",
+        "active",
+        "deactivating",
+        "failed",
+        "inactive",
+        "maintenance",
+        "reloading",
+        "skipped-time",
+        "unknown"
+      ]
+    },
+    "uptime_90d": {
+      "shapes": [
+        "uptime"
+      ],
+      "words": [
+        "absent",
+        "not-regular",
+        "not-report",
+        "path-not-allowed",
+        "skipped-time",
+        "too-large",
+        "unreadable"
+      ]
+    }
+  },
+  "source": {
+    "file": "ansible/roles/pull_trigger/files/pull_trigger.py",
+    "repo": "branchLeft/shared-infra",
+    "sha": "e4d6f1d33e26438b695e909e46aacfcac9279a5c"
+  }
+}

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from ..files import ACTION, GATED_APPLY
 from ..model import Case, Edit
-from ..suites import APPLY, DRIFT_REPORT, PLAN, REPORT_LOG, STRUCTURE, VALIDATE_HOSTS
+from ..suites import APPLY, DRIFT_REPORT, LOOK_RESULTS, PLAN, REPORT_LOG, STRUCTURE, VALIDATE_HOSTS
 from ..text import indented
 
 CASES: list[Case] = [
@@ -340,5 +340,30 @@ CASES: list[Case] = [
             ),
         ],
         [VALIDATE_HOSTS("test_the_timeouts_are_whole_numbers_of_minutes_and_the_total_may_be_empty")],
+    ),
+    Case(
+        "look group not printed to the log",
+        [Edit(ACTION, '        if [ -s "$looklog" ]; then\n          echo "::group::look"', '        if false; then\n          echo "::group::look"')],
+        [REPORT_LOG("test_the_look_lines_of_a_shown_diff_reach_the_log_in_a_group_and_a_withheld_diff_adds_none")],
+    ),
+    Case(
+        "look lines of a withheld diff reach the log",
+        [Edit(ACTION, '          if [ "$show" = true ]; then\n            tr -d', '          if true; then\n            tr -d')],
+        [REPORT_LOG("test_the_look_lines_of_a_shown_diff_reach_the_log_in_a_group_and_a_withheld_diff_adds_none")],
+    ),
+    Case(
+        "every line of a shown diff reaches the log, not only the look lines",
+        [Edit(ACTION, 'grep -E "$look_re" | sed "s/^/$label: /"', 'cat | sed "s/^/$label: /"')],
+        [REPORT_LOG("test_the_look_lines_of_a_shown_diff_reach_the_log_in_a_group_and_a_withheld_diff_adds_none")],
+    ),
+    Case(
+        "the judge drops a http result the program can print",
+        [Edit(ACTION, "|port-not-allowed|unreachable|", "|unreachable|")],
+        [LOOK_RESULTS("test_the_judge_accepts_every_result_the_program_can_print")],
+    ),
+    Case(
+        "the judge drops an uptime_90d word the program can print",
+        [Edit(ACTION, "|not-report|path-not-allowed|", "|path-not-allowed|")],
+        [LOOK_RESULTS("test_the_judge_copies_each_closed_uptime_word")],
     ),
 ]
