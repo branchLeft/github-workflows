@@ -6066,6 +6066,29 @@ class ReportLogTests(unittest.TestCase):
         )
         self.assertIn(small, result.summary)
 
+    def test_the_look_lines_of_a_shown_diff_reach_the_log_in_a_group_and_a_withheld_diff_adds_none(self) -> None:
+        # The look (pull_trigger README, "The look") is printed to the host's standard error after a check. Its
+        # lines are shown in the job summary, and the same ones go to the log in a group; nothing else does.
+        look = "look issue=4082 name=pull-trigger-program-db1 kind=file_sha256 result=" + "a" * 64
+        look_summary = "look-summary declared=1 here=1 refused=0 file=ok"
+        not_a_look = "look issue=4082 name=pull-trigger-program-db1 kind=run_command result=NOT_A_LOOK_PLANT"
+        withheld_look = "look issue=4083 name=withheld-fact kind=unit_active result=active"
+        answers = drift_answers(
+            alpha=(0, CLEAN, f"{look}\n{look_summary}\n{not_a_look}\n"),
+            bravo=(11, summary_line("would-change", 11, "check", "@SHA@", 1), f"+api_token = 0123456789abcdef\n{withheld_look}\n"),
+        )
+        _, result = self.report(answers)
+        self.assertIn(look, result.summary)
+        self.assertIn(look_summary, result.summary)
+        self.assertIn(
+            f"::group::look\nhost 1: {look}\nhost 1: {look_summary}\n::endgroup::\n",
+            result.proc.stdout,
+            result.log,
+        )
+        self.assertNotIn("NOT_A_LOOK_PLANT", result.log)
+        self.assertNotIn(withheld_look, result.log)
+        self.assertNotIn("host 2: look", result.proc.stdout)
+
     def test_every_host_line_prints_its_diff_size_and_the_running_total_of_the_diffs_shown(self) -> None:
         small = "+small change\n"
         drift = (11, summary_line("would-change", 11, "check", "@SHA@", 1), small)

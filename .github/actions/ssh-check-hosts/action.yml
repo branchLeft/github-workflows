@@ -777,6 +777,11 @@ runs:
         summary="$plan_dir/summary.md"
         details="$plan_dir/details.md"
         : > "$details"
+        # The look lines of the shown diffs, copied to the log in a group (README, "The look").
+        # Only these shapes: a line of the look that matches none of them is never copied.
+        looklog="$plan_dir/look.log"
+        : > "$looklog"
+        look_re='^(look issue=[0-9]{1,8} name=[a-z][a-z0-9-]{0,47} kind=(file_sha256|unit_active|http_status|ssh_public_key) result=[A-Za-z0-9+/=_. -]+|look-refused entry=[0-9]{1,4} reason=[a-z-]{1,40}|look-summary declared=[0-9]{1,4} here=[0-9]{1,4} refused=[0-9]{1,4} file=[a-z-]{1,40})$'
         rows="$plan_dir/rows.md"
         : > "$rows"
         kinds="$plan_dir/kinds"
@@ -1033,6 +1038,11 @@ runs:
               cp "$cleaned" "$failed_output/host-$((10#$n)).txt"
             fi
           fi
+          # Only a shown diff's look lines reach the log, the same lines the summary shows. A
+          # withheld diff contributes none.
+          if [ "$show" = true ]; then
+            tr -d '\r' < "$cleaned" | grep -E "$look_re" | sed "s/^/$label: /" >> "$looklog" || true
+          fi
         done
 
         # The outcome names the kind of each answer that was not clean, with a
@@ -1110,6 +1120,11 @@ runs:
         # fixed note; the diffs stay in the job summary only.
         printf '| Host | Result | Note |\n| --- | --- | --- |\n'
         cat "$rows"
+        if [ -s "$looklog" ]; then
+          echo "::group::look"
+          cat "$looklog"
+          echo "::endgroup::"
+        fi
 
         if [ "$failed" -gt 0 ] && [ "$partial" != true ]; then
           echo "::error::$first"
