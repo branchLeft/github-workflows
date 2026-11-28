@@ -1,6 +1,10 @@
 """Tests of ansible-gated-step.yml, run against the text of each step.
 
-See test_ansible_gated_step.comments.md, block 1.
+Each step's `run:` text runs under bash with `ssh`, `timeout` and `yq` stubbed on
+PATH, and the `${{ }}` expressions of its `env:` are bound from a context the test
+builds: an expression the context lacks fails the test, so no step passes on a
+value nobody set. tools/sabotage_step.py breaks each control and requires its
+test here to go red. The workflow's own page is ansible-gated-step.md.
 """
 
 from __future__ import annotations
