@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # Unit tests for opv-lint.sh's rules. Fixture-driven, same harness shape as
 # docs-lint.test.sh: each case is a snippet fed to the script through a
-# scratch git repo (opv-lint.sh requires one -- it resolves its scan root
-# with `git rev-parse --show-toplevel`) and the exit code / rule presence is
-# asserted.
-#
-# Usage: tools/opv-lint.test.sh
+# Narrative: opv-lint.test.comments.md, block 1.
 
 set -uo pipefail
 
@@ -73,10 +69,7 @@ case_md_fence() {
 
 # Runs the tool ONCE on one fixture and asserts on TWO rules' flag state
 # from the SAME output. This is the only way to catch a cross-rule
-# collision -- one rule over-firing on a span that is genuinely another
-# rule's territory -- because case_file/case_sh/case_md_fence each assert
-# only on the rule under test and are structurally blind to what every
-# OTHER rule did on the same line.
+# Narrative: opv-lint.test.comments.md, block 2.
 case_dual() {
   local name="$1" file="$2" content="$3" \
         rule_a="$4" expect_a="$5" rule_b="$6" expect_b="$7" expect_exit="$8"
@@ -199,11 +192,7 @@ case_sh "OPV001: db1-mysql-bin (a binlog naming convention, not a hostname refer
 
 # ==== OPV002: an unsubstituted placeholder in a copy-pasteable command ======
 # ---- Cross-rule regression: OPV001 and OPV002 must not co-fire on the same
-# span. `<edge1-ipv4>` is the ruling's own canonical placeholder example,
-# and it textually contains the hostname `edge1` -- a per-rule assertion
-# (case_md_fence checking OPV002 alone) cannot see OPV001 firing on the same
-# fixture, which is exactly how this collision shipped unnoticed. case_dual
-# runs the tool once and checks both rules against the one output.
+# Narrative: opv-lint.test.comments.md, block 3.
 case_dual "OPV001/OPV002 do not co-fire on <edge1-ipv4>: OPV002 fires (it is a real placeholder), OPV001 stays silent (edge1 here is not a committed value)" \
   "fixture.md" \
   $'## fixture\n\n```bash\nssh root@<edge1-ipv4>\n```\n' \
@@ -400,10 +389,7 @@ case_sh "OPV003: a suppressed access key id clears the finding" \
 
 # ==== The two exemption cases named verbatim in the ruling ===================
 # 1. A test fixture where the hostname/address IS the subject of the
-#    assertion (a promtool alert-rule fixture, an address-plan-drift test, a
-#    render.ts unit test). Threading it through a lookup would make the test
-#    assert on whatever the environment happens to hold, which inverts what
-#    a fixture is for.
+# Narrative: opv-lint.test.comments.md, block 4.
 case_file "OPV001: a promtool-style test fixture hostname is flagged by default (no path carve-out)" \
   "alert_rules_test.yml" \
   "- alert: TargetDown
@@ -475,9 +461,7 @@ annotation_case
 
 # Mode resolution (.opv-lint.mode, warn-vs-enforce, the ENFORCED file set) is
 # shared, unmodified logic sourced from lint-common.sh; every case above
-# forces --mode enforce so it isn't exercised here, the same choice
-# docs-lint.test.sh makes for the identical mechanism under its own mode
-# file.
+# Narrative: opv-lint.test.comments.md, block 5.
 
 echo
 echo "opv-lint.test.sh: $PASS passed, $FAIL failed"

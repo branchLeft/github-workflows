@@ -1,11 +1,7 @@
 #!/bin/sh
 # Proves a wrong signer workflow is refused for its identity, through both
 # verify paths. A network or TUF fault is not a refusal. Why: see the wrong
-# identity section of verify-image-attestation.md beside this script.
-#
-# Usage:
-#   ./prove-wrong-identity-rejected.sh <registry/name@sha256:64hex> \
-#       <owner/repo> <owner/repo/.github/workflows/file.yml>
+# Narrative: prove-wrong-identity-rejected.comments.md, block 1.
 set -eu
 
 if [ "$#" -ne 3 ]; then

@@ -317,9 +317,7 @@ def _same_step_differs(urn: Urn, step: dict[str, object]) -> bool:
 def _is_clean_read(op: str, urn: Urn, step: dict[str, object]) -> bool:
     """Whether a step is the read of a StackReference, which changes nothing.
 
-    A StackReference is read on every run to resolve another stack's outputs: it creates,
-    updates and deletes nothing, in this stack or the other. Only that type, and only the
-    shape a real preview gives it, counts: any other `read`, or a StackReference step that
+    See plan-has-changes.comments.md, block 1.
     carries a diff, a flag, an odd key or a type that is not its URN's, is a change."""
     if op != READ or urn.type != STACK_REFERENCE_TYPE:
         return False
@@ -526,9 +524,7 @@ def _structured_aliases_are_clean(goal: dict[str, object]) -> bool:
 def _goal_agrees_with_preview(goal: dict[str, object], state: dict[str, object]) -> bool:
     """Where the preview lists the resource, the goal says what its new state says.
 
-    The preview's old and new state already agree (a `same` step that differs is a
-    change), so a goal that matches the new state matches the old one: `protect` and
-    `dependencies` are held to the stored values here, which is the owner's
+    See plan-has-changes.comments.md, block 2.
     "unchanged" test for the keys the preview can show."""
     return (
         bool(goal.get("custom", False)) == bool(state.get("custom", False))

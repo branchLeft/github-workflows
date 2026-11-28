@@ -1,11 +1,7 @@
 #!/usr/bin/env bash
 # The stand-in for the receiver of a pushed host, in the dry run of the plan job
 # and in the self-test of the action. It receives the SSH destination, the mode,
-# the commit and the playbook as arguments and a git bundle on standard input, as
-# the real receiver does. It verifies the bundle with git into an empty scratch
-# repository, requires the bundle's HEAD to be the commit it was asked about, and
-# answers in the format of the receiver's summary line. It applies nothing and
-# reaches nothing.
+# Narrative: push-receiver.comments.md, block 1.
 set -euo pipefail
 
 dest="$1"

@@ -1,10 +1,7 @@
 #!/bin/sh
 # Proves the verify and wrong-identity scripts refuse what they should, against
 # a stub gh on PATH, so no network or attestation is needed. The stub and its
-# cases are described in test-verify-image-attestation.md beside this script.
-#
-# Usage:
-#   ./test-verify-image-attestation.sh
+# Narrative: test-verify-image-attestation.comments.md, block 1.
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -168,9 +165,7 @@ fi
 
 # (h) The live wording, from run 41728033706. gh prints "verifying with issuer"
 # and then the verify script prints the line naming the identity. A token,
-# Sigstore or network fault prints that last line too, so it alone is not a
-# refusal. A fake verify script prints each text exactly, beside a copy of the
-# prove script.
+# Narrative: test-verify-image-attestation.comments.md, block 2.
 FAKE="$WORK/fake"
 mkdir "$FAKE"
 cp "$PROVE" "$FAKE/prove-wrong-identity-rejected.sh"

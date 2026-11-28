@@ -36,20 +36,14 @@ PROTECTED_TYPES = {
 
 # Any Pulumi step op containing either word destroys, or schedules the
 # destruction of, the resource it names. Covers `delete`, `delete-replaced`,
-# `replace`, `create-replacement`, `read-replacement`, `import-replacement`,
-# `discard-replaced` and `remove-pending-replace` without enumerating them, so
-# a future op name has to actively avoid both words to slip through.
+# Narrative: assert-no-hetzner-deletes.comments.md, block 1.
 DESTRUCTIVE_SUBSTRINGS = ("delete", "replace")
 
 
 def _split_urn(urn: str) -> tuple[str, str]:
     """Return (type token, logical name) from a Pulumi URN.
 
-    A URN is `urn:pulumi:<stack>::<project>::<type>::<name>`, and `<type>` is
-    itself `::`-free while a parent chain would appear as `<parent>$<type>`.
-    Splitting from the right is therefore correct for both shapes -- and the
-    parent-chain shape is the normal one where a `Host` component parents its
-    server, firewall and primary IPs.
+    See assert-no-hetzner-deletes.comments.md, block 2.
     """
     parts = urn.rsplit("::", 2)
     if len(parts) != 3:
@@ -60,9 +54,7 @@ def _split_urn(urn: str) -> tuple[str, str]:
 def destructive_steps(plan: dict) -> list[tuple[str, str]]:
     """Return (name, op) for every protected resource this plan would destroy.
 
-    Raises ValueError if `plan` is not a preview plan, rather than returning
-    an empty list -- "I could not find any steps" and "there are no
-    destructive steps" must not share an exit code.
+    See assert-no-hetzner-deletes.comments.md, block 3.
     """
     if not isinstance(plan, dict):
         raise ValueError("the preview JSON is not an object")
@@ -89,10 +81,7 @@ def destructive_steps(plan: dict) -> list[tuple[str, str]]:
 def load_coverage_map(path: str) -> dict[str, set[str]]:
     """Read the caller's coverage map: program dir basename -> constructors.
 
-    Raises ValueError for anything but an object of non-empty lists of
-    non-empty strings. An empty list is refused, not read as "nothing to
-    check": it would let a directory pass `--verify-coverage` having been
-    checked for nothing.
+    See assert-no-hetzner-deletes.comments.md, block 4.
     """
     try:
         with open(path, encoding="utf-8") as handle:
@@ -114,8 +103,7 @@ def load_coverage_map(path: str) -> dict[str, set[str]]:
 def _declaration_pattern(constructor: str) -> re.Pattern[str]:
     """Match a resource *declaration*, not a mention of the same text.
 
-    A bare substring search reports a false pass: a constructor that has been
-    refactored away usually survives elsewhere as a comment or an import.
+    See assert-no-hetzner-deletes.comments.md, block 5.
     """
     return re.compile(rf"\bnew\s+{re.escape(constructor)}\s*\(")
 
@@ -123,12 +111,7 @@ def _declaration_pattern(constructor: str) -> re.Pattern[str]:
 def verify_coverage(program_dir: str, coverage_map: dict[str, set[str]]) -> int:
     """Fail if a directory's expected constructors are no longer declared.
 
-    The quiet way this gate dies: a resource migrates out of the program (into
-    a package, into another project) while the plan check keeps passing on
-    whatever is left. Nothing errors, and the type the map promised this
-    directory declares is no longer anything the repository reviews. Failing
-    here forces the map -- and therefore the guard's actual coverage -- to be
-    updated in the same change that moves the resource.
+    See assert-no-hetzner-deletes.comments.md, block 6.
     """
     directory = pathlib.Path(program_dir)
     if not directory.is_dir():
@@ -198,10 +181,7 @@ def _plan(*steps: tuple[str, str]) -> dict:
 def _quarantine(fn, *args):
     """Run fn with stdout captured, returning its result and what it printed.
 
-    `verify_coverage` emits `::error::`-prefixed lines on the failure fixtures
-    by design, and that prefix is a GitHub Actions annotation trigger. Letting
-    it through would flag a fully passing self-test run as an error in the
-    Actions UI, indistinguishable from a real one.
+    See assert-no-hetzner-deletes.comments.md, block 7.
     """
     buffer = io.StringIO()
     with contextlib.redirect_stdout(buffer):

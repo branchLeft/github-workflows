@@ -1,10 +1,6 @@
 """The harness the ansible-gated test modules share: a run's result and a scratch directory.
 
-test_ansible_gated_apply.py and test_ansible_gated_step.py each keep their own stand-in
-commands and their own environment for a run, because those differ between the two gates.
-What is the same lives here: the result of a run, the scratch directory with the stand-in
-commands on PATH, and the subprocess call that runs a step's script with the runner's
-default umask.
+See ansible_gated_harness.comments.md, block 1.
 """
 
 from __future__ import annotations
@@ -37,8 +33,7 @@ class Result:
 class SandboxBase:
     """A scratch directory with stand-in commands on PATH and the files the runner provides.
 
-    `stub_commands` are (name, text) pairs written as executables into bin/. Subclasses build
-    the environment for `run_script` themselves, because each gate's environment differs.
+    See ansible_gated_harness.comments.md, block 2.
     """
 
     def __init__(self, test: unittest.TestCase, prefix: str, stub_commands: tuple[tuple[str, str], ...]) -> None:

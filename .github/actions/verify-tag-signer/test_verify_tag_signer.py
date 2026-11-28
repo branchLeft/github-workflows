@@ -1,9 +1,6 @@
 """Tests for verify-tag-signer.py, run as CI runs it: a subprocess and its real
 exit code, over tags made and signed by real git and ssh-keygen.
-
-The Sabotage class breaks each control in a copy of the script (or of the
-code owners file), and the test that guards it must go red there and green on
-the unmodified copy. Reasons for each case: verify-tag-signer.md.
+See test_verify_tag_signer.comments.md, block 1.
 """
 import importlib.util
 import json

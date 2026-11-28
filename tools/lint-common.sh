@@ -15,10 +15,7 @@ lint_common_init() {
   TMPDIR_LINT=$(mktemp -d) || return 2
   # The EXIT trap is deliberately NOT set here: a trap on EXIT registered
   # inside a function is torn down the moment that function returns in at
-  # least one shell this runs under, deleting TMPDIR_LINT before a single
-  # file has been scanned. The caller sets it, at its own top level,
-  # immediately after this call returns -- `trap ... EXIT` at a script's own
-  # top level is unambiguous everywhere.
+  # Narrative: lint-common.comments.md, block 1.
   return 0
 }
 
@@ -29,9 +26,7 @@ lint_common_init() {
 lint_all_files() { # file... (may be zero args)
   # Bash 3.2 (macOS's shipped /bin/bash) treats "${arr[@]}" on a zero-element
   # array as an unbound-variable reference under `set -u` -- the callers of
-  # this function guard the expansion with ${#FILES_FROM_ARGS[@]} before
-  # ever passing it here, so "$#" being 0 is the normal whole-tree case, not
-  # a broken call.
+  # Narrative: lint-common.comments.md, block 2.
   ALL_FILES="$TMPDIR_LINT/all"
   if [ "$#" -gt 0 ]; then
     printf '%s\n' "$@" > "$ALL_FILES"
@@ -96,10 +91,7 @@ lint_classify_files() {
 
 # ---------------------------------------------------------------------------
 # Exemption tier 1: a path glob in an ignorefile.
-#   glob<TAB>RULE_IDS<TAB># reason
-# `*` matches across directory separators, so `templates/*` covers nested
-# paths. `ALL` exempts every rule for that path.
-# ---------------------------------------------------------------------------
+# Narrative: lint-common.comments.md, block 3.
 is_exempt() { # ignorefile path rule -> 0 if exempt
   local ignorefile="$1" path="$2" rule="$3" glob rules line
   [ -f "$ignorefile" ] || return 1
@@ -123,9 +115,7 @@ is_exempt() { # ignorefile path rule -> 0 if exempt
 
 # ---------------------------------------------------------------------------
 # Exemption tier 2: inline suppression on the preceding line. The rule id and
-# a reason are both mandatory; a bare disable is itself reported by the
-# caller's own <PREFIX>000 rule (see check_malformed_suppression below).
-# ---------------------------------------------------------------------------
+# Narrative: lint-common.comments.md, block 4.
 is_disabled() { # prefix file line rule -> 0 if suppressed
   local prefix="$1" file="$2" ln="$3" rule="$4" prev
   [ "$ln" -gt 1 ] || return 1
@@ -154,9 +144,7 @@ check_malformed_suppression() { # zero-rule prefix rule-id-ere file-list
 
 # ---------------------------------------------------------------------------
 # Scannable line extraction. Every extractor preserves the file's own line
-# numbers (blanking rather than deleting), so a report's line number always
-# points at the real source line.
-# ---------------------------------------------------------------------------
+# Narrative: lint-common.comments.md, block 5.
 
 # Markdown with fenced code blocks blanked, so a rule never fires on a sample
 # command or an example of the thing it forbids.
@@ -184,13 +172,7 @@ raw_scannable() {
 
 # The inverse of md_scannable: everything BLANKED except the content of a
 # fenced code block whose language is a shell/command dialect
-# (bash/sh/shell/console). For a rule about a copy-pasteable command -- an
-# unsubstituted placeholder -- prose and non-command fences are structurally
-# out of scope, the opposite of a concrete-value rule that must read
-# everything. Language detection takes the fence's first info-string word,
-# lowercased; an untagged fence is NOT a command fence here (unlike a reply
-# guard's own convention) because a runbook's copy-pasteable blocks are
-# consistently tagged in this estate's own measured corpus.
+# Narrative: lint-common.comments.md, block 6.
 command_fence_scannable() {
   awk '
     /^[[:space:]]*(```|~~~)/ {
@@ -242,12 +224,7 @@ report() { # rule file line message matched-text advisory(optional: non-empty = 
 
 # Blank every span an ERE ($2) matches out of text ($1), replacing each with
 # spaces of the same length so match offsets earlier in the same line stay
-# valid. Blanking by position (not by searching for the matched text again)
-# matters: a text-search removal can strip the wrong occurrence of that text
-# (e.g. blanking "S3" must never eat the "S3" inside "S30"). LC_ALL=C is
-# forced so grep's byte offsets and bash's substring indexing agree on
-# multibyte content -- under a UTF-8 locale they diverge (grep counts bytes,
-# bash counts characters) and offsets silently misalign.
+# Narrative: lint-common.comments.md, block 7.
 blank_spans() { # text except ci(optional: "1" = case-insensitive) -> blanked text on stdout
   local text="$1" except="$2" ci="${3:-}" reduced off span len flags="-boE"
   export LC_ALL=C
@@ -263,9 +240,7 @@ blank_spans() { # text except ci(optional: "1" = case-insensitive) -> blanked te
 
 # rule, file-list, match-ere, except-ere (or ""), extractor, message,
 # advisory ("1" = never fails, only a notice: mirrors docs-lint's DL011),
-# ci ("1" = case-insensitive match and except -- docs-lint's own rules stay
-# case-sensitive by design (see docs-lint.sh's DL001 comment), so this
-# defaults off rather than changing existing behavior).
+# Narrative: lint-common.comments.md, block 8.
 run_rule() {
   local rule="$1" list="$2" match="$3" except="$4" extractor="$5" msg="$6" advisory="${7:-}" ci="${8:-}"
   local file scan hits ln text reduced mflags="-nE" qflags="-qE"
@@ -331,9 +306,7 @@ lint_summary_and_exit() { # label
 
 # Test-only escape hatch, mirroring docs-lint.sh's own: a caller can
 # `CHECK_SOURCE_ONLY=1 source <check>.sh` to load every function and pattern
-# constant without scanning a file, so a test file can call blank_spans (or
-# any other shared function) directly against the real production code
-# instead of a reimplementation that could drift from it.
+# Narrative: lint-common.comments.md, block 9.
 lint_source_only() {
   [ "${CHECK_SOURCE_ONLY:-0}" = "1" ]
 }

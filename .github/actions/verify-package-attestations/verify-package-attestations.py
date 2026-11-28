@@ -1,17 +1,7 @@
 #!/usr/bin/env python3
 """Check the signed build attestation of the @branchleft npm tarballs.
 
-Usage:
-  verify-package-attestations.py scan ROOT
-  verify-package-attestations.py check-inputs TARBALL --repo R --signer-workflow S --ref REF
-  verify-package-attestations.py check-tarball TARBALL --repo R --signer-workflow S --ref REF
-  verify-package-attestations.py prove-wrong-identity TARBALL --repo R --signer-workflow S --ref REF
-  verify-package-attestations.py self-test
-
-Needs GH_TOKEN (all but self-test and check-inputs), and `gh` and `curl` on PATH. Exit 0 only when
-every check passed; 1 when a check refused; 2 on a usage error or a fault in this
-program. Every unexpected state is a refusal: this program has no "skip" path.
-The identity table, the rules and the reasons: verify-package-attestations.md.
+See verify-package-attestations.comments.md, block 1.
 """
 
 from __future__ import annotations
@@ -75,12 +65,7 @@ class Identity:
 
 # One row per published @branchleft package. `first_attested` is UNSET until the
 # first release published through the attesting workflow is known. `grandfathered`
-# is the exact list of versions published before attestation began; only those
-# versions pass without an attestation, on a floored row and on an UNSET row alike,
-# and every other version fails closed. The list is derived from the versions the
-# repositories' lockfiles pin, and is extended only in a reviewed change.
-# `ref_template` is the exact ref when the tag maps to the package
-# version; None where it does not (the check then uses `ref_regex` alone).
+# Narrative: verify-package-attestations.comments.md, block 2.
 IDENTITIES: tuple[Identity, ...] = (
     Identity(
         package="@branchleft/ghost-platform-render-core",
@@ -429,9 +414,7 @@ def gh_verify(
 def judge(result: Any, sha256_hex: str, repo: str, signer: str, ref_regex: str, ref: str | None) -> list[str]:
     """What is wrong with one verified result, read from the certificate fields.
 
-    gh already enforces the flags it was given. These are the same facts read again
-    from the certificate, which the workflow that was attested cannot alter, so a gh
-    that is wrong, old or replaced still cannot make a bad tarball pass.
+    See verify-package-attestations.comments.md, block 3.
     """
     problems: list[str] = []
     verification = result.get("verificationResult") if isinstance(result, dict) else None
