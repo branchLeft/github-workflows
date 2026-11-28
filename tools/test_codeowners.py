@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Checks .github/CODEOWNERS against a fixed table of sample paths.
 
-Usage: python3 tools/test_codeowners.py [--codeowners PATH]
-See tools/test_codeowners.md for what each check proves.
+See test_codeowners.comments.md, block 1.
 """
 
 from __future__ import annotations

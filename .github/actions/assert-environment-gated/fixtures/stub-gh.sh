@@ -1,9 +1,7 @@
 #!/bin/bash
 # Stands in for `gh`. Logs every call to $STUB_LOG, if set; any call that is not
 # one of the two reads the action is meant to make exits 99. The two answers
-# come from the files $STUB_ENV and $STUB_RULES. A file holding UNREADABLE makes
-# the call fail as an API error would; one holding GARBAGE makes it print
-# something that is not JSON and succeed.
+# Narrative: stub-gh.comments.md, block 1.
 [ -z "${STUB_LOG:-}" ] || echo "$*" >> "$STUB_LOG"
 [ "$1" = "api" ] || exit 99
 case "$2" in

@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """Exit 0 only if a release tag is an annotated tag signed by an allowed signer.
 
-Usage: verify-tag-signer.py TAG REF_JSON TAG_JSON ALLOWED_SIGNERS
-Rules, shapes and reasons: verify-tag-signer.md
+See verify-tag-signer.comments.md, block 1.
 """
 import base64
 import json

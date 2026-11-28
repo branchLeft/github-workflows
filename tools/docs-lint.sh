@@ -45,9 +45,7 @@ lint_classify_files
 
 # Test-only escape hatch: `DOCS_LINT_SOURCE_ONLY=1 source docs-lint.sh` runs
 # everything above (option parsing, lint-common's own function and pattern
-# definitions) and returns before any file is scanned, so docs-lint.test.sh
-# can call blank_spans directly against the real patterns and assert on its
-# output instead of only on a rule's final verdict.
+# Narrative: docs-lint.comments.md, block 1.
 CHECK_SOURCE_ONLY="${DOCS_LINT_SOURCE_ONLY:-0}"
 
 # ---------------------------------------------------------------------------
@@ -61,18 +59,13 @@ GATE_MATCH="\\bRob-(only|gated)\\b"
 
 # `S3` is deliberately exempt: in this corpus it is both an AWS service and a
 # real story id, and no pattern separates them. Missing the occasional story
-# S3 costs far less than 60 false positives teaching people to ignore the
-# linter. Story ids S7 upward are still caught. `Q1`-`Q4` get the same
-# exemption for the same reason: calendar quarters in roadmap and marketing
-# prose collide with the low end of the Q-item id space.
+# Narrative: docs-lint.comments.md, block 2.
 DL009_MATCH="\\bS[0-9]{1,3}\\b|\\bB[0-9]{1,3}\\b|\\bQ[0-9]{1,3}\\b"
 DL009_EXCEPT="\\bS3\\b|S3-|\\bB[0-9]+(GB|MB|KB|Gi|Mi|B)\\b|\\bQ[1-4]\\b"
 
 # DL012 catches the *replacement* id shape for branchLeft's own items:
 # branchLeft/repo#N. Rationale, scope and known limitations: docs-lint-rules.md.
-# Scoped to the literal `branchLeft` owner, not any owner/repo#N: an upstream
-# reference (`actions/runner#1327`) is a workaround citation, not board
-# narration, and a generic owner/repo#N shape false-matches doc URL fragments.
+# Narrative: docs-lint.comments.md, block 3.
 DL012_MATCH="\\bbranchLeft/[A-Za-z0-9._-]+#[0-9]+\\b"
 
 if lint_source_only; then
@@ -123,9 +116,7 @@ run_rule DL012 "$CODE_FILES" "$DL012_MATCH" "" code_scannable \
 
 # ---------------------------------------------------------------------------
 # DL010 — links must resolve inside the repo
-# ---------------------------------------------------------------------------
-# Findings are collected to a file rather than piped, so that `report` runs in
-# this shell and its counts reach the summary and the exit code.
+# Narrative: docs-lint.comments.md, block 4.
 : > "$TMPDIR_LINT/dl010"
 while IFS= read -r file; do
   is_exempt "$LINT_IGNOREFILE" "$file" DL010 && continue
@@ -184,11 +175,7 @@ done < "$TMPDIR_LINT/dl011"
 
 # ---------------------------------------------------------------------------
 # Structural markdown hygiene. npx is this script's only runtime dependency.
-# Markdown in scope means markdownlint is enabled, so a missing npx fails the
-# run instead of skipping the checks. That holds in every mode: warn mode
-# ratchets per-file findings, and a runner without npx is an environment
-# fault, not a finding. With no markdown in scope markdownlint is off.
-# ---------------------------------------------------------------------------
+# Narrative: docs-lint.comments.md, block 5.
 if [ -s "$MD_FILES" ] && ! command -v npx >/dev/null 2>&1; then
   echo "docs-lint: npx is not on PATH, so markdownlint cannot run and the structural markdown checks were not performed. Put npx on the runner's PATH; this run fails rather than skip them."
   FAILED=1

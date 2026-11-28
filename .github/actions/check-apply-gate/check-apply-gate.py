@@ -408,9 +408,7 @@ def check_pair(jobs: dict[str, list[str]], plan: str, apply: str, verdict: str, 
 def parse_required_operands(raw: str) -> list[str]:
     """The operands the input names, one per line, whitespace folded, blank lines
     dropped. An empty value gives none, which switches the check off.
-
-    Raises:
-        Unreadable: a line holds a top-level `&&`, so it names two operands.
+    See check-apply-gate.comments.md, block 1.
     """
     operands = []
     for line in raw.splitlines():

@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 # Unit tests for docs-lint.sh's content rules. Fixture-driven: each case is a
 # snippet of prose fed to the script through a scratch git repo (docs-lint.sh
-# requires one — it resolves its scan root with `git rev-parse
-# --show-toplevel`) and the exit code / DL009 presence is asserted.
-#
-# Usage: tools/docs-lint.test.sh
+# Narrative: docs-lint.test.comments.md, block 1.
 
 set -uo pipefail
 
@@ -180,9 +177,7 @@ case_rule "DL008: 'round 3 trip' alone (no other process narration) stays exempt
 
 # --- Whitebox: exemption removal is by matched position, not matched text --
 # The real hazard here is an exempt token that is a *prefix* of the real id
-# on the same line: a text-search removal strips the first literal
-# occurrence of the exempted string, which for a prefix pair lands inside
-# the real id rather than on the exempted token itself.
+# Narrative: docs-lint.test.comments.md, block 2.
 assert_blank \
   "blank_spans: exempt S3 removed from its own span, not from inside S30" \
   "S30 uses S3 storage" "$DL009_EXCEPT_LIVE" \
@@ -207,9 +202,7 @@ case_rule "DL009: Q10 the real id is still caught when Q1 shares its line" \
 
 # --- DL012: owner/repo#N in a source comment ------------------------------
 # The fixture below is a comment that DL009, DL007, DL008 and DL001 each
-# return zero matches against, which is exactly the coverage gap DL012
-# closes: an owner/repo#N reference is the one ticket-reference shape none
-# of the existing rules were watching for.
+# Narrative: docs-lint.test.comments.md, block 3.
 case_rule "DL012: owner/repo#N reference in a shell comment is flagged" \
   $'#!/bin/bash\n# branchLeft/ghost-platform#139: pasted verbatim into two runbooks\x27 fenced commands' \
   DL012 yes 1
@@ -269,9 +262,7 @@ annotation_case
 
 # Fail-closed when npx is missing. The shim holds every executable from PATH
 # except npx, so npx is the only tool removed. With markdown in scope
-# markdownlint is enabled, and a runner without npx must fail the run in both
-# modes with the fixed message, not skip the checks and exit clean. With no
-# markdown in scope markdownlint is deliberately off and the run still passes.
+# Narrative: docs-lint.test.comments.md, block 4.
 BASH_BIN=$(command -v bash)
 NO_NPX="$WORK/no-npx-bin"
 mkdir -p "$NO_NPX"

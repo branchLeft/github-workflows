@@ -1,8 +1,6 @@
 """Sabotage proof for tools/test_ansible_gated_apply.py: break each control, require its test red.
 
-What it does, how to run one case and how to add one: README, section
-"ansible-drift-check.yml", paragraph on tools/sabotage.py. The cases are in
-tools/sabotage_proof/cases/, one module per family of controls.
+See sabotage.comments.md, block 1.
 """
 
 from __future__ import annotations

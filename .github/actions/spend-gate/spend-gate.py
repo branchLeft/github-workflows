@@ -98,8 +98,7 @@ def _check_summary(
 ) -> str | None:
     """Why the change summary cannot be squared with the listed steps, or None.
 
-    The summary may count fewer changes than are listed (a replace is several steps),
-    never more (a change that is not listed cannot be judged) and never none while
+    See spend-gate.comments.md, block 1.
     a changing step is listed. A `read` count is the clean reads, which are not changes."""
     summary = shared._as_dict(doc.get("changeSummary"), "preview-shape")
     for value in summary.values():
