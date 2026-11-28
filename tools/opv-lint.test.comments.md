@@ -30,8 +30,8 @@ The source keeps the first lines of each long comment block and points here.
 ```text
 # ==== OPV002: an unsubstituted placeholder in a copy-pasteable command ======
 # ---- Cross-rule regression: OPV001 and OPV002 must not co-fire on the same
-# span. `<edge1-ipv4>` is the ruling's own canonical placeholder example,
-# and it textually contains the hostname `edge1` -- a per-rule assertion
+# span. `<EXAMPLE-ipv4>` is the ruling's own canonical placeholder example,
+# and it textually contains the hostname `EXAMPLE` -- a per-rule assertion
 # (case_md_fence checking OPV002 alone) cannot see OPV001 firing on the same
 # fixture, which is exactly how this collision shipped unnoticed. case_dual
 # runs the tool once and checks both rules against the one output.
